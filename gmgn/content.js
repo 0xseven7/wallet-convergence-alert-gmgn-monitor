@@ -137,21 +137,22 @@
     // 拆 MC:
     const mcMatch = line2Text.match(/MC[:\s]*[\$￥]?([\d.]+[KMBkmb]?)/);
     const mcap = mcMatch ? '$' + mcMatch[1] : '';
-    const headPart = mcMatch ? line2Text.substring(0, line2Text.indexOf(mcMatch[0])).trim() : line2Text;
-    // headPart: "1.32FSP2h" → amount + token + age
-    // 用正则拆：开头数字（含小数）→ 后面的字母+符号 → 末尾的时间
+    let headPart = mcMatch ? line2Text.substring(0, line2Text.indexOf(mcMatch[0])).trim() : line2Text;
+    // **先剥掉末尾的时间** (\d+[smhd]) — 否则会被当成 token 名的一部分
+    let tradeAge = '';
+    const tmTail = headPart.match(/(\d+[smhd])\s*$/);
+    if (tmTail) {
+      tradeAge = tmTail[1];
+      headPart = headPart.substring(0, headPart.length - tmTail[0].length).trim();
+    }
+    // headPart 现在只剩 "<amount><tokenSymbol>"
     let amount = '', tokenSymbol = '';
-    const hp = headPart.match(/^([\d.,]+)([\$一-龥A-Za-z_][\$一-龥A-Za-z0-9_]*)(?:\s*\d+[smhd])?$/);
-    if (hp) {
-      amount = hp[1];
-      tokenSymbol = hp[2];
+    const am = headPart.match(/^([\d.,]+)/);
+    if (am) {
+      amount = am[1];
+      tokenSymbol = headPart.substring(am[1].length).trim();
     } else {
-      // 兜底：amount = 开头数字，token = 剩余
-      const am = headPart.match(/^([\d.,]+)/);
-      if (am) {
-        amount = am[1];
-        tokenSymbol = headPart.substring(am[1].length).replace(/\d+[smhd]\s*$/, '').trim();
-      }
+      tokenSymbol = headPart;
     }
 
     // 把时间 "2h" 转成毫秒（相对 now）
@@ -164,18 +165,28 @@
       timeMs = Date.now() - ms;
     }
 
+    // 钱包头像 = line 1 里第一个 <img>
+    const walletAvatar = line1.querySelector('img')?.src || '';
+    // 代币 logo = line 2 里非 native 链图标的图片（链图标 src 含 'icons/icon_'）
+    let tokenLogo = '';
+    line2.querySelectorAll('img').forEach(img => {
+      const src = img.src || '';
+      if (!tokenLogo && !src.includes('/icons/icon_')) tokenLogo = src;
+    });
+
     // 累积 token meta
     if (mint) {
       const existing = tokenMeta.get(mint) || {};
       tokenMeta.set(mint, {
         chain: chain || existing.chain,
         symbol: tokenSymbol || existing.symbol,
-        logo: existing.logo
+        logo: tokenLogo || existing.logo
       });
     }
 
     return {
       wallet,
+      walletAvatar,
       action,
       isBuy,
       token: tokenSymbol,
@@ -184,7 +195,9 @@
       amount,
       mcap,
       timeAgo,
+      tradeAge,    // line2 里的"45m"，比 timeAgo 更精确
       timeMs,
+      tokenLogo,
       href
     };
   }
@@ -239,11 +252,12 @@
     for (const r of buyRecords) {
       if (!r.timeMs || (now - r.timeMs) > windowMs) continue;
       const key = r.mint || ('NAME:' + r.token);
-      if (!groups[key]) groups[key] = { wallets: {}, mcap: r.mcap, mint: r.mint, chain: r.chain, token: r.token };
+      if (!groups[key]) groups[key] = { wallets: {}, mcap: r.mcap, mint: r.mint, chain: r.chain, token: r.token, tokenLogo: r.tokenLogo };
       const g = groups[key];
-      if (!g.wallets[r.wallet]) g.wallets[r.wallet] = { amount: r.amount, timeAgo: r.timeAgo, timeMs: r.timeMs };
+      if (!g.wallets[r.wallet]) g.wallets[r.wallet] = { amount: r.amount, timeAgo: r.timeAgo, timeMs: r.timeMs, avatar: r.walletAvatar };
       if (r.mcap) g.mcap = r.mcap;
       if (r.token) g.token = r.token;
+      if (r.tokenLogo && !g.tokenLogo) g.tokenLogo = r.tokenLogo;
     }
 
     let triggered = false, updated = false;
@@ -257,7 +271,8 @@
         name: w,
         amount: group.wallets[w].amount,
         timeAgo: group.wallets[w].timeAgo,
-        timeMs: group.wallets[w].timeMs
+        timeMs: group.wallets[w].timeMs,
+        avatar: group.wallets[w].avatar
       }));
 
       const newTier = calcTier(walletNames.length);
@@ -276,6 +291,7 @@
         existing.token = group.token || existing.token;
         existing.mint = group.mint || existing.mint;
         existing.chain = group.chain || existing.chain;
+        existing.tokenLogo = group.tokenLogo || existing.tokenLogo;
         existing.tier = newTier;
         existing.isNew = true;
         updated = true;
@@ -286,6 +302,7 @@
           token: group.token,
           mint: group.mint,
           chain: group.chain,
+          tokenLogo: group.tokenLogo,
           walletCount: walletNames.length,
           wallets: walletDetails,
           mcap: group.mcap,
@@ -479,20 +496,26 @@
         const hasStar = isAlertStarred(a);
         const tier = a.tier || calcTier(a.walletCount);
         const tierIcon = tier >= 4 ? ' 🚨' : tier >= 3 ? ' 🔥' : tier >= 2 ? ' ⚡' : '';
+        const logoImg = a.tokenLogo
+          ? `<img class="gcp-token-logo" src="${escHtml(a.tokenLogo)}" loading="lazy" referrerpolicy="no-referrer" />`
+          : '';
         return `
         <div class="gcp-alert-item gcp-tier-${tier} ${a.isNew ? 'is-new' : ''} ${hasStar ? 'is-starred' : ''}" data-token="${escHtml(a.token)}">
           <div class="gcp-alert-token">
-            <span class="gcp-alert-token-name gcp-token-link" data-mint="${escHtml(a.mint || '')}" data-chain="${escHtml(a.chain || '')}" data-token="${escHtml(a.token)}" title="跳转到 ${escHtml(a.token)}">${escHtml(a.token)} ↗</span>
+            <span class="gcp-alert-token-name gcp-token-link" data-mint="${escHtml(a.mint || '')}" data-chain="${escHtml(a.chain || '')}" data-token="${escHtml(a.token)}" title="跳转到 ${escHtml(a.token)}">${logoImg}${escHtml(a.token)} ↗</span>
             <span class="gcp-alert-count">${a.walletCount} 个钱包${tierIcon}</span>
           </div>
           <div class="gcp-alert-time">${a.mcap ? '市值 ' + escHtml(a.mcap) : ''}${a.chain ? ' · ' + escHtml(a.chain.toUpperCase()) : ''}</div>
           <div class="gcp-alert-wallets">
             ${a.wallets.map(w => {
               const star = starred.has(w.name);
+              const av = w.avatar
+                ? `<img class="gcp-wallet-avatar" src="${escHtml(w.avatar)}" loading="lazy" referrerpolicy="no-referrer" />`
+                : '';
               return `
               <span class="gcp-alert-wallet-tag ${star ? 'is-starred' : ''}">
                 <span class="gcp-star-toggle ${star ? 'on' : ''}" data-wallet="${escHtml(w.name)}" title="${star ? '取消特别关注' : '加入特别关注'}">${star ? '★' : '☆'}</span>
-                ${escHtml(w.name)}
+                ${av}${escHtml(w.name)}
                 <span class="gcp-wallet-amount">${escHtml(w.amount)}</span>
                 ${w.timeAgo ? '<span style="color:#666">' + escHtml(w.timeAgo) + '前</span>' : ''}
               </span>`;

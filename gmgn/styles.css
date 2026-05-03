@@ -461,3 +461,23 @@
   max-height: 42px;
   width: 240px;
 }
+
+/* 头像 / logo */
+.gcp-token-logo {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  object-fit: cover;
+  vertical-align: -2px;
+  margin-right: 4px;
+  background: rgba(255,255,255,0.06);
+}
+.gcp-wallet-avatar {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  object-fit: cover;
+  vertical-align: -2px;
+  margin-right: 2px;
+  background: rgba(255,255,255,0.06);
+}
