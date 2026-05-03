@@ -322,7 +322,8 @@
             handleWalletTrade({ source: t.source, data: item });
           }
         } catch (e) {
-          console.warn('[XCP] init fetch failed', t.ch, e);
+          // 网络/Cloudflare 偶发抖动，静默重试由 startHistoryRefresh 兜底
+          if (window.__xcpDebug) console.debug('[XCP] init fetch failed', t.ch, e.message);
         }
       }
     } finally {
