@@ -23,4 +23,23 @@ fi
 
 SIZE=$(stat -c %s "$OUT" 2>/dev/null || stat -f %z "$OUT" 2>/dev/null || echo "?")
 echo "[OK] 完成: $OUT ($SIZE bytes)"
-echo "  gh release create v${VERSION} \"$OUT\" --title \"v${VERSION}\""
+
+# 自动生成发布用的 release notes（含本版本说明 + 通用使用教程）
+NOTES_FILE="dist/RELEASE_NOTES_v${VERSION}.md"
+{
+  if [ -f CHANGELOG_NEXT.md ]; then
+    cat CHANGELOG_NEXT.md
+    echo
+    echo "---"
+    echo
+  fi
+  echo "# 📖 使用教程"
+  echo
+  cat USAGE.md
+} > "$NOTES_FILE"
+
+echo
+echo "下一步发布命令："
+echo "  gh release create v${VERSION} \"$OUT\" --title \"v${VERSION}\" --notes-file \"$NOTES_FILE\""
+echo
+echo "（本版本简介可放进 CHANGELOG_NEXT.md，发布完后清空它）"
