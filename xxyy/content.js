@@ -9,7 +9,8 @@
     timeWindowMin: 5,
     soundEnabled: true,
     collapsed: false,
-    cloneTab: '我的'
+    cloneTab: '我的',
+    tieredAlerts: true   // 4 档分级提醒（视觉 + 声音逐级升级）
   };
 
   let config = { ...DEFAULT_CONFIG };
@@ -667,7 +668,9 @@
   }, { once: true, capture: true });
 
   // 档位分级：tier = min(4, walletCount - minWallets + 1)
+  // 开关关闭时永远返回 1（无视觉/声音升级）
   function calcTier(walletCount) {
+    if (!config.tieredAlerts) return 1;
     return Math.min(4, Math.max(1, walletCount - config.minWallets + 1));
   }
 
@@ -755,6 +758,7 @@
 
     const headerExtras = [];
     if (o.showStarList !== false) headerExtras.push('<button class="xcp-icon-btn xcp-star-btn" title="特别关注列表">★ <span class="xcp-star-count">0</span></button>');
+    headerExtras.push('<button class="xcp-icon-btn xcp-tier-btn" title="分级提醒开关">' + (config.tieredAlerts ? '🔥' : '🌫️') + '</button>');
     if (o.showSound !== false) headerExtras.push('<button class="xcp-icon-btn xcp-sound-btn" title="声音开关">🔔</button>');
 
     el.innerHTML = `
@@ -801,6 +805,23 @@
         // 同步到所有面板
         document.querySelectorAll('.xcp-sound-btn').forEach(b => b.textContent = config.soundEnabled ? '🔔' : '🔕');
         saveConfig();
+      });
+    }
+
+    const tierBtn = rootEl.querySelector('.xcp-tier-btn');
+    if (tierBtn) {
+      tierBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        config.tieredAlerts = !config.tieredAlerts;
+        document.querySelectorAll('.xcp-tier-btn').forEach(b => {
+          b.textContent = config.tieredAlerts ? '🔥' : '🌫️';
+          b.title = config.tieredAlerts ? '分级提醒：开（点击关闭）' : '分级提醒：关（点击开启）';
+        });
+        saveConfig();
+        // 立刻重渲所有面板（已有提醒的 tier 重算）
+        for (const a of alertsKol) a.tier = calcTier(a.walletCount);
+        for (const a of alertsMy) a.tier = calcTier(a.walletCount);
+        renderAlerts();
       });
     }
 

@@ -8,7 +8,8 @@
     minWallets: 2,
     timeWindowMin: 30,   // gmgn 列表时间跨度比 xxyy 大，默认 30 分钟
     soundEnabled: true,
-    collapsed: false
+    collapsed: false,
+    tieredAlerts: true
   };
 
   let config = { ...DEFAULT_CONFIG };
@@ -337,6 +338,7 @@
   document.addEventListener('click', () => { if (!_audioReady) ensureAudioCtx(); }, { once: true, capture: true });
 
   function calcTier(walletCount) {
+    if (!config.tieredAlerts) return 1;
     return Math.min(4, Math.max(1, walletCount - config.minWallets + 1));
   }
 
@@ -419,6 +421,7 @@
           <span class="gcp-badge">0</span>
         </div>
         <div class="gcp-header-right">
+          <button class="gcp-icon-btn gcp-tier-btn" title="${config.tieredAlerts ? '分级提醒：开（点击关闭）' : '分级提醒：关（点击开启）'}">${config.tieredAlerts ? '🔥' : '🌫️'}</button>
           <button class="gcp-icon-btn gcp-sound-btn" title="声音开关">🔔</button>
         </div>
       </div>
@@ -450,6 +453,21 @@
       soundBtn.textContent = config.soundEnabled ? '🔔' : '🔕';
       saveConfig();
     });
+
+    const tierBtn = panelEl.querySelector('.gcp-tier-btn');
+    if (tierBtn) {
+      tierBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        config.tieredAlerts = !config.tieredAlerts;
+        tierBtn.textContent = config.tieredAlerts ? '🔥' : '🌫️';
+        tierBtn.title = config.tieredAlerts ? '分级提醒：开（点击关闭）' : '分级提醒：关（点击开启）';
+        saveConfig();
+        // 重算所有现有 alert 的 tier
+        for (const a of alerts) a.tier = calcTier(a.walletCount);
+        lastRenderState = '';
+        renderAlerts();
+      });
+    }
 
     const minW = panelEl.querySelector('.gcp-min-wallets');
     minW.addEventListener('change', (e) => {
