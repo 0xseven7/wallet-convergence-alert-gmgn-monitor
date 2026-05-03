@@ -15,7 +15,9 @@
   let config = { ...DEFAULT_CONFIG };
   let alerts = [];
   let buyRecords = [];
+  let closedRecords = [];
   let seenKeys = new Set();
+  let seenClosedKeys = new Set();
   let panelEl = null;
   let observer = null;
   let scanInterval = null;
@@ -216,13 +218,21 @@
     for (const row of rows) {
       const trade = parseTradeRow(row);
       if (!trade) continue;
-      if (!trade.isBuy) continue;
-      // 用 mint+wallet+timeAgo 组合做去重 key（gmgn 没有 signature）
-      const key = `${trade.mint || trade.token}|${trade.wallet}|${trade.timeAgo}`;
-      if (seenKeys.has(key)) continue;
-      seenKeys.add(key);
-      buyRecords.push(trade);
-      added++;
+      if (trade.isBuy) {
+        // 用 mint+wallet+timeAgo 组合做去重 key（gmgn 没有 signature）
+        const key = `${trade.mint || trade.token}|${trade.wallet}|${trade.timeAgo}`;
+        if (seenKeys.has(key)) continue;
+        seenKeys.add(key);
+        buyRecords.push(trade);
+        added++;
+      } else if (trade.action && trade.action.includes('清仓')) {
+        // 清仓事件：用同样的 key 模式去重，存入 closedRecords
+        const ck = `C|${trade.mint || trade.token}|${trade.wallet}|${trade.timeAgo}`;
+        if (seenClosedKeys.has(ck)) continue;
+        seenClosedKeys.add(ck);
+        closedRecords.push(trade);
+        added++;
+      }
     }
 
     if (added > 0) {
@@ -242,6 +252,9 @@
     const now = Date.now();
     const cutoff = config.timeWindowMin * 60 * 1000;
     buyRecords = buyRecords.filter(r => r.timeMs && (now - r.timeMs) < cutoff);
+    closedRecords = closedRecords.filter(r => r.timeMs && (now - r.timeMs) < cutoff * 2);
+    if (seenKeys.size > 5000) seenKeys = new Set(Array.from(seenKeys).slice(-2500));
+    if (seenClosedKeys.size > 5000) seenClosedKeys = new Set(Array.from(seenClosedKeys).slice(-2500));
   }
 
   // ===== 聚合检测 =====
@@ -268,15 +281,28 @@
       const walletNames = Object.keys(group.wallets);
       if (walletNames.length < config.minWallets) continue;
 
-      const walletDetails = walletNames.map(w => ({
-        name: w,
-        amount: group.wallets[w].amount,
-        timeAgo: group.wallets[w].timeAgo,
-        timeMs: group.wallets[w].timeMs,
-        avatar: group.wallets[w].avatar
-      }));
+      const walletDetails = walletNames.map(w => {
+        const wd = group.wallets[w];
+        const closeMatch = closedRecords.find(c =>
+          c.wallet === w &&
+          ((group.mint && c.mint === group.mint) ||
+           (!group.mint && !c.mint && c.token === group.token)) &&
+          c.timeMs > wd.timeMs
+        );
+        return {
+          name: w,
+          amount: wd.amount,
+          timeAgo: wd.timeAgo,
+          timeMs: wd.timeMs,
+          avatar: wd.avatar,
+          closed: !!closeMatch,
+          closedAt: closeMatch ? closeMatch.timeMs : null
+        };
+      });
+      const closedCount = walletDetails.filter(w => w.closed).length;
+      const effectiveCount = walletNames.length - closedCount;
 
-      const newTier = calcTier(walletNames.length);
+      const newTier = calcTier(effectiveCount);
 
       const existing = alerts.find(a => {
         if (group.mint && a.mint) return a.mint === group.mint;
@@ -284,9 +310,13 @@
       });
 
       if (existing) {
-        if (existing.walletCount === walletNames.length) continue;
-        const prevTier = existing.tier || calcTier(existing.walletCount);
+        const sameCount = existing.walletCount === walletNames.length;
+        const sameClose = (existing.closedCount || 0) === closedCount;
+        if (sameCount && sameClose) continue;
+        const prevTier = existing.tier || calcTier(existing.effectiveCount || existing.walletCount);
         existing.walletCount = walletNames.length;
+        existing.effectiveCount = effectiveCount;
+        existing.closedCount = closedCount;
         existing.wallets = walletDetails;
         existing.mcap = group.mcap || existing.mcap;
         existing.token = group.token || existing.token;
@@ -305,6 +335,8 @@
           chain: group.chain,
           tokenLogo: group.tokenLogo,
           walletCount: walletNames.length,
+          effectiveCount,
+          closedCount,
           wallets: walletDetails,
           mcap: group.mcap,
           tier: newTier,
@@ -512,7 +544,9 @@
     } else {
       html = alerts.map(a => {
         const hasStar = isAlertStarred(a);
-        const tier = a.tier || calcTier(a.walletCount);
+        const closedCount = a.closedCount || 0;
+        const effective = (a.effectiveCount != null) ? a.effectiveCount : a.walletCount;
+        const tier = a.tier || calcTier(effective);
         const tierIcon = tier >= 4 ? ' 🚨' : tier >= 3 ? ' 🔥' : tier >= 2 ? ' ⚡' : '';
         const logoImg = a.tokenLogo
           ? `<img class="gcp-token-logo" src="${escHtml(a.tokenLogo)}" loading="lazy" referrerpolicy="no-referrer" />`
@@ -521,7 +555,7 @@
         <div class="gcp-alert-item gcp-tier-${tier} ${a.isNew ? 'is-new' : ''} ${hasStar ? 'is-starred' : ''}" data-token="${escHtml(a.token)}">
           <div class="gcp-alert-token">
             <span class="gcp-alert-token-name gcp-token-link" data-mint="${escHtml(a.mint || '')}" data-chain="${escHtml(a.chain || '')}" data-token="${escHtml(a.token)}" title="跳转到 ${escHtml(a.token)}">${logoImg}${escHtml(a.token)} ↗</span>
-            <span class="gcp-alert-count">${a.walletCount} 个钱包${tierIcon}</span>
+            <span class="gcp-alert-count">${effective} 个钱包${closedCount > 0 ? ` <span class="gcp-closed-tag">−${closedCount} 清仓</span>` : ''}${tierIcon}</span>
           </div>
           <div class="gcp-alert-time">${a.mcap ? '市值 ' + escHtml(a.mcap) : ''}${a.chain ? ' · ' + escHtml(a.chain.toUpperCase()) : ''}</div>
           <div class="gcp-alert-wallets">
@@ -531,7 +565,7 @@
                 ? `<img class="gcp-wallet-avatar" src="${escHtml(w.avatar)}" loading="lazy" referrerpolicy="no-referrer" />`
                 : '';
               return `
-              <span class="gcp-alert-wallet-tag ${star ? 'is-starred' : ''}">
+              <span class="gcp-alert-wallet-tag ${star ? 'is-starred' : ''} ${w.closed ? 'is-closed' : ''}" title="${w.closed ? '已清仓' : ''}">
                 <span class="gcp-star-toggle ${star ? 'on' : ''}" data-wallet="${escHtml(w.name)}" title="${star ? '取消特别关注' : '加入特别关注'}">${star ? '★' : '☆'}</span>
                 ${av}${escHtml(w.name)}
                 <span class="gcp-wallet-amount">${escHtml(w.amount)}</span>

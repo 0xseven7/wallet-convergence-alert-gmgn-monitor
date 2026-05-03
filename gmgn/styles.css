@@ -481,3 +481,26 @@
   margin-right: 2px;
   background: rgba(255,255,255,0.06);
 }
+
+/* 已清仓划线 */
+.gcp-alert-wallet-tag.is-closed {
+  text-decoration: line-through;
+  text-decoration-color: rgba(255, 71, 87, 0.7);
+  text-decoration-thickness: 1.5px;
+  opacity: 0.55;
+  filter: grayscale(0.4);
+}
+.gcp-alert-wallet-tag.is-closed .gcp-wallet-amount {
+  color: #888;
+}
+
+.gcp-closed-tag {
+  background: rgba(255, 71, 87, 0.18);
+  color: #ff7c8c;
+  border-radius: 6px;
+  padding: 0 5px;
+  font-size: 9px;
+  margin-left: 4px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}

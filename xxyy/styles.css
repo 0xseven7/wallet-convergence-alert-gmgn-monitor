@@ -832,3 +832,27 @@
   background-size: 300% 300%;
   animation: xcp-rainbow-bg 4s ease infinite, xcp-rainbow-border 3s linear infinite, xcp-tier4-throb 1.2s ease-in-out infinite;
 }
+
+/* 已清仓的钱包：划线 + 暗色 */
+.xcp-inline .xcp-alert-wallet-tag.is-closed {
+  text-decoration: line-through;
+  text-decoration-color: rgba(255, 71, 87, 0.7);
+  text-decoration-thickness: 1.5px;
+  opacity: 0.55;
+  filter: grayscale(0.4);
+}
+.xcp-inline .xcp-alert-wallet-tag.is-closed .xcp-wallet-amount {
+  color: #888;
+}
+
+/* 计数旁的 -N 清仓 标签 */
+.xcp-inline .xcp-closed-tag {
+  background: rgba(255, 71, 87, 0.18);
+  color: #ff7c8c;
+  border-radius: 6px;
+  padding: 0 5px;
+  font-size: 9px;
+  margin-left: 4px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}

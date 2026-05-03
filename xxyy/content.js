@@ -17,7 +17,9 @@
   let alertsKol = [];   // 仅 KOL 来源的聚合提醒
   let alertsMy = [];    // 仅 我的 来源的聚合提醒
   let buyRecords = [];  // 所有来源的买入流水（去重后）
+  let closedRecords = []; // 清仓事件流水
   let seenKeys = new Set();
+  let seenClosedKeys = new Set();
   let panelEl = null;
   let cloneCardEl = null;
   let mountCheckInterval = null;
@@ -445,6 +447,9 @@
     // 推入对应来源
     cloneData[source] = mergeTrades(cloneData[source], [trade]);
 
+    // 是否清仓（卖出且 post=0）
+    const isClose = !isBuy && (td.postTokenUiAmount === 0 || td.postTokenUiAmount === '0');
+
     // bulk 模式跳过即时渲染/检测，仅累积数据
     if (bulkMode) {
       if (isBuy) {
@@ -452,6 +457,13 @@
         if (!seenKeys.has(dedupKey)) {
           seenKeys.add(dedupKey);
           buyRecords.push(trade);
+        }
+      }
+      if (isClose) {
+        const dk = `C|${trade.wallet}|${trade.mint || trade.token}|${trade.timeMs}`;
+        if (!seenClosedKeys.has(dk)) {
+          seenClosedKeys.add(dk);
+          closedRecords.push(trade);
         }
       }
       pendingConvergenceCheck = true;
@@ -462,14 +474,26 @@
     renderCloneCard();
     setStatus('🟢', `KOL: ${cloneData.kol.length} · 我的: ${cloneData.my.length}`);
 
+    let needCheck = false;
     if (isBuy) {
       const dedupKey = `${trade.wallet}|${trade.token}|${trade.timeMs}`;
       if (!seenKeys.has(dedupKey)) {
         seenKeys.add(dedupKey);
         buyRecords.push(trade);
-        cleanOldRecords();
-        checkConvergence();
+        needCheck = true;
       }
+    }
+    if (isClose) {
+      const dk = `C|${trade.wallet}|${trade.mint || trade.token}|${trade.timeMs}`;
+      if (!seenClosedKeys.has(dk)) {
+        seenClosedKeys.add(dk);
+        closedRecords.push(trade);
+        needCheck = true;
+      }
+    }
+    if (needCheck) {
+      cleanOldRecords();
+      checkConvergence();
     }
   }
 
@@ -532,8 +556,13 @@
     const now = Date.now();
     const cutoff = config.timeWindowMin * 60 * 1000;
     buyRecords = buyRecords.filter(r => r.timeMs && (now - r.timeMs) < cutoff);
+    // closed 比 window 多保留 2x，确保 alert 能持续看到清仓状态
+    closedRecords = closedRecords.filter(r => r.timeMs && (now - r.timeMs) < cutoff * 2);
     if (seenKeys.size > 5000) {
       seenKeys = new Set(Array.from(seenKeys).slice(-2500));
+    }
+    if (seenClosedKeys.size > 5000) {
+      seenClosedKeys = new Set(Array.from(seenClosedKeys).slice(-2500));
     }
   }
 
@@ -582,13 +611,28 @@
         const walletNames = Object.keys(group.wallets);
         if (walletNames.length < config.minWallets) continue;
 
-        const walletDetails = walletNames.map(w => ({
-          name: w,
-          amount: group.wallets[w].amount,
-          time: group.wallets[w].time,
-          timeMs: group.wallets[w].timeMs,
-          source: group.wallets[w].source
-        }));
+        // 给每个钱包打上 closed 标记：买入之后又清仓了
+        const walletDetails = walletNames.map(w => {
+          const wd = group.wallets[w];
+          const closeMatch = closedRecords.find(c =>
+            c.wallet === w &&
+            ((group.mint && c.mint === group.mint) ||
+             (!group.mint && !c.mint && c.token === group.token)) &&
+            c.timeMs > wd.timeMs
+          );
+          return {
+            name: w,
+            amount: wd.amount,
+            time: wd.time,
+            timeMs: wd.timeMs,
+            source: wd.source,
+            closed: !!closeMatch,
+            closedAt: closeMatch ? closeMatch.timeMs : null
+          };
+        });
+        const closedCount = walletDetails.filter(w => w.closed).length;
+        const effectiveCount = walletNames.length - closedCount;
+
         const times = walletDetails.map(w => w.timeMs).filter(Boolean);
         const earliest = new Date(Math.min(...times));
         const latest = new Date(Math.max(...times));
@@ -599,12 +643,18 @@
           if (group.mint && a.mint) return a.mint === group.mint;
           return a.token === group.token && !a.mint && !group.mint;
         });
-        const newTier = calcTier(walletNames.length);
+        // tier 用 effective（清仓的不计入热度）
+        const newTier = calcTier(effectiveCount);
 
         if (existing) {
-          if (existing.walletCount === walletNames.length) continue;
-          const prevTier = existing.tier || calcTier(existing.walletCount);
+          // 仅当 walletCount 或 closedCount 任一变化才更新
+          const sameCount = existing.walletCount === walletNames.length;
+          const sameClose = (existing.closedCount || 0) === closedCount;
+          if (sameCount && sameClose) continue;
+          const prevTier = existing.tier || calcTier(existing.effectiveCount || existing.walletCount);
           existing.walletCount = walletNames.length;
+          existing.effectiveCount = effectiveCount;
+          existing.closedCount = closedCount;
           existing.wallets = walletDetails;
           existing.mcap = group.mcap || existing.mcap;
           existing.timeRange = timeRange;
@@ -614,7 +664,7 @@
           existing.tier = newTier;
           existing.isNew = true;
           existing.updatedAt = Date.now();
-          // 跨档才发声
+          // 仅升档发声（清仓导致的降档不响）
           if (newTier > prevTier && newTier > highestTierFired) {
             highestTierFired = newTier;
           }
@@ -626,6 +676,8 @@
             mint: group.mint,
             chain: group.chain,
             walletCount: walletNames.length,
+            effectiveCount,
+            closedCount,
             wallets: walletDetails,
             mcap: group.mcap,
             timeRange,
@@ -921,7 +973,9 @@
 
   function renderAlertItem(a, isMy) {
     const hasStar = isAlertStarred(a);
-    const tier = a.tier || calcTier(a.walletCount);
+    const closedCount = a.closedCount || 0;
+    const effective = (a.effectiveCount != null) ? a.effectiveCount : a.walletCount;
+    const tier = a.tier || calcTier(effective);
     const tierIcon = tier >= 4 ? ' 🚨' : tier >= 3 ? ' 🔥' : tier >= 2 ? ' ⚡' : '';
     // 主面板显示 KOL/我的 来源混合统计
     let mixSummary = '';
@@ -937,7 +991,7 @@
       <div class="xcp-alert-item xcp-tier-${tier} ${a.isNew ? 'is-new' : ''} ${isMy ? 'is-my-source' : ''} ${hasStar ? 'is-starred' : ''}" data-token="${escHtml(a.token)}">
         <div class="xcp-alert-token">
           <span class="xcp-alert-token-name xcp-token-link" data-token="${escHtml(a.token)}" data-mint="${escHtml(a.mint || '')}" data-chain="${escHtml(a.chain || '')}" title="跳转到 ${escHtml(a.token)} 交易页">${escHtml(a.token)} ↗</span>
-          <span class="xcp-alert-count">${a.walletCount} 个钱包${tierIcon}</span>
+          <span class="xcp-alert-count">${effective} 个钱包${closedCount > 0 ? ` <span class="xcp-closed-tag">−${closedCount} 清仓</span>` : ''}${tierIcon}</span>
         </div>
         <div class="xcp-alert-time">${escHtml(a.timeRange)}${a.mcap ? ' · 市值 ' + escHtml(a.mcap) : ''}${mixSummary}</div>
         <div class="xcp-alert-wallets">
@@ -947,7 +1001,7 @@
             const grp = walletGroups.get(w.name);
             const grpTag = grp ? `<span class="xcp-wallet-group" title="分组">${escHtml(grp)}</span>` : '';
             return `
-            <span class="xcp-alert-wallet-tag ${star ? 'is-starred' : ''} ${w.source === '我的' ? 'is-my-wallet' : ''}">
+            <span class="xcp-alert-wallet-tag ${star ? 'is-starred' : ''} ${w.source === '我的' ? 'is-my-wallet' : ''} ${w.closed ? 'is-closed' : ''}" title="${w.closed ? '已清仓' : ''}">
               <span class="xcp-star-toggle ${star ? 'on' : ''}" data-wallet="${escHtml(w.name)}" title="${star ? '取消特别关注' : '加入特别关注'}">${star ? '★' : '☆'}</span>
               ${sourceMark}${escHtml(w.name)}${grpTag}
               <span class="xcp-wallet-amount">${escHtml(w.amount)}</span>
