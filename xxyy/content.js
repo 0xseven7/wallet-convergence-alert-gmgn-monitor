@@ -1543,6 +1543,54 @@
     });
   }
 
+  // ===== 检查新版本 =====
+  const REPO = '0xuezhang985/wallet-convergence-alert';
+  function cmpVer(a, b) {
+    const pa = a.split('.').map(n => parseInt(n) || 0);
+    const pb = b.split('.').map(n => parseInt(n) || 0);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      const d = (pa[i] || 0) - (pb[i] || 0);
+      if (d !== 0) return d;
+    }
+    return 0;
+  }
+
+  async function checkForUpdate() {
+    try {
+      // 6 小时内只查一次
+      const cacheRaw = localStorage.getItem('xcp_update_cache');
+      const cache = cacheRaw ? JSON.parse(cacheRaw) : null;
+      const now = Date.now();
+      let latest = null;
+      if (cache && cache.fetchedAt && (now - cache.fetchedAt) < 6 * 3600 * 1000) {
+        latest = cache.tag;
+      } else {
+        const r = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`);
+        if (!r.ok) return;
+        const j = await r.json();
+        latest = (j.tag_name || '').replace(/^v/, '');
+        localStorage.setItem('xcp_update_cache', JSON.stringify({ tag: latest, fetchedAt: now }));
+      }
+      const cur = chrome.runtime.getManifest().version;
+      if (latest && cmpVer(latest, cur) > 0) {
+        showUpdateBanner(latest);
+      }
+    } catch (e) {}
+  }
+
+  function showUpdateBanner(latest) {
+    if (!panelEl) return;
+    if (panelEl.querySelector('.xcp-update-banner')) return;
+    const b = document.createElement('div');
+    b.className = 'xcp-update-banner';
+    b.innerHTML = `🎉 新版 v${escHtml(latest)} 可用 — <a href="https://github.com/${REPO}/releases/latest" target="_blank" rel="noopener">点击下载</a> <span class="xcp-update-close" title="忽略本次提醒">×</span>`;
+    panelEl.insertBefore(b, panelEl.firstChild);
+    b.querySelector('.xcp-update-close').addEventListener('click', (e) => {
+      e.stopPropagation();
+      b.remove();
+    });
+  }
+
   // ===== 初始化 =====
   function init() {
     const tryInit = () => {
@@ -1559,6 +1607,8 @@
         startHistoryRefresh();
         // 主动猜测钱包分组端点
         fetchWalletGroups();
+        // 检查 GitHub release 新版本
+        checkForUpdate();
         return true;
       }
       return false;

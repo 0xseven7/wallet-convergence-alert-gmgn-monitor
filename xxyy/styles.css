@@ -856,3 +856,40 @@
   font-weight: 600;
   letter-spacing: 0.3px;
 }
+
+/* 新版更新提示横幅 */
+.xcp-update-banner {
+  background: linear-gradient(90deg, #e2b340 0%, #ffd76a 50%, #e2b340 100%);
+  background-size: 200% 100%;
+  animation: xcp-update-shimmer 3s linear infinite;
+  color: #1a1a2e;
+  font-weight: 600;
+  font-size: 12px;
+  padding: 6px 12px;
+  text-align: center;
+  border-radius: 6px 6px 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.xcp-update-banner a {
+  color: #1a1a2e;
+  text-decoration: underline;
+  font-weight: 700;
+}
+.xcp-update-banner a:hover {
+  color: #000;
+}
+.xcp-update-close {
+  margin-left: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 700;
+  opacity: 0.6;
+}
+.xcp-update-close:hover { opacity: 1; }
+@keyframes xcp-update-shimmer {
+  0%   { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
