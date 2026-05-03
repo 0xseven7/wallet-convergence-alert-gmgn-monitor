@@ -733,3 +733,102 @@
   color: #777;
   margin-top: 3px;
 }
+
+/* ===== 4 档分级样式 ===== */
+/* L1 普通：维持现有金色样式（无额外） */
+.xcp-inline .xcp-alert-item.xcp-tier-1 {
+  /* 默认 */
+}
+
+/* L2 升温：暖橙边框 + token 名稍亮 */
+.xcp-inline .xcp-alert-item.xcp-tier-2 {
+  border-left: 2px solid #ffa502;
+  padding-left: 8px;
+  background: linear-gradient(90deg, rgba(255, 165, 2, 0.06) 0%, transparent 30%);
+}
+.xcp-inline .xcp-alert-item.xcp-tier-2 .xcp-alert-token-name {
+  color: #ffd76a;
+  font-size: 14px;
+}
+.xcp-inline .xcp-alert-item.xcp-tier-2 .xcp-alert-count {
+  color: #ffa502;
+  background: rgba(255, 165, 2, 0.15);
+}
+
+/* L3 火热：红橙渐变 + 脉冲 + 火焰 emoji 已在 JS 加到计数后 */
+@keyframes xcp-tier3-pulse {
+  0%, 100% { box-shadow: 0 0 0 rgba(255, 87, 34, 0); }
+  50%      { box-shadow: 0 0 12px rgba(255, 87, 34, 0.5); }
+}
+.xcp-inline .xcp-alert-item.xcp-tier-3 {
+  background: linear-gradient(120deg, rgba(255, 87, 34, 0.16) 0%, rgba(255, 165, 2, 0.10) 60%, transparent 100%);
+  border-left: 2px solid #ff5722;
+  padding-left: 8px;
+  border-radius: 4px;
+  margin: 3px 4px;
+  animation: xcp-tier3-pulse 2s ease-in-out infinite;
+}
+.xcp-inline .xcp-alert-item.xcp-tier-3 .xcp-alert-token-name {
+  color: #ff7043;
+  font-size: 15px;
+  font-weight: 800;
+  text-shadow: 0 0 8px rgba(255, 87, 34, 0.5);
+}
+.xcp-inline .xcp-alert-item.xcp-tier-3 .xcp-alert-count {
+  color: #ff5722;
+  background: rgba(255, 87, 34, 0.20);
+  font-weight: 700;
+}
+
+/* L4 暴动：彩虹背景 + 卡片放大 + 强脉冲 */
+@keyframes xcp-tier4-throb {
+  0%, 100% { transform: scale(1); box-shadow: 0 0 12px rgba(255, 71, 87, 0.5); }
+  50%      { transform: scale(1.03); box-shadow: 0 0 24px rgba(255, 71, 87, 0.9); }
+}
+.xcp-inline .xcp-alert-item.xcp-tier-4 {
+  background: linear-gradient(120deg,
+    rgba(255, 71, 87, 0.25) 0%,
+    rgba(255, 165, 2, 0.25) 25%,
+    rgba(255, 210, 0, 0.25) 50%,
+    rgba(255, 71, 87, 0.25) 75%,
+    rgba(255, 71, 87, 0.25) 100%
+  );
+  background-size: 300% 300%;
+  border: 2px solid #ff4757;
+  border-radius: 8px;
+  margin: 6px 4px;
+  padding: 10px 12px !important;
+  animation: xcp-rainbow-bg 3s ease infinite, xcp-tier4-throb 1.2s ease-in-out infinite;
+  position: relative;
+}
+.xcp-inline .xcp-alert-item.xcp-tier-4 .xcp-alert-token-name {
+  color: #fff;
+  font-size: 16px;
+  font-weight: 900;
+  text-shadow: 0 0 10px #ff4757, 0 0 20px #ffd200;
+  letter-spacing: 0.5px;
+}
+.xcp-inline .xcp-alert-item.xcp-tier-4 .xcp-alert-count {
+  color: #fff;
+  background: #ff4757;
+  font-weight: 900;
+  font-size: 12px;
+  padding: 2px 8px;
+  box-shadow: 0 0 8px rgba(255, 71, 87, 0.8);
+}
+
+/* L4 + 星标叠加：星标的 ::before ★ 保留，背景动画也叠加 */
+.xcp-inline .xcp-alert-item.xcp-tier-4.is-starred {
+  border: 2px solid transparent;
+  background: linear-gradient(120deg,
+    rgba(255, 71, 87, 0.30) 0%,
+    rgba(255, 165, 2, 0.30) 18%,
+    rgba(255, 210, 0, 0.30) 36%,
+    rgba(76, 209, 55, 0.30) 54%,
+    rgba(0, 210, 211, 0.30) 72%,
+    rgba(168, 85, 247, 0.30) 90%,
+    rgba(255, 71, 87, 0.30) 100%
+  );
+  background-size: 300% 300%;
+  animation: xcp-rainbow-bg 4s ease infinite, xcp-rainbow-border 3s linear infinite, xcp-tier4-throb 1.2s ease-in-out infinite;
+}

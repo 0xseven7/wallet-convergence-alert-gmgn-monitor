@@ -247,6 +247,7 @@
     }
 
     let triggered = false, updated = false;
+    let highestTierFired = 0;
 
     for (const [groupKey, group] of Object.entries(groups)) {
       const walletNames = Object.keys(group.wallets);
@@ -259,6 +260,8 @@
         timeMs: group.wallets[w].timeMs
       }));
 
+      const newTier = calcTier(walletNames.length);
+
       const existing = alerts.find(a => {
         if (group.mint && a.mint) return a.mint === group.mint;
         return a.token === group.token && !a.mint && !group.mint;
@@ -266,14 +269,17 @@
 
       if (existing) {
         if (existing.walletCount === walletNames.length) continue;
+        const prevTier = existing.tier || calcTier(existing.walletCount);
         existing.walletCount = walletNames.length;
         existing.wallets = walletDetails;
         existing.mcap = group.mcap || existing.mcap;
         existing.token = group.token || existing.token;
         existing.mint = group.mint || existing.mint;
         existing.chain = group.chain || existing.chain;
+        existing.tier = newTier;
         existing.isNew = true;
         updated = true;
+        if (newTier > prevTier && newTier > highestTierFired) highestTierFired = newTier;
         setTimeout(() => { existing.isNew = false; renderAlerts(); }, 1500);
       } else {
         const alert = {
@@ -283,19 +289,21 @@
           walletCount: walletNames.length,
           wallets: walletDetails,
           mcap: group.mcap,
+          tier: newTier,
           triggeredAt: Date.now(),
           isNew: true
         };
         alerts.unshift(alert);
         if (alerts.length > 30) alerts = alerts.slice(0, 30);
         triggered = true;
+        if (newTier > highestTierFired) highestTierFired = newTier;
         setTimeout(() => { alert.isNew = false; renderAlerts(); }, 1500);
       }
     }
 
     if (triggered || updated) {
       renderAlerts();
-      if (triggered) { playSound(); flashBadge(); }
+      if (triggered || highestTierFired > 0) { playSound(highestTierFired || 1); flashBadge(); }
     }
   }
 
@@ -311,20 +319,66 @@
   }
   document.addEventListener('click', () => { if (!_audioReady) ensureAudioCtx(); }, { once: true, capture: true });
 
-  function playSound() {
+  function calcTier(walletCount) {
+    return Math.min(4, Math.max(1, walletCount - config.minWallets + 1));
+  }
+
+  function playBeepSeq(ctx, seq, baseGain) {
+    for (const s of seq) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.type = 'sine';
+      osc.frequency.value = s.f;
+      gain.gain.value = baseGain;
+      osc.start(ctx.currentTime + s.t);
+      osc.stop(ctx.currentTime + s.t + s.d);
+    }
+  }
+
+  function playSound(tier) {
     if (!config.soundEnabled) return;
     const ctx = ensureAudioCtx();
     if (!ctx || ctx.state === 'suspended') return;
+    tier = tier || 1;
     try {
-      [0, 0.15].forEach(delay => {
+      if (tier === 1) {
+        playBeepSeq(ctx, [{ f: 880, t: 0, d: 0.1 }, { f: 880, t: 0.15, d: 0.1 }], 0.25);
+      } else if (tier === 2) {
+        playBeepSeq(ctx, [
+          { f: 1000, t: 0, d: 0.08 },
+          { f: 1000, t: 0.10, d: 0.08 },
+          { f: 1000, t: 0.20, d: 0.08 }
+        ], 0.27);
+      } else if (tier === 3) {
+        const seq = [];
+        for (let i = 0; i < 5; i++) {
+          seq.push({ f: 1100, t: i * 0.07, d: 0.06 });
+          seq.push({ f: 1320, t: i * 0.07, d: 0.06 });
+        }
+        playBeepSeq(ctx, seq, 0.20);
+      } else {
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
         osc.connect(gain); gain.connect(ctx.destination);
-        osc.type = 'sine'; osc.frequency.value = 880;
-        gain.gain.value = 0.25;
-        osc.start(ctx.currentTime + delay);
-        osc.stop(ctx.currentTime + delay + 0.1);
-      });
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(880, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(1760, ctx.currentTime + 0.4);
+        gain.gain.setValueAtTime(0.30, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.4);
+        const osc2 = ctx.createOscillator();
+        const gain2 = ctx.createGain();
+        osc2.connect(gain2); gain2.connect(ctx.destination);
+        osc2.type = 'square';
+        osc2.frequency.setValueAtTime(440, ctx.currentTime);
+        osc2.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.4);
+        gain2.gain.setValueAtTime(0.10, ctx.currentTime);
+        gain2.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+        osc2.start(ctx.currentTime);
+        osc2.stop(ctx.currentTime + 0.4);
+      }
     } catch (e) {}
   }
 
@@ -423,11 +477,13 @@
     } else {
       html = alerts.map(a => {
         const hasStar = isAlertStarred(a);
+        const tier = a.tier || calcTier(a.walletCount);
+        const tierIcon = tier >= 4 ? ' 🚨' : tier >= 3 ? ' 🔥' : tier >= 2 ? ' ⚡' : '';
         return `
-        <div class="gcp-alert-item ${a.isNew ? 'is-new' : ''} ${hasStar ? 'is-starred' : ''}" data-token="${escHtml(a.token)}">
+        <div class="gcp-alert-item gcp-tier-${tier} ${a.isNew ? 'is-new' : ''} ${hasStar ? 'is-starred' : ''}" data-token="${escHtml(a.token)}">
           <div class="gcp-alert-token">
             <span class="gcp-alert-token-name gcp-token-link" data-mint="${escHtml(a.mint || '')}" data-chain="${escHtml(a.chain || '')}" data-token="${escHtml(a.token)}" title="跳转到 ${escHtml(a.token)}">${escHtml(a.token)} ↗</span>
-            <span class="gcp-alert-count">${a.walletCount} 个钱包</span>
+            <span class="gcp-alert-count">${a.walletCount} 个钱包${tierIcon}</span>
           </div>
           <div class="gcp-alert-time">${a.mcap ? '市值 ' + escHtml(a.mcap) : ''}${a.chain ? ' · ' + escHtml(a.chain.toUpperCase()) : ''}</div>
           <div class="gcp-alert-wallets">

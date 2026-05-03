@@ -540,6 +540,7 @@
     const windowMs = config.timeWindowMin * 60 * 1000;
 
     let totalTriggered = false;
+    let highestTierFired = 0;
 
     // 主面板（KOL 这个 list 名字保留，但内容是全聚合：KOL + 我的 一起算）
     // 我的面板：只算 我的 列
@@ -596,8 +597,11 @@
           if (group.mint && a.mint) return a.mint === group.mint;
           return a.token === group.token && !a.mint && !group.mint;
         });
+        const newTier = calcTier(walletNames.length);
+
         if (existing) {
           if (existing.walletCount === walletNames.length) continue;
+          const prevTier = existing.tier || calcTier(existing.walletCount);
           existing.walletCount = walletNames.length;
           existing.wallets = walletDetails;
           existing.mcap = group.mcap || existing.mcap;
@@ -605,8 +609,13 @@
           existing.token = group.token;
           existing.mint = group.mint || existing.mint;
           existing.chain = group.chain || existing.chain;
+          existing.tier = newTier;
           existing.isNew = true;
           existing.updatedAt = Date.now();
+          // 跨档才发声
+          if (newTier > prevTier && newTier > highestTierFired) {
+            highestTierFired = newTier;
+          }
           setTimeout(() => { existing.isNew = false; renderAlerts(); }, 1500);
         } else {
           const alert = {
@@ -618,6 +627,7 @@
             wallets: walletDetails,
             mcap: group.mcap,
             timeRange,
+            tier: newTier,
             triggeredAt: Date.now(),
             isNew: true
           };
@@ -627,13 +637,17 @@
             else alertsMy = list.slice(0, 20);
           }
           totalTriggered = true;
+          if (newTier > highestTierFired) highestTierFired = newTier;
           setTimeout(() => { alert.isNew = false; renderAlerts(); }, 1500);
         }
       }
     }
 
     renderAlerts();
-    if (totalTriggered) { playSound(); flashBadge(); }
+    if (totalTriggered || highestTierFired > 0) {
+      playSound(highestTierFired || 1);
+      flashBadge();
+    }
   }
 
   let _audioCtx = null;
@@ -651,21 +665,73 @@
     if (!_audioReady) ensureAudioCtx();
   }, { once: true, capture: true });
 
-  function playSound() {
+  // 档位分级：tier = min(4, walletCount - minWallets + 1)
+  function calcTier(walletCount) {
+    return Math.min(4, Math.max(1, walletCount - config.minWallets + 1));
+  }
+
+  function playSound(tier) {
     if (!config.soundEnabled) return;
     const ctx = ensureAudioCtx();
     if (!ctx || ctx.state === 'suspended') return;
+    tier = tier || 1;
     try {
-      [0, 0.15].forEach(delay => {
+      if (tier === 1) {
+        // 普通：2 声 880Hz
+        playBeepSeq(ctx, [{ f: 880, t: 0, d: 0.1 }, { f: 880, t: 0.15, d: 0.1 }], 0.25);
+      } else if (tier === 2) {
+        // 升温：3 声 1000Hz，间隔 0.10s
+        playBeepSeq(ctx, [
+          { f: 1000, t: 0, d: 0.08 },
+          { f: 1000, t: 0.10, d: 0.08 },
+          { f: 1000, t: 0.20, d: 0.08 }
+        ], 0.27);
+      } else if (tier === 3) {
+        // 火热：5 声 1100Hz + 微和弦（叠 1320Hz）
+        const seq = [];
+        for (let i = 0; i < 5; i++) {
+          seq.push({ f: 1100, t: i * 0.07, d: 0.06 });
+          seq.push({ f: 1320, t: i * 0.07, d: 0.06 });   // 叠和弦
+        }
+        playBeepSeq(ctx, seq, 0.20);
+      } else {
+        // 暴动：扫频 880→1760Hz，0.4s
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
         osc.connect(gain); gain.connect(ctx.destination);
-        osc.type = 'sine'; osc.frequency.value = 880;
-        gain.gain.value = 0.25;
-        osc.start(ctx.currentTime + delay);
-        osc.stop(ctx.currentTime + delay + 0.1);
-      });
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(880, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(1760, ctx.currentTime + 0.4);
+        gain.gain.setValueAtTime(0.30, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.4);
+        // 叠一个反向扫频造紧张感
+        const osc2 = ctx.createOscillator();
+        const gain2 = ctx.createGain();
+        osc2.connect(gain2); gain2.connect(ctx.destination);
+        osc2.type = 'square';
+        osc2.frequency.setValueAtTime(440, ctx.currentTime);
+        osc2.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.4);
+        gain2.gain.setValueAtTime(0.10, ctx.currentTime);
+        gain2.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+        osc2.start(ctx.currentTime);
+        osc2.stop(ctx.currentTime + 0.4);
+      }
     } catch (e) {}
+  }
+
+  function playBeepSeq(ctx, seq, baseGain) {
+    for (const s of seq) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.type = 'sine';
+      osc.frequency.value = s.f;
+      gain.gain.value = baseGain;
+      osc.start(ctx.currentTime + s.t);
+      osc.stop(ctx.currentTime + s.t + s.d);
+    }
   }
 
   function flashBadge() {
@@ -833,6 +899,8 @@
 
   function renderAlertItem(a, isMy) {
     const hasStar = isAlertStarred(a);
+    const tier = a.tier || calcTier(a.walletCount);
+    const tierIcon = tier >= 4 ? ' 🚨' : tier >= 3 ? ' 🔥' : tier >= 2 ? ' ⚡' : '';
     // 主面板显示 KOL/我的 来源混合统计
     let mixSummary = '';
     if (!isMy) {
@@ -844,10 +912,10 @@
       if (parts.length > 1) mixSummary = ' · ' + parts.join(' + ');
     }
     return `
-      <div class="xcp-alert-item ${a.isNew ? 'is-new' : ''} ${isMy ? 'is-my-source' : ''} ${hasStar ? 'is-starred' : ''}" data-token="${escHtml(a.token)}">
+      <div class="xcp-alert-item xcp-tier-${tier} ${a.isNew ? 'is-new' : ''} ${isMy ? 'is-my-source' : ''} ${hasStar ? 'is-starred' : ''}" data-token="${escHtml(a.token)}">
         <div class="xcp-alert-token">
           <span class="xcp-alert-token-name xcp-token-link" data-token="${escHtml(a.token)}" data-mint="${escHtml(a.mint || '')}" data-chain="${escHtml(a.chain || '')}" title="跳转到 ${escHtml(a.token)} 交易页">${escHtml(a.token)} ↗</span>
-          <span class="xcp-alert-count">${a.walletCount} 个钱包</span>
+          <span class="xcp-alert-count">${a.walletCount} 个钱包${tierIcon}</span>
         </div>
         <div class="xcp-alert-time">${escHtml(a.timeRange)}${a.mcap ? ' · 市值 ' + escHtml(a.mcap) : ''}${mixSummary}</div>
         <div class="xcp-alert-wallets">

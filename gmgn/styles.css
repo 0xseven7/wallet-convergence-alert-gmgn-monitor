@@ -335,3 +335,97 @@
   animation: gcp-rainbow-bg 5s ease infinite;
   border-left: 2px solid #ffd700 !important;
 }
+
+/* ===== 4 档分级样式（与 xxyy 保持视觉一致）===== */
+.gcp-alert-item.gcp-tier-1 {
+  /* 默认 */
+}
+
+.gcp-alert-item.gcp-tier-2 {
+  border-left: 2px solid #ffa502;
+  padding-left: 8px;
+  background: linear-gradient(90deg, rgba(255, 165, 2, 0.06) 0%, transparent 30%);
+}
+.gcp-alert-item.gcp-tier-2 .gcp-alert-token-name {
+  color: #ffd76a;
+  font-size: 14px;
+}
+.gcp-alert-item.gcp-tier-2 .gcp-alert-count {
+  color: #ffa502;
+  background: rgba(255, 165, 2, 0.15);
+}
+
+@keyframes gcp-tier3-pulse {
+  0%, 100% { box-shadow: 0 0 0 rgba(255, 87, 34, 0); }
+  50%      { box-shadow: 0 0 12px rgba(255, 87, 34, 0.5); }
+}
+.gcp-alert-item.gcp-tier-3 {
+  background: linear-gradient(120deg, rgba(255, 87, 34, 0.16) 0%, rgba(255, 165, 2, 0.10) 60%, transparent 100%);
+  border-left: 2px solid #ff5722;
+  padding-left: 8px;
+  border-radius: 4px;
+  margin: 3px 4px;
+  animation: gcp-tier3-pulse 2s ease-in-out infinite;
+}
+.gcp-alert-item.gcp-tier-3 .gcp-alert-token-name {
+  color: #ff7043;
+  font-size: 15px;
+  font-weight: 800;
+  text-shadow: 0 0 8px rgba(255, 87, 34, 0.5);
+}
+.gcp-alert-item.gcp-tier-3 .gcp-alert-count {
+  color: #ff5722;
+  background: rgba(255, 87, 34, 0.20);
+  font-weight: 700;
+}
+
+@keyframes gcp-tier4-throb {
+  0%, 100% { transform: scale(1); box-shadow: 0 0 12px rgba(255, 71, 87, 0.5); }
+  50%      { transform: scale(1.03); box-shadow: 0 0 24px rgba(255, 71, 87, 0.9); }
+}
+.gcp-alert-item.gcp-tier-4 {
+  background: linear-gradient(120deg,
+    rgba(255, 71, 87, 0.25) 0%,
+    rgba(255, 165, 2, 0.25) 25%,
+    rgba(255, 210, 0, 0.25) 50%,
+    rgba(255, 71, 87, 0.25) 75%,
+    rgba(255, 71, 87, 0.25) 100%
+  );
+  background-size: 300% 300%;
+  border: 2px solid #ff4757;
+  border-radius: 8px;
+  margin: 6px 4px;
+  padding: 10px 12px !important;
+  animation: gcp-rainbow-bg 3s ease infinite, gcp-tier4-throb 1.2s ease-in-out infinite;
+  position: relative;
+}
+.gcp-alert-item.gcp-tier-4 .gcp-alert-token-name {
+  color: #fff;
+  font-size: 16px;
+  font-weight: 900;
+  text-shadow: 0 0 10px #ff4757, 0 0 20px #ffd200;
+  letter-spacing: 0.5px;
+}
+.gcp-alert-item.gcp-tier-4 .gcp-alert-count {
+  color: #fff;
+  background: #ff4757;
+  font-weight: 900;
+  font-size: 12px;
+  padding: 2px 8px;
+  box-shadow: 0 0 8px rgba(255, 71, 87, 0.8);
+}
+
+.gcp-alert-item.gcp-tier-4.is-starred {
+  border: 2px solid transparent;
+  background: linear-gradient(120deg,
+    rgba(255, 71, 87, 0.30) 0%,
+    rgba(255, 165, 2, 0.30) 18%,
+    rgba(255, 210, 0, 0.30) 36%,
+    rgba(76, 209, 55, 0.30) 54%,
+    rgba(0, 210, 211, 0.30) 72%,
+    rgba(168, 85, 247, 0.30) 90%,
+    rgba(255, 71, 87, 0.30) 100%
+  );
+  background-size: 300% 300%;
+  animation: gcp-rainbow-bg 4s ease infinite, gcp-rainbow-border 3s linear infinite, gcp-tier4-throb 1.2s ease-in-out infinite;
+}
