@@ -1,90 +1,103 @@
-# 钱包聚合买入提醒（XXYY 增强插件）
+# 钱包聚合买入提醒
 
-适配 [pro.xxyy.io](https://pro.xxyy.io) 的 Chrome 浏览器扩展，给钱包监控面板加几个实用功能。
+一个 Chrome 扩展同时支持 **xxyy.io** 和 **gmgn.ai** 两个平台的钱包追踪聚合检测。
 
 > ⚠️ 非官方第三方工具。仅本地处理数据，不上传任何信息。仅供个人学习使用，使用风险自担。
 
 ## 功能
 
-| 功能 | 说明 |
-|---|---|
-| 🔥 聚合买入提醒 | N 个钱包在 X 分钟内买入同一代币 → 弹出提醒 + 声音 |
-| ★ 我的聚合 | 单独检测「我的」列里钱包之间的聚合行为 |
-| ★ 特别关注 | 给任意 KOL 加星标，他出现时整条提醒炫彩高亮 |
-| 🪞 实时镜像 | 新版页面：克隆出第二张监控卡，独立显示「我的」无需切 tab（旧版页面跳过） |
-| 🌐 双布局支持 | 自动识别新版 dock / 旧版双列 plate 两种页面 |
-| 🔗 SPA 跳转 | 点提醒里的代币名直接页面内跳转，不刷新整页 |
-| 🎯 按合约去重 | 同名不同合约的代币各自独立聚合 |
-| 🏷️ 分组徽章 | 自动捕获你的钱包分组，显示在每个钱包名后 |
+| 功能 | xxyy.io | gmgn.ai |
+|---|---|---|
+| 🔥 N 个钱包 X 分钟内买同币聚合提醒 | ✅ | ✅ |
+| ★ 我的列单独聚合（双面板） | ✅ | ❌ (gmgn 没有 KOL/我的 区分) |
+| ⭐ 特别关注炫彩高亮 | ✅ | ✅ |
+| 🪞 实时镜像第二张监控卡（新版页面） | ✅ | ❌ |
+| 🎯 按合约去重（同名不同链不会误聚） | ✅ | ✅ |
+| 🔗 SPA 跳转（不刷新整页） | ✅ | ✅ |
+| 🏷️ 钱包分组徽章 | ✅ | ❌ |
+| 🌐 多布局支持（新版/旧版） | ✅ | — |
 
 ## 安装
 
-### 方法 1：从 Release 下载
+1. 去 [Releases 页](../../releases) 下载最新的 `wallet-convergence-alert-v*.zip` 解压
+2. Chrome 地址栏 `chrome://extensions/` → 开启「**开发者模式**」
+3. 点「**加载已解压的扩展程序**」选解压后的目录
+4. 打开任意 [pro.xxyy.io](https://pro.xxyy.io) 或 [gmgn.ai](https://gmgn.ai) 页面
 
-1. 去 [Releases 页](../../releases) 下载最新的 `xxyy-convergence-alert-v*.zip`
-2. 解压到任意目录
-3. Chrome 地址栏输入 `chrome://extensions/`
-4. 右上角开「**开发者模式**」
-5. 点「**加载已解压的扩展程序**」选解压后的目录
-6. 打开 https://pro.xxyy.io 任意代币页面，钱包监控卡片里就会出现新面板
-
-### 方法 2：克隆仓库
-
-```bash
-git clone <仓库地址>
-# 然后按方法 1 第 3 步开始
-```
+每个网站的逻辑独立，不会互相影响。
 
 ## 使用
 
-打开 [pro.xxyy.io](https://pro.xxyy.io) 任意代币页面：
+打开任一支持的网站后：
 
-- 钱包监控卡片顶部会内嵌一个金色「🔥 聚合买入提醒」面板
-- 阈值可调：**≥ N 钱包** + **内 X 分钟**（两个面板自动同步）
-- 每条交易行的钱包名前会有 ☆ 按钮，点击加星标
-- 加星的钱包出现在任何提醒里，整条都会**炫彩动画高亮** + 右上角金色 ★
+- 钱包监控/追踪面板顶部出现金色「🔥 聚合买入提醒」面板
+- 默认阈值：**≥ 2 钱包** + **内 5 分钟**（gmgn 默认 30 分钟，因为列表跨度更大）
+- 点钱包名前的 ☆ 加星标 → 该钱包出现在任何提醒里整条会**炫彩动画高亮**
 - 点提醒里的代币名 → 页面内跳转到该币交易页（不刷新）
+
+## 项目结构
+
+```
+wallet-convergence-alert/
+├── manifest.json            # 共用清单，按域名分发
+├── icons/                   # 共用图标
+├── xxyy/                    # xxyy.io 专用
+│   ├── content.js           # 注入逻辑（聚合检测、面板、克隆卡）
+│   ├── network-hook.js      # MAIN world 拦截 socket.io 钱包交易
+│   └── styles.css
+└── gmgn/                    # gmgn.ai 专用
+    ├── content.js           # 纯 DOM 扫描（gmgn 走 Web Worker 抓不到网络）
+    └── styles.css
+```
+
+## 工作原理差异
+
+**xxyy.io**：
+- MAIN world hook 拦截 `web-push.xxyy.io/socket.io/` 长轮询里的 `FOCUS_WALLET_TRADE` 帧
+- 启动时主动 `GET /api/trade/wallet/focusWallet/history` 拉历史
+- 实时性 1-2 秒
+
+**gmgn.ai**：
+- 数据走 Web Worker 内的 fetch（页面 hook 抓不到）→ 纯 DOM 扫描
+- `MutationObserver` + 5 秒兜底定时
+- 时间字段是相对的（"2h"/"5m"），转毫秒做窗口判断有 ±时间不精确
 
 ## 调试
 
-DevTools Console 输入：
+DevTools Console:
 
+xxyy:
 ```js
-__xcp.cloneData       // 当前缓存的两栏交易（kol / my）
-__xcp.alertsKol       // 主面板聚合提醒
-__xcp.alertsMy        // 我的聚合提醒
-__xcp.tokenMeta       // 已知代币的合约/链/logo 映射
-__xcp.starred         // 特别关注的钱包名集合
-__xcp.walletGroups    // 钱包→分组名映射
-__xcp.refetchGroups() // 重试拉取钱包分组
-__xcp.setGroup('钱包名', '分组名') // 手动塞分组映射
-__xcp.rerender()      // 强制重渲所有面板
+__xcp.alertsKol       // 主面板聚合（KOL+我的 全聚合）
+__xcp.alertsMy        // 我的聚合
+__xcp.cloneData       // 两栏交易缓存
+__xcp.starred         // 特别关注集
+__xcp.tokenMeta       // 代币元数据
+__xcp.walletGroups    // 钱包→分组映射
+__xcp.rerender()      // 强制重渲
 ```
 
-## 工作原理
-
-1. `network-hook.js` 在 MAIN world 拦截 `XMLHttpRequest` / `fetch` / `WebSocket`，专门解析 `web-push.xxyy.io/socket.io/` 长轮询里的 `FOCUS_WALLET_TRADE` 事件
-2. `content.js` 在隔离世界接收消息，建立去重池 + 滑动时间窗口聚合检测
-3. 启动时主动 `GET /api/trade/wallet/focusWallet/history?channel=1|2&allChain=1` 拉历史，免去用户手动切换 tab
-4. 用 `MutationObserver` 把 ☆ 按钮持续注入到 vue-recycle-scroller 复用的节点
+gmgn:
+```js
+__gcp.alerts          // 所有聚合提醒
+__gcp.buyRecords      // 池子里的所有买入
+__gcp.tokenMeta       // 已知合约/symbol
+__gcp.starred         // 特别关注
+__gcp.rescan()        // 强制重扫
+```
 
 ## 打包发布
 
 ```bash
-# Bash (Git Bash / WSL)
-bash release.sh
-
-# Windows CMD
-release.bat
+bash release.sh                                # 生成 dist/wallet-convergence-alert-v*.zip
+gh release create vX.Y.Z dist/*.zip            # 上传到 GitHub Release
 ```
-
-会在 `dist/` 生成 `xxyy-convergence-alert-v*.zip`。
 
 ## 隐私
 
 - 所有数据**仅本地浏览器处理**，不发送到任何外部服务器
-- `localStorage` 仅保存：阈值配置、声音开关、特别关注名单
-- 拉取的接口都是 xxyy.io 自己的，复用浏览器现有 cookie
+- `localStorage` 仅保存：阈值、声音开关、特别关注名单
+- xxyy 的 fetch 调用复用浏览器现有 cookie，gmgn 完全不发请求
 - 没有任何分析 / 埋点
 
 ## 协议

@@ -1,20 +1,26 @@
 {
   "manifest_version": 3,
-  "name": "XXYY 聚合买入提醒",
-  "version": "1.1.0",
-  "description": "监控 xxyy.io 钱包监控面板，当 N 个以上钱包在时间窗口内买入同一代币时提醒",
+  "name": "钱包聚合买入提醒",
+  "version": "2.0.0",
+  "description": "监控 xxyy.io / gmgn.ai 钱包追踪面板，N 个以上钱包在时间窗口内买同一代币时弹炫彩提醒。支持特别关注、SPA 跳转、按合约去重。",
   "permissions": ["storage"],
   "content_scripts": [
     {
       "matches": ["*://pro.xxyy.io/*", "*://www.xxyy.io/*", "*://xxyy.io/*"],
-      "js": ["network-hook.js"],
+      "js": ["xxyy/network-hook.js"],
       "run_at": "document_start",
       "world": "MAIN"
     },
     {
       "matches": ["*://pro.xxyy.io/*", "*://www.xxyy.io/*", "*://xxyy.io/*"],
-      "js": ["content.js"],
-      "css": ["styles.css"],
+      "js": ["xxyy/content.js"],
+      "css": ["xxyy/styles.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://gmgn.ai/*", "*://www.gmgn.ai/*"],
+      "js": ["gmgn/content.js"],
+      "css": ["gmgn/styles.css"],
       "run_at": "document_idle"
     }
   ],

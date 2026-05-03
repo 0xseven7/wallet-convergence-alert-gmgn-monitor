@@ -1,0 +1,631 @@
+(function () {
+  'use strict';
+  if (window.__gcpLoaded) return;
+  window.__gcpLoaded = true;
+
+  // ===== 配置 =====
+  const DEFAULT_CONFIG = {
+    minWallets: 2,
+    timeWindowMin: 30,   // gmgn 列表时间跨度比 xxyy 大，默认 30 分钟
+    soundEnabled: true,
+    collapsed: false
+  };
+
+  let config = { ...DEFAULT_CONFIG };
+  let alerts = [];
+  let buyRecords = [];
+  let seenKeys = new Set();
+  let panelEl = null;
+  let observer = null;
+  let scanInterval = null;
+  let mountCheckInterval = null;
+  let injectStarsScheduled = false;
+
+  // 特别关注的钱包名
+  let starred = new Set();
+
+  // 代币元数据：mint → { chain, symbol, logo }
+  const tokenMeta = new Map();
+
+  try {
+    const saved = localStorage.getItem('gcp_config');
+    if (saved) Object.assign(config, JSON.parse(saved));
+    const savedStars = localStorage.getItem('gcp_starred');
+    if (savedStars) starred = new Set(JSON.parse(savedStars));
+  } catch (e) {}
+
+  function saveConfig() {
+    try { localStorage.setItem('gcp_config', JSON.stringify(config)); } catch (e) {}
+  }
+  function saveStarred() {
+    try { localStorage.setItem('gcp_starred', JSON.stringify(Array.from(starred))); } catch (e) {}
+  }
+
+  function toggleStar(walletName) {
+    if (!walletName) return;
+    if (starred.has(walletName)) starred.delete(walletName);
+    else starred.add(walletName);
+    saveStarred();
+    lastRenderState = '';
+    renderAlerts();
+    injectOrigStars();
+  }
+
+  function isAlertStarred(a) {
+    return a.wallets && a.wallets.some(w => starred.has(w.name));
+  }
+
+  // ===== DOM 定位：找到追踪 tab 的虚拟列表 =====
+  // gmgn 的钱包追踪面板：内含 .pi-tabs 顶部 tabs + .virtual-list-container 列表
+  function findTrackingPanel() {
+    // 找包含 "钱包 N" tab 的容器
+    const tabBtns = document.querySelectorAll('.pi-tabs-tab-btn');
+    for (const t of tabBtns) {
+      if (/^钱包\s*\d+$/.test(t.textContent.trim())) {
+        return t.closest('.flex.flex-col.size-full') || t.closest('.flex-col.gap-12px') || t.closest('.pi-tabs')?.parentElement;
+      }
+    }
+    return null;
+  }
+
+  function findVirtualList() {
+    const panel = findTrackingPanel();
+    if (!panel) return null;
+    return panel.querySelector('.virtual-list-container');
+  }
+
+  // 检查当前是否在 追踪 tab
+  function isOnTrackingTab() {
+    const panel = findTrackingPanel();
+    if (!panel) return false;
+    const tabs = panel.querySelectorAll('.pi-tabs-tab-btn');
+    for (const t of tabs) {
+      if (t.classList.contains('pi-tabs-tab-btn-active') || t.parentElement?.classList.contains('pi-tabs-tab-active')) {
+        return /追踪/.test(t.textContent.trim());
+      }
+    }
+    return true;  // 找不到激活态就假定在追踪
+  }
+
+  // ===== 解析单条 trade =====
+  function parseTradeRow(row) {
+    if (!row || !row.querySelector) return null;
+    const a = row.querySelector('a');
+    if (!a) return null;
+
+    const href = a.getAttribute('href') || '';
+    const m = href.match(/\/(sol|eth|bsc|base|tron|blast)\/token\/([1-9A-HJ-NP-Za-km-z]{32,}|0x[a-fA-F0-9]{40})/i);
+    const chain = m ? m[1].toLowerCase() : '';
+    const mint = m ? m[2] : '';
+
+    // 钱包名：第一个 .text-yellow-100 的 AutoTruncateText
+    const walletEl = a.querySelector('.text-yellow-100[data-sentry-component="AutoTruncateText"]')
+      || a.querySelector('[data-sentry-component="AutoTruncateText"]');
+    const wallet = walletEl ? walletEl.textContent.trim() : '';
+    if (!wallet) return null;
+
+    // 第一行：动作 + 涨跌 + 时间
+    const line1 = a.children[0];
+    const line2 = a.children[1];
+    if (!line1 || !line2) return null;
+
+    // 动作：含 清仓/加仓/建仓/减仓/买入/卖出
+    let action = '';
+    let isBuy = false;
+    line1.querySelectorAll('.whitespace-nowrap').forEach(el => {
+      const t = el.textContent.trim();
+      if (!action && /(清仓|加仓|建仓|减仓|买入|卖出)/.test(t)) action = t;
+    });
+    if (/(加仓|建仓|买入)/.test(action)) isBuy = true;
+
+    // 时间："2h" / "5m" / "3d"
+    const timeEls = line1.querySelectorAll('.text-text-300.inline');
+    let timeAgo = '';
+    timeEls.forEach(el => {
+      const t = el.textContent.trim();
+      if (/^\d+[smhd]$/.test(t.replace(/\s/g, ''))) timeAgo = t.replace(/\s/g, '');
+    });
+    if (!timeAgo) {
+      // 兜底：line1 里找 \d+[smhd] 模式
+      const txt = line1.textContent.replace(/\s+/g, ' ');
+      const tm = txt.match(/(\d+)\s*([smhd])\b/);
+      if (tm) timeAgo = tm[1] + tm[2];
+    }
+
+    // line2: <amount><tokenSymbol><tradeAge> MC:$<mcap>
+    const line2Text = line2.textContent.replace(/\s+/g, ' ').trim();
+    // 拆 MC:
+    const mcMatch = line2Text.match(/MC[:\s]*[\$￥]?([\d.]+[KMBkmb]?)/);
+    const mcap = mcMatch ? '$' + mcMatch[1] : '';
+    const headPart = mcMatch ? line2Text.substring(0, line2Text.indexOf(mcMatch[0])).trim() : line2Text;
+    // headPart: "1.32FSP2h" → amount + token + age
+    // 用正则拆：开头数字（含小数）→ 后面的字母+符号 → 末尾的时间
+    let amount = '', tokenSymbol = '';
+    const hp = headPart.match(/^([\d.,]+)([\$一-龥A-Za-z_][\$一-龥A-Za-z0-9_]*)(?:\s*\d+[smhd])?$/);
+    if (hp) {
+      amount = hp[1];
+      tokenSymbol = hp[2];
+    } else {
+      // 兜底：amount = 开头数字，token = 剩余
+      const am = headPart.match(/^([\d.,]+)/);
+      if (am) {
+        amount = am[1];
+        tokenSymbol = headPart.substring(am[1].length).replace(/\d+[smhd]\s*$/, '').trim();
+      }
+    }
+
+    // 把时间 "2h" 转成毫秒（相对 now）
+    let timeMs = Date.now();
+    const tm = timeAgo.match(/^(\d+)([smhd])$/);
+    if (tm) {
+      const n = parseInt(tm[1]);
+      const unit = tm[2];
+      const ms = n * (unit === 's' ? 1000 : unit === 'm' ? 60000 : unit === 'h' ? 3600000 : 86400000);
+      timeMs = Date.now() - ms;
+    }
+
+    // 累积 token meta
+    if (mint) {
+      const existing = tokenMeta.get(mint) || {};
+      tokenMeta.set(mint, {
+        chain: chain || existing.chain,
+        symbol: tokenSymbol || existing.symbol,
+        logo: existing.logo
+      });
+    }
+
+    return {
+      wallet,
+      action,
+      isBuy,
+      token: tokenSymbol,
+      mint,
+      chain,
+      amount,
+      mcap,
+      timeAgo,
+      timeMs,
+      href
+    };
+  }
+
+  // ===== 扫描列表 =====
+  function scanTrades() {
+    const list = findVirtualList();
+    if (!list) return;
+    if (!isOnTrackingTab()) return;
+    const rowsRoot = list.children[0]?.children[0];
+    if (!rowsRoot) return;
+    const rows = rowsRoot.children;
+
+    let added = 0;
+    for (const row of rows) {
+      const trade = parseTradeRow(row);
+      if (!trade) continue;
+      if (!trade.isBuy) continue;
+      // 用 mint+wallet+timeAgo 组合做去重 key（gmgn 没有 signature）
+      const key = `${trade.mint || trade.token}|${trade.wallet}|${trade.timeAgo}`;
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      buyRecords.push(trade);
+      added++;
+    }
+
+    if (added > 0) {
+      cleanOldRecords();
+      checkConvergence();
+    }
+
+    if (seenKeys.size > 5000) {
+      seenKeys = new Set(Array.from(seenKeys).slice(-2500));
+    }
+
+    // 持续注入星标
+    scheduleInjectStars();
+  }
+
+  function cleanOldRecords() {
+    const now = Date.now();
+    const cutoff = config.timeWindowMin * 60 * 1000;
+    buyRecords = buyRecords.filter(r => r.timeMs && (now - r.timeMs) < cutoff);
+  }
+
+  // ===== 聚合检测 =====
+  function checkConvergence() {
+    const now = Date.now();
+    const windowMs = config.timeWindowMin * 60 * 1000;
+    const groups = {};
+
+    for (const r of buyRecords) {
+      if (!r.timeMs || (now - r.timeMs) > windowMs) continue;
+      const key = r.mint || ('NAME:' + r.token);
+      if (!groups[key]) groups[key] = { wallets: {}, mcap: r.mcap, mint: r.mint, chain: r.chain, token: r.token };
+      const g = groups[key];
+      if (!g.wallets[r.wallet]) g.wallets[r.wallet] = { amount: r.amount, timeAgo: r.timeAgo, timeMs: r.timeMs };
+      if (r.mcap) g.mcap = r.mcap;
+      if (r.token) g.token = r.token;
+    }
+
+    let triggered = false, updated = false;
+
+    for (const [groupKey, group] of Object.entries(groups)) {
+      const walletNames = Object.keys(group.wallets);
+      if (walletNames.length < config.minWallets) continue;
+
+      const walletDetails = walletNames.map(w => ({
+        name: w,
+        amount: group.wallets[w].amount,
+        timeAgo: group.wallets[w].timeAgo,
+        timeMs: group.wallets[w].timeMs
+      }));
+
+      const existing = alerts.find(a => {
+        if (group.mint && a.mint) return a.mint === group.mint;
+        return a.token === group.token && !a.mint && !group.mint;
+      });
+
+      if (existing) {
+        if (existing.walletCount === walletNames.length) continue;
+        existing.walletCount = walletNames.length;
+        existing.wallets = walletDetails;
+        existing.mcap = group.mcap || existing.mcap;
+        existing.token = group.token || existing.token;
+        existing.mint = group.mint || existing.mint;
+        existing.chain = group.chain || existing.chain;
+        existing.isNew = true;
+        updated = true;
+        setTimeout(() => { existing.isNew = false; renderAlerts(); }, 1500);
+      } else {
+        const alert = {
+          token: group.token,
+          mint: group.mint,
+          chain: group.chain,
+          walletCount: walletNames.length,
+          wallets: walletDetails,
+          mcap: group.mcap,
+          triggeredAt: Date.now(),
+          isNew: true
+        };
+        alerts.unshift(alert);
+        if (alerts.length > 30) alerts = alerts.slice(0, 30);
+        triggered = true;
+        setTimeout(() => { alert.isNew = false; renderAlerts(); }, 1500);
+      }
+    }
+
+    if (triggered || updated) {
+      renderAlerts();
+      if (triggered) { playSound(); flashBadge(); }
+    }
+  }
+
+  // ===== 声音 =====
+  let _audioCtx = null, _audioReady = false;
+  function ensureAudioCtx() {
+    if (_audioReady) return _audioCtx;
+    try {
+      _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      _audioReady = true;
+      return _audioCtx;
+    } catch (e) { return null; }
+  }
+  document.addEventListener('click', () => { if (!_audioReady) ensureAudioCtx(); }, { once: true, capture: true });
+
+  function playSound() {
+    if (!config.soundEnabled) return;
+    const ctx = ensureAudioCtx();
+    if (!ctx || ctx.state === 'suspended') return;
+    try {
+      [0, 0.15].forEach(delay => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.type = 'sine'; osc.frequency.value = 880;
+        gain.gain.value = 0.25;
+        osc.start(ctx.currentTime + delay);
+        osc.stop(ctx.currentTime + delay + 0.1);
+      });
+    } catch (e) {}
+  }
+
+  function flashBadge() {
+    const badge = panelEl?.querySelector('.gcp-badge');
+    if (!badge) return;
+    badge.classList.add('is-active');
+    setTimeout(() => badge.classList.remove('is-active'), 3000);
+  }
+
+  // ===== 面板 =====
+  function createPanel() {
+    const el = document.createElement('div');
+    el.className = 'gcp-inline' + (config.collapsed ? ' collapsed' : '');
+    el.id = 'gcp-inline-panel';
+    el.innerHTML = `
+      <div class="gcp-header">
+        <div class="gcp-header-left">
+          <span class="gcp-toggle-arrow">▼</span>
+          <span>🔥 聚合买入提醒</span>
+          <span class="gcp-badge">0</span>
+        </div>
+        <div class="gcp-header-right">
+          <button class="gcp-icon-btn gcp-sound-btn" title="声音开关">🔔</button>
+        </div>
+      </div>
+      <div class="gcp-settings">
+        <label>≥ <input type="number" class="gcp-min-wallets" min="2" max="20" value="${config.minWallets}"> 钱包</label>
+        <label>内 <input type="number" class="gcp-time-window" min="1" max="1440" value="${config.timeWindowMin}"> 分钟</label>
+        <span class="gcp-status" title="数据状态">⚪</span>
+      </div>
+      <div class="gcp-alerts"><div class="gcp-empty">监听中…等待信号</div></div>
+      <button class="gcp-clear-btn">清空提醒</button>
+    `;
+    return el;
+  }
+
+  function bindPanelEvents() {
+    if (!panelEl) return;
+    panelEl.querySelector('.gcp-header').addEventListener('click', (e) => {
+      if (e.target.closest('.gcp-icon-btn')) return;
+      panelEl.classList.toggle('collapsed');
+      config.collapsed = panelEl.classList.contains('collapsed');
+      saveConfig();
+    });
+
+    const soundBtn = panelEl.querySelector('.gcp-sound-btn');
+    soundBtn.textContent = config.soundEnabled ? '🔔' : '🔕';
+    soundBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      config.soundEnabled = !config.soundEnabled;
+      soundBtn.textContent = config.soundEnabled ? '🔔' : '🔕';
+      saveConfig();
+    });
+
+    const minW = panelEl.querySelector('.gcp-min-wallets');
+    minW.addEventListener('change', (e) => {
+      config.minWallets = Math.max(2, parseInt(e.target.value) || 2);
+      e.target.value = config.minWallets;
+      saveConfig(); resetAndRescan();
+    });
+    minW.addEventListener('click', e => e.stopPropagation());
+
+    const tw = panelEl.querySelector('.gcp-time-window');
+    tw.addEventListener('change', (e) => {
+      config.timeWindowMin = Math.max(1, parseInt(e.target.value) || 30);
+      e.target.value = config.timeWindowMin;
+      saveConfig(); resetAndRescan();
+    });
+    tw.addEventListener('click', e => e.stopPropagation());
+
+    panelEl.querySelector('.gcp-settings').addEventListener('click', e => e.stopPropagation());
+    panelEl.querySelector('.gcp-alerts').addEventListener('click', e => e.stopPropagation());
+    panelEl.querySelector('.gcp-clear-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      alerts = []; renderAlerts();
+    });
+  }
+
+  function resetAndRescan() {
+    alerts = []; seenKeys.clear(); buyRecords = [];
+    scanTrades(); renderAlerts();
+  }
+
+  let lastRenderState = '';
+  function renderAlerts() {
+    if (!panelEl) return;
+    const container = panelEl.querySelector('.gcp-alerts');
+    const badge = panelEl.querySelector('.gcp-badge');
+    if (!container || !badge) return;
+    badge.textContent = alerts.length;
+
+    let html;
+    if (alerts.length === 0) {
+      html = '<div class="gcp-empty">监听中…等待信号</div>';
+    } else {
+      html = alerts.map(a => {
+        const hasStar = isAlertStarred(a);
+        return `
+        <div class="gcp-alert-item ${a.isNew ? 'is-new' : ''} ${hasStar ? 'is-starred' : ''}" data-token="${escHtml(a.token)}">
+          <div class="gcp-alert-token">
+            <span class="gcp-alert-token-name gcp-token-link" data-mint="${escHtml(a.mint || '')}" data-chain="${escHtml(a.chain || '')}" data-token="${escHtml(a.token)}" title="跳转到 ${escHtml(a.token)}">${escHtml(a.token)} ↗</span>
+            <span class="gcp-alert-count">${a.walletCount} 个钱包</span>
+          </div>
+          <div class="gcp-alert-time">${a.mcap ? '市值 ' + escHtml(a.mcap) : ''}${a.chain ? ' · ' + escHtml(a.chain.toUpperCase()) : ''}</div>
+          <div class="gcp-alert-wallets">
+            ${a.wallets.map(w => {
+              const star = starred.has(w.name);
+              return `
+              <span class="gcp-alert-wallet-tag ${star ? 'is-starred' : ''}">
+                <span class="gcp-star-toggle ${star ? 'on' : ''}" data-wallet="${escHtml(w.name)}" title="${star ? '取消特别关注' : '加入特别关注'}">${star ? '★' : '☆'}</span>
+                ${escHtml(w.name)}
+                <span class="gcp-wallet-amount">${escHtml(w.amount)}</span>
+                ${w.timeAgo ? '<span style="color:#666">' + escHtml(w.timeAgo) + '前</span>' : ''}
+              </span>`;
+            }).join('')}
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    if (html === lastRenderState) return;
+    lastRenderState = html;
+    container.innerHTML = html;
+
+    container.querySelectorAll('.gcp-token-link').forEach(el => {
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        jumpToToken(el.dataset.token, el.dataset.mint, el.dataset.chain);
+      });
+    });
+    container.querySelectorAll('.gcp-star-toggle').forEach(el => {
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleStar(el.dataset.wallet);
+      });
+    });
+  }
+
+  function escHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = s == null ? '' : String(s);
+    return d.innerHTML;
+  }
+
+  // ===== 跳转（页面内 SPA）=====
+  function spaNavigate(url) {
+    try {
+      history.pushState({}, '', url);
+      window.dispatchEvent(new PopStateEvent('popstate', { state: history.state }));
+      return true;
+    } catch (e) { return false; }
+  }
+
+  function jumpToToken(token, mint, chain) {
+    // 策略 1：找列表里同合约的 <a>，模拟 click（沿用 gmgn 自己的路由）
+    const list = findVirtualList();
+    if (list && mint) {
+      const links = list.querySelectorAll('a');
+      for (const a of links) {
+        const href = a.getAttribute('href') || '';
+        if (href.includes(mint)) { a.click(); return; }
+      }
+    }
+    // 策略 2：用 mint+chain 构造 URL
+    let useMint = mint, useChain = chain;
+    if (!useMint || !useChain) {
+      // 反查 tokenMeta
+      for (const [k, v] of tokenMeta.entries()) {
+        if (v.symbol === token) { useMint = useMint || k; useChain = useChain || v.chain; break; }
+      }
+    }
+    if (useMint && useChain) {
+      const url = `/${useChain}/token/${useMint}`;
+      if (spaNavigate(url)) return;
+      window.location.href = location.origin + url;
+      return;
+    }
+    alert('找不到 ' + token + ' 的跳转入口');
+  }
+
+  // ===== 注入星标按钮到原列表 =====
+  function scheduleInjectStars() {
+    if (injectStarsScheduled) return;
+    injectStarsScheduled = true;
+    setTimeout(() => {
+      injectStarsScheduled = false;
+      injectOrigStars();
+    }, 250);
+  }
+
+  function injectOrigStars() {
+    const list = findVirtualList();
+    if (!list) return;
+    const rowsRoot = list.children[0]?.children[0];
+    if (!rowsRoot) return;
+    for (const row of rowsRoot.children) {
+      const walletEl = row.querySelector('.text-yellow-100[data-sentry-component="AutoTruncateText"]')
+        || row.querySelector('[data-sentry-component="AutoTruncateText"]');
+      if (!walletEl) continue;
+      const wallet = walletEl.textContent.trim();
+      const isStar = starred.has(wallet);
+
+      row.classList.toggle('gcp-orig-starred', isStar);
+
+      let starBtn = row.querySelector('.gcp-orig-star');
+      if (!starBtn) {
+        starBtn = document.createElement('span');
+        starBtn.className = 'gcp-orig-star';
+        starBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          const w = (row.querySelector('.text-yellow-100[data-sentry-component="AutoTruncateText"]') || row.querySelector('[data-sentry-component="AutoTruncateText"]'))?.textContent.trim();
+          if (w) toggleStar(w);
+        });
+        // 插到 wallet 元素的父容器开头
+        const parent = walletEl.parentElement;
+        if (parent) parent.insertBefore(starBtn, parent.firstChild);
+      }
+      starBtn.textContent = isStar ? '★' : '☆';
+      starBtn.classList.toggle('on', isStar);
+      starBtn.title = isStar ? '取消特别关注' : '加入特别关注';
+    }
+  }
+
+  // ===== 挂载面板 =====
+  function mountPanel() {
+    const panel = findTrackingPanel();
+    if (!panel) return false;
+    if (panel.querySelector('#gcp-inline-panel')) return true;
+
+    panelEl = createPanel();
+    // 插到列表上方：找 .pi-tabs 和 list 之间
+    const listContainer = panel.querySelector('.virtual-list-container')?.parentElement?.parentElement
+      || panel.querySelector('.virtual-list-container');
+    if (listContainer && listContainer.parentElement) {
+      listContainer.parentElement.insertBefore(panelEl, listContainer);
+    } else {
+      panel.appendChild(panelEl);
+    }
+
+    bindPanelEvents();
+    return true;
+  }
+
+  // ===== Observer =====
+  function startObserver() {
+    const list = findVirtualList();
+    if (!list) return false;
+    if (observer) observer.disconnect();
+    observer = new MutationObserver(() => {
+      scanTrades();
+    });
+    observer.observe(list, { childList: true, subtree: true });
+    if (scanInterval) clearInterval(scanInterval);
+    scanInterval = setInterval(scanTrades, 5000);
+    return true;
+  }
+
+  function startMountWatcher() {
+    if (mountCheckInterval) clearInterval(mountCheckInterval);
+    mountCheckInterval = setInterval(() => {
+      if (!findTrackingPanel()) {
+        if (panelEl) panelEl = null;
+        if (observer) { observer.disconnect(); observer = null; }
+        return;
+      }
+      if (!document.getElementById('gcp-inline-panel')) {
+        if (mountPanel()) renderAlerts();
+      }
+      if (!observer && findVirtualList()) startObserver();
+    }, 2000);
+  }
+
+  // ===== 初始化 =====
+  function init() {
+    const tryInit = () => {
+      if (mountPanel()) {
+        renderAlerts();
+        startObserver();
+        scanTrades();
+        startMountWatcher();
+        return true;
+      }
+      return false;
+    };
+    if (tryInit()) return;
+    const w = setInterval(() => { if (tryInit()) clearInterval(w); }, 1500);
+    setTimeout(() => clearInterval(w), 60000);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+
+  // 调试
+  window.__gcp = {
+    config, alerts, buyRecords, tokenMeta, starred,
+    rerender: () => { lastRenderState = ''; renderAlerts(); },
+    rescan: () => scanTrades()
+  };
+})();
