@@ -310,17 +310,24 @@
   font-weight: 600;
 }
 
-/* 注入到原列表的星标按钮 */
+/* 注入到原列表的星标按钮 — 强约束 inline-flex，不撑行高 */
 .gcp-orig-star {
   cursor: pointer;
   font-size: 11px;
+  line-height: 1;
   color: #555;
   user-select: none;
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;             /* 在 flex 容器里不被压缩 */
   margin-right: 3px;
-  transition: all 0.2s;
+  vertical-align: middle;
+  transition: color 0.2s, transform 0.2s;
 }
-.gcp-orig-star:hover { color: #ffd700; transform: scale(1.2); }
+.gcp-orig-star:hover { color: #ffd700; transform: scale(1.25); }
 .gcp-orig-star.on { color: #ffd700; text-shadow: 0 0 4px rgba(255, 215, 0, 0.7); }
 
 /* 星标钱包的整行高亮 */

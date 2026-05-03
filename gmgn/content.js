@@ -671,9 +671,15 @@
           const w = (row.querySelector('.text-yellow-100[data-sentry-component="AutoTruncateText"]') || row.querySelector('[data-sentry-component="AutoTruncateText"]'))?.textContent.trim();
           if (w) toggleStar(w);
         });
-        // 插到 wallet 元素的父容器开头
-        const parent = walletEl.parentElement;
-        if (parent) parent.insertBefore(starBtn, parent.firstChild);
+        // 往上找最近的横向 flex 容器（避免插到 flex-col 父级导致换行撑高）
+        let anchor = walletEl.parentElement;
+        while (anchor && anchor !== row) {
+          const cs = getComputedStyle(anchor);
+          if (cs.display === 'flex' && cs.flexDirection !== 'column') break;
+          anchor = anchor.parentElement;
+        }
+        if (!anchor || anchor === row) anchor = walletEl.parentElement;
+        if (anchor) anchor.insertBefore(starBtn, anchor.firstChild);
       }
       starBtn.textContent = isStar ? '★' : '☆';
       starBtn.classList.toggle('on', isStar);
