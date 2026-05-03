@@ -608,22 +608,56 @@
 
   // ===== 挂载面板 =====
   function mountPanel() {
-    const panel = findTrackingPanel();
-    if (!panel) return false;
-    if (panel.querySelector('#gcp-inline-panel')) return true;
-
+    if (document.getElementById('gcp-inline-panel')) return true;
     panelEl = createPanel();
-    // 插到列表上方：找 .pi-tabs 和 list 之间
-    const listContainer = panel.querySelector('.virtual-list-container')?.parentElement?.parentElement
-      || panel.querySelector('.virtual-list-container');
-    if (listContainer && listContainer.parentElement) {
-      listContainer.parentElement.insertBefore(panelEl, listContainer);
-    } else {
-      panel.appendChild(panelEl);
-    }
-
+    panelEl.classList.add('gcp-floating');
+    // 恢复保存的位置
+    try {
+      const pos = JSON.parse(localStorage.getItem('gcp_pos') || '{}');
+      if (pos.right != null) panelEl.style.right = pos.right + 'px';
+      if (pos.top != null) panelEl.style.top = pos.top + 'px';
+    } catch (e) {}
+    document.body.appendChild(panelEl);
     bindPanelEvents();
+    enableDrag();
     return true;
+  }
+
+  // 拖拽
+  function enableDrag() {
+    if (!panelEl) return;
+    const header = panelEl.querySelector('.gcp-header');
+    if (!header) return;
+    let dragging = false, sx = 0, sy = 0, startRight = 0, startTop = 0;
+    header.addEventListener('mousedown', (e) => {
+      if (e.target.closest('.gcp-icon-btn')) return;
+      dragging = true;
+      sx = e.clientX; sy = e.clientY;
+      const r = panelEl.getBoundingClientRect();
+      startRight = window.innerWidth - r.right;
+      startTop = r.top;
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      const dx = e.clientX - sx;
+      const dy = e.clientY - sy;
+      const newRight = Math.max(0, Math.min(window.innerWidth - 100, startRight - dx));
+      const newTop = Math.max(0, Math.min(window.innerHeight - 40, startTop + dy));
+      panelEl.style.right = newRight + 'px';
+      panelEl.style.top = newTop + 'px';
+    });
+    document.addEventListener('mouseup', () => {
+      if (!dragging) return;
+      dragging = false;
+      const r = panelEl.getBoundingClientRect();
+      try {
+        localStorage.setItem('gcp_pos', JSON.stringify({
+          right: Math.round(window.innerWidth - r.right),
+          top: Math.round(r.top)
+        }));
+      } catch (e) {}
+    });
   }
 
   // ===== Observer =====
@@ -643,15 +677,18 @@
   function startMountWatcher() {
     if (mountCheckInterval) clearInterval(mountCheckInterval);
     mountCheckInterval = setInterval(() => {
-      if (!findTrackingPanel()) {
-        if (panelEl) panelEl = null;
-        if (observer) { observer.disconnect(); observer = null; }
-        return;
-      }
+      // 浮窗独立存在：只要不在 DOM 里就重新挂
       if (!document.getElementById('gcp-inline-panel')) {
         if (mountPanel()) renderAlerts();
       }
-      if (!observer && findVirtualList()) startObserver();
+      // 追踪列表存在才需要 observer
+      const list = findVirtualList();
+      if (list && !observer) {
+        startObserver();
+      } else if (!list && observer) {
+        observer.disconnect();
+        observer = null;
+      }
     }, 2000);
   }
 

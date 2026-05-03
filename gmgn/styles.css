@@ -429,3 +429,35 @@
   background-size: 300% 300%;
   animation: gcp-rainbow-bg 4s ease infinite, gcp-rainbow-border 3s linear infinite, gcp-tier4-throb 1.2s ease-in-out infinite;
 }
+
+/* ===== 浮窗模式 ===== */
+.gcp-inline.gcp-floating {
+  position: fixed;
+  top: 80px;
+  right: 16px;
+  width: 360px;
+  max-height: 75vh;
+  margin: 0;
+  z-index: 999999;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(226, 179, 64, 0.4);
+  backdrop-filter: blur(10px);
+  background: linear-gradient(180deg, rgba(20, 20, 20, 0.95) 0%, rgba(0, 0, 0, 0.92) 100%);
+}
+
+.gcp-inline.gcp-floating .gcp-header {
+  cursor: move;
+  user-select: none;
+}
+
+.gcp-inline.gcp-floating .gcp-alerts {
+  flex: 1;
+  max-height: none;
+  overflow-y: auto;
+}
+
+.gcp-inline.gcp-floating.collapsed {
+  max-height: 42px;
+  width: 240px;
+}
