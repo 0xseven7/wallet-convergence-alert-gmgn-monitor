@@ -1,0 +1,735 @@
+/* ===== 嵌入式聚合买入提醒面板 ===== */
+.xcp-inline {
+  font-family: Inter, montserrat, sans-serif;
+  font-size: 12px;
+  color: rgb(222, 222, 224);
+  background: linear-gradient(180deg, rgba(226, 179, 64, 0.08) 0%, rgba(12, 13, 16, 0.6) 100%);
+  border: 1px solid rgba(226, 179, 64, 0.35);
+  border-radius: 6px;
+  margin: 8px 12px 6px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+/* 头部 */
+.xcp-inline .xcp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: rgba(226, 179, 64, 0.12);
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 1px solid rgba(226, 179, 64, 0.2);
+}
+
+.xcp-inline.collapsed .xcp-header {
+  border-bottom: none;
+}
+
+.xcp-inline .xcp-header-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: #e2b340;
+}
+
+.xcp-inline .xcp-badge {
+  background: #ff4757;
+  color: #fff;
+  border-radius: 8px;
+  padding: 0 6px;
+  font-size: 10px;
+  font-weight: 700;
+  min-width: 16px;
+  height: 16px;
+  line-height: 16px;
+  text-align: center;
+  display: inline-block;
+}
+
+.xcp-inline .xcp-badge.is-active {
+  animation: xcp-pulse 1.5s infinite;
+}
+
+@keyframes xcp-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.7; transform: scale(1.1); }
+}
+
+.xcp-inline .xcp-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.xcp-inline .xcp-icon-btn {
+  background: none;
+  border: none;
+  color: #aaa;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0;
+  line-height: 1;
+}
+
+.xcp-inline .xcp-icon-btn:hover {
+  color: #e2b340;
+}
+
+.xcp-inline .xcp-toggle-arrow {
+  display: inline-block;
+  transition: transform 0.2s;
+  font-size: 10px;
+  color: #999;
+}
+
+.xcp-inline.collapsed .xcp-toggle-arrow {
+  transform: rotate(-90deg);
+}
+
+/* 设置区 */
+.xcp-inline .xcp-settings {
+  padding: 6px 10px;
+  background: rgba(0, 0, 0, 0.25);
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.xcp-inline .xcp-settings label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #999;
+  font-size: 11px;
+}
+
+.xcp-inline .xcp-settings input[type="number"] {
+  width: 38px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+  color: #e2b340;
+  padding: 1px 4px;
+  font-size: 11px;
+  text-align: center;
+  font-weight: 600;
+}
+
+.xcp-inline .xcp-settings input[type="number"]:focus {
+  outline: none;
+  border-color: #e2b340;
+}
+
+/* 提醒列表 */
+.xcp-inline .xcp-alerts {
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.xcp-inline .xcp-alerts::-webkit-scrollbar {
+  width: 4px;
+}
+
+.xcp-inline .xcp-alerts::-webkit-scrollbar-thumb {
+  background: rgba(226, 179, 64, 0.3);
+  border-radius: 2px;
+}
+
+.xcp-inline.collapsed .xcp-settings,
+.xcp-inline.collapsed .xcp-alerts,
+.xcp-inline.collapsed .xcp-clear-btn {
+  display: none;
+}
+
+.xcp-inline .xcp-empty {
+  text-align: center;
+  padding: 12px;
+  color: #555;
+  font-size: 11px;
+}
+
+.xcp-inline .xcp-empty-mini {
+  padding: 8px;
+  color: #444;
+  font-size: 10px;
+}
+
+/* 两栏分组 */
+.xcp-inline .xcp-section {
+  margin-bottom: 4px;
+}
+
+.xcp-inline .xcp-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 10px;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 11px;
+  font-weight: 600;
+  color: #aaa;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.xcp-inline .xcp-section-kol .xcp-section-head {
+  color: #e2b340;
+  background: rgba(226, 179, 64, 0.05);
+}
+
+.xcp-inline .xcp-section-my .xcp-section-head {
+  color: #4cd137;
+  background: rgba(76, 209, 55, 0.05);
+}
+
+.xcp-inline .xcp-section-count {
+  background: rgba(255, 255, 255, 0.08);
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 10px;
+}
+
+.xcp-inline .xcp-alert-item.is-my-source {
+  border-left: 2px solid #4cd137;
+  padding-left: 8px;
+}
+
+/* 主面板里区分 KOL/我的 来源 */
+.xcp-inline .xcp-mix-my {
+  color: #4cd137;
+  font-weight: 600;
+}
+.xcp-inline .xcp-src-my {
+  color: #4cd137;
+  font-size: 10px;
+  margin-right: 2px;
+}
+.xcp-inline .xcp-alert-wallet-tag.is-my-wallet {
+  background: rgba(76, 209, 55, 0.15);
+  color: #d0ffd9;
+}
+
+/* 分组名小标签 */
+.xcp-inline .xcp-wallet-group {
+  background: rgba(168, 85, 247, 0.18);
+  color: #c4b5fd;
+  border-radius: 6px;
+  padding: 0 5px;
+  font-size: 9px;
+  margin-left: 3px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
+/* ===== 特别关注 — 炫彩高亮 ===== */
+@keyframes xcp-rainbow-bg {
+  0%   { background-position: 0% 50%; }
+  50%  { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+@keyframes xcp-rainbow-border {
+  0%   { border-color: #ff4757; box-shadow: 0 0 8px rgba(255, 71, 87, 0.4); }
+  20%  { border-color: #ffa502; box-shadow: 0 0 8px rgba(255, 165, 2, 0.5); }
+  40%  { border-color: #ffd200; box-shadow: 0 0 10px rgba(255, 210, 0, 0.6); }
+  60%  { border-color: #4cd137; box-shadow: 0 0 8px rgba(76, 209, 55, 0.5); }
+  80%  { border-color: #00d2d3; box-shadow: 0 0 8px rgba(0, 210, 211, 0.5); }
+  100% { border-color: #ff4757; box-shadow: 0 0 8px rgba(255, 71, 87, 0.4); }
+}
+
+.xcp-inline .xcp-alert-item.is-starred {
+  background: linear-gradient(
+    120deg,
+    rgba(255, 71, 87, 0.18) 0%,
+    rgba(255, 165, 2, 0.18) 18%,
+    rgba(255, 210, 0, 0.18) 36%,
+    rgba(76, 209, 55, 0.18) 54%,
+    rgba(0, 210, 211, 0.18) 72%,
+    rgba(168, 85, 247, 0.18) 90%,
+    rgba(255, 71, 87, 0.18) 100%
+  );
+  background-size: 300% 300%;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  margin: 4px 6px;
+  padding: 8px 10px !important;
+  position: relative;
+  animation: xcp-rainbow-bg 6s ease infinite, xcp-rainbow-border 4s linear infinite;
+}
+
+.xcp-inline .xcp-alert-item.is-starred .xcp-alert-token-name {
+  color: #ffeb3b;
+  text-shadow: 0 0 10px rgba(255, 215, 0, 0.8), 0 0 20px rgba(255, 100, 200, 0.4);
+}
+
+.xcp-inline .xcp-alert-item.is-starred::before {
+  content: '★';
+  position: absolute;
+  top: -6px;
+  right: -2px;
+  font-size: 14px;
+  color: #ffd700;
+  text-shadow: 0 0 6px rgba(255, 215, 0, 0.9);
+  animation: xcp-star-spin 3s ease-in-out infinite;
+}
+
+@keyframes xcp-star-spin {
+  0%, 100% { transform: rotate(-15deg) scale(1); }
+  50%      { transform: rotate(15deg) scale(1.15); }
+}
+
+/* 星标按钮（行内） */
+.xcp-star-toggle {
+  cursor: pointer;
+  color: #555;
+  font-size: 12px;
+  transition: all 0.2s;
+  user-select: none;
+  padding: 0 2px;
+}
+.xcp-star-toggle:hover {
+  color: #ffd700;
+  transform: scale(1.2);
+}
+.xcp-star-toggle.on {
+  color: #ffd700;
+  text-shadow: 0 0 4px rgba(255, 215, 0, 0.8);
+}
+
+/* 星标的钱包 tag */
+.xcp-inline .xcp-alert-wallet-tag.is-starred {
+  background: linear-gradient(135deg, rgba(255, 215, 0, 0.2), rgba(255, 100, 200, 0.15));
+  color: #ffd700;
+  font-weight: 600;
+}
+
+/* 头部星标计数 */
+.xcp-inline .xcp-star-btn {
+  position: relative;
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: #ffd700;
+}
+.xcp-inline .xcp-star-count {
+  background: rgba(255, 215, 0, 0.2);
+  color: #ffd700;
+  border-radius: 8px;
+  padding: 0 5px;
+  font-size: 10px;
+  min-width: 14px;
+  text-align: center;
+  display: none;
+}
+
+/* 星标列表 */
+.xcp-inline .xcp-star-list {
+  background: #16162a;
+  border-bottom: 1px solid rgba(255, 215, 0, 0.2);
+  padding: 6px 10px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+.xcp-inline .xcp-star-list-head {
+  font-size: 11px;
+  color: #ffd700;
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+.xcp-inline .xcp-star-list-body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.xcp-inline .xcp-star-chip {
+  background: rgba(255, 215, 0, 0.12);
+  color: #ffd700;
+  border: 1px solid rgba(255, 215, 0, 0.3);
+  border-radius: 10px;
+  padding: 1px 8px;
+  font-size: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.xcp-inline .xcp-star-remove {
+  cursor: pointer;
+  color: #aaa;
+  font-size: 12px;
+  line-height: 1;
+}
+.xcp-inline .xcp-star-remove:hover {
+  color: #ff4757;
+}
+.xcp-inline .xcp-star-empty {
+  font-size: 11px;
+  color: #666;
+  text-align: center;
+  padding: 8px;
+}
+
+/* 克隆卡 — 星标行高亮 */
+.xcp-clone-row.is-starred {
+  background: linear-gradient(
+    100deg,
+    rgba(255, 71, 87, 0.08) 0%,
+    rgba(255, 215, 0, 0.10) 35%,
+    rgba(76, 209, 55, 0.08) 70%,
+    rgba(0, 210, 211, 0.08) 100%
+  );
+  background-size: 200% 200%;
+  animation: xcp-rainbow-bg 5s ease infinite;
+  border-left: 2px solid #ffd700 !important;
+}
+.xcp-clone-row.is-starred .xcp-clone-wallet-name {
+  color: #ffd700;
+  text-shadow: 0 0 6px rgba(255, 215, 0, 0.5);
+  font-weight: 700;
+}
+
+/* 单条提醒 */
+.xcp-inline .xcp-alert-item {
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  animation: xcp-slidein 0.4s ease;
+}
+
+.xcp-inline .xcp-alert-item:last-child {
+  border-bottom: none;
+}
+
+.xcp-inline .xcp-alert-item.is-new {
+  background: rgba(226, 179, 64, 0.1);
+  animation: xcp-flash 1.5s ease;
+}
+
+@keyframes xcp-slidein {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes xcp-flash {
+  0% { background: rgba(226, 179, 64, 0.35); }
+  100% { background: rgba(226, 179, 64, 0.1); }
+}
+
+.xcp-inline .xcp-alert-token {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.xcp-inline .xcp-alert-token-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: #e2b340;
+}
+
+.xcp-inline .xcp-token-link {
+  cursor: pointer;
+  transition: color 0.15s, text-shadow 0.15s;
+}
+
+.xcp-inline .xcp-token-link:hover {
+  color: #ffd76a;
+  text-shadow: 0 0 8px rgba(226, 179, 64, 0.5);
+  text-decoration: underline;
+}
+
+.xcp-inline .xcp-alert-count {
+  font-size: 11px;
+  color: #4cd137;
+  font-weight: 600;
+  background: rgba(76, 209, 55, 0.12);
+  padding: 1px 6px;
+  border-radius: 8px;
+}
+
+.xcp-inline .xcp-alert-time {
+  font-size: 10px;
+  color: #666;
+  margin-bottom: 4px;
+}
+
+.xcp-inline .xcp-alert-wallets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.xcp-inline .xcp-alert-wallet-tag {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 10px;
+  color: #ccc;
+  white-space: nowrap;
+  display: inline-flex;
+  gap: 3px;
+}
+
+.xcp-inline .xcp-wallet-amount {
+  color: #4cd137;
+  font-weight: 600;
+}
+
+.xcp-inline .xcp-alert-mcap {
+  font-size: 10px;
+  color: #888;
+  margin-top: 4px;
+}
+
+/* 清除按钮 */
+.xcp-inline .xcp-clear-btn {
+  width: 100%;
+  padding: 5px;
+  background: rgba(255, 255, 255, 0.03);
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  color: #666;
+  font-size: 10px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.xcp-inline .xcp-clear-btn:hover {
+  color: #ff4757;
+  background: rgba(255, 71, 87, 0.05);
+}
+
+/* 状态指示 */
+.xcp-status {
+  margin-left: auto;
+  font-size: 11px;
+  cursor: help;
+}
+
+/* ===== 克隆卡片样式 ===== */
+.xcp-clone-card {
+  border-left: 2px solid rgba(226, 179, 64, 0.4) !important;
+}
+
+.xcp-clone-card .title-text {
+  color: #e2b340 !important;
+}
+
+.xcp-clone-card .monitor .hd .tabs {
+  display: flex;
+  gap: 14px;
+}
+.xcp-clone-card .monitor .hd .tabs li {
+  cursor: pointer;
+  padding: 0;
+}
+
+.xcp-clone-list {
+  height: 100%;
+  overflow-y: auto;
+  padding: 4px 0;
+  font-family: Inter, montserrat, sans-serif;
+  font-size: 12px;
+  color: rgb(222, 222, 224);
+}
+
+.xcp-clone-list::-webkit-scrollbar {
+  width: 4px;
+}
+.xcp-clone-list::-webkit-scrollbar-thumb {
+  background: rgba(226, 179, 64, 0.3);
+  border-radius: 2px;
+}
+
+.xcp-clone-empty {
+  text-align: center;
+  padding: 40px 12px;
+  color: #666;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.xcp-clone-empty small {
+  color: #555;
+  font-size: 11px;
+}
+
+.xcp-clone-row {
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  /* 不要入场动画，避免每次重渲都闪 */
+}
+
+.xcp-clone-row:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.xcp-clone-row.is-buy {
+  border-left: 2px solid rgba(76, 209, 55, 0.4);
+}
+.xcp-clone-row.is-sell {
+  border-left: 2px solid rgba(255, 71, 87, 0.4);
+}
+
+.xcp-clone-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 3px;
+}
+
+.xcp-clone-time {
+  font-size: 10px;
+  color: #666;
+}
+.xcp-clone-ago {
+  font-size: 10px;
+  color: #555;
+}
+
+.xcp-clone-wallet {
+  font-size: 12px;
+  font-weight: 600;
+  color: #ddd;
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.xcp-clone-avatar {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.xcp-clone-action {
+  font-size: 12px;
+  color: #ddd;
+  margin-bottom: 2px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.xcp-clone-dot { font-size: 11px; }
+.xcp-clone-act { color: #aaa; }
+.xcp-clone-amount { color: #fff; font-weight: 600; }
+
+.xcp-clone-token-link {
+  background: rgba(226, 179, 64, 0.12);
+  color: #e2b340;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.xcp-clone-token-link:hover {
+  background: rgba(226, 179, 64, 0.25);
+  color: #ffd76a;
+  text-shadow: 0 0 6px rgba(226, 179, 64, 0.5);
+}
+
+/* 代币 pill (含 logo) */
+.xcp-clone-token-pill {
+  background: rgba(226, 179, 64, 0.12);
+  color: #e2b340;
+  padding: 1px 6px 1px 2px;
+  border-radius: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: background 0.15s, color 0.15s;
+}
+.xcp-clone-token-pill:hover {
+  background: rgba(226, 179, 64, 0.25);
+  color: #ffd76a;
+}
+.xcp-clone-token-logo {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: rgba(255,255,255,0.06);
+}
+.xcp-clone-token-name { font-size: 11px; }
+
+.xcp-clone-avatar-fallback {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.08);
+  display: inline-block;
+}
+
+/* 克隆卡里嵌入的"我的聚合"完整面板 — 绿色主题 */
+.xcp-inline.xcp-inline-my {
+  background: linear-gradient(180deg, rgba(76, 209, 55, 0.10) 0%, rgba(12, 13, 16, 0.6) 100%);
+  border: 1px solid rgba(76, 209, 55, 0.4);
+}
+.xcp-inline.xcp-inline-my .xcp-header {
+  background: rgba(76, 209, 55, 0.15);
+  border-bottom: 1px solid rgba(76, 209, 55, 0.25);
+}
+.xcp-inline.xcp-inline-my .xcp-header-left {
+  color: #4cd137;
+}
+.xcp-inline.xcp-inline-my .xcp-settings input[type="number"] {
+  color: #4cd137;
+}
+.xcp-inline.xcp-inline-my .xcp-settings input[type="number"]:focus {
+  border-color: #4cd137;
+}
+.xcp-inline.xcp-inline-my .xcp-alert-token-name {
+  color: #4cd137;
+}
+.xcp-inline.xcp-inline-my .xcp-token-link:hover {
+  color: #7bed9f;
+  text-shadow: 0 0 8px rgba(76, 209, 55, 0.5);
+}
+
+/* 注入到原卡的星标按钮 */
+.xcp-orig-star {
+  cursor: pointer;
+  font-size: 12px;
+  margin-right: 4px;
+  color: #555;
+  user-select: none;
+  display: inline-block;
+  transition: all 0.2s;
+  vertical-align: middle;
+}
+.xcp-orig-star:hover { color: #ffd700; transform: scale(1.2); }
+.xcp-orig-star.on { color: #ffd700; text-shadow: 0 0 4px rgba(255, 215, 0, 0.7); }
+
+/* 原卡上星标钱包的整行高亮 */
+.monitor-item.xcp-orig-starred {
+  background: linear-gradient(
+    100deg,
+    rgba(255, 71, 87, 0.06) 0%,
+    rgba(255, 215, 0, 0.10) 35%,
+    rgba(76, 209, 55, 0.06) 70%,
+    rgba(0, 210, 211, 0.06) 100%
+  );
+  background-size: 200% 200%;
+  animation: xcp-rainbow-bg 5s ease infinite;
+  border-left: 2px solid #ffd700;
+  padding-left: 6px;
+}
+
+.xcp-clone-meta {
+  font-size: 10px;
+  color: #777;
+  margin-top: 3px;
+}

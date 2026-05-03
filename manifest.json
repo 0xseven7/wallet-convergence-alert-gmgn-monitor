@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "XXYY 聚合买入提醒",
+  "version": "1.1.0",
+  "description": "监控 xxyy.io 钱包监控面板，当 N 个以上钱包在时间窗口内买入同一代币时提醒",
+  "permissions": ["storage"],
+  "content_scripts": [
+    {
+      "matches": ["*://pro.xxyy.io/*", "*://www.xxyy.io/*", "*://xxyy.io/*"],
+      "js": ["network-hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["*://pro.xxyy.io/*", "*://www.xxyy.io/*", "*://xxyy.io/*"],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
