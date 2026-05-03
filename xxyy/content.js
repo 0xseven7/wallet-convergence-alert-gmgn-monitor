@@ -1086,23 +1086,9 @@
   }
 
   function jumpToToken(token, mint, chain) {
-    // 策略 1：优先在所有可见原卡里找同名 .btn-token 直接 click（沿用 xxyy.io 自己的路由逻辑）
-    const cards = findAllMonitorCards();
-    for (const card of cards) {
-      const items = card.querySelectorAll('.monitor-item');
-      for (const item of items) {
-        const tEl = item.querySelector('.btn-token em');
-        if (tEl && tEl.textContent.trim() === token) {
-          const btn = item.querySelector('.btn-token');
-          if (btn) { btn.click(); return; }
-        }
-      }
-    }
-
-    // 策略 2：用 mint + chain 构造 URL，走 SPA pushState
+    // 策略 1（优先）：有 mint+chain 时直接用 SPA pushState（精准到 CA，不受同名影响）
     let useChain = chain, useMint = mint;
     if (!useMint || !useChain) {
-      // 优先按 mint 索引查；查不到再按名字反查
       let meta = mint ? tokenMeta.get(mint) : null;
       if (!meta) {
         for (const m of tokenMeta.values()) {
@@ -1114,9 +1100,22 @@
     if (useMint && useChain) {
       const url = `/${useChain}/${useMint}`;
       if (spaNavigate(url)) return;
-      // 如果 popstate 没生效，最后兜底
       window.location.href = location.origin + url;
       return;
+    }
+
+    // 策略 2（兜底）：没有 mint → 在原卡里按名字找 .btn-token click
+    // 警告：同名不同 CA 时这步会匹到第一个，不准
+    const cards = findAllMonitorCards();
+    for (const card of cards) {
+      const items = card.querySelectorAll('.monitor-item');
+      for (const item of items) {
+        const tEl = item.querySelector('.btn-token em');
+        if (tEl && tEl.textContent.trim() === token) {
+          const btn = item.querySelector('.btn-token');
+          if (btn) { btn.click(); return; }
+        }
+      }
     }
 
     alert('找不到 ' + token + ' 的合约信息');

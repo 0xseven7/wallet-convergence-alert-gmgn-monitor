@@ -611,19 +611,10 @@
   }
 
   function jumpToToken(token, mint, chain) {
-    // 策略 1：找列表里同合约的 <a>，模拟 click（沿用 gmgn 自己的路由）
-    const list = findVirtualList();
-    if (list && mint) {
-      const links = list.querySelectorAll('a');
-      for (const a of links) {
-        const href = a.getAttribute('href') || '';
-        if (href.includes(mint)) { a.click(); return; }
-      }
-    }
-    // 策略 2：用 mint+chain 构造 URL
+    // 策略 1（优先）：用 mint+chain 直接 SPA pushState，精准到 CA
     let useMint = mint, useChain = chain;
     if (!useMint || !useChain) {
-      // 反查 tokenMeta
+      // 反查 tokenMeta（按 symbol，可能不准）
       for (const [k, v] of tokenMeta.entries()) {
         if (v.symbol === token) { useMint = useMint || k; useChain = useChain || v.chain; break; }
       }
@@ -633,6 +624,16 @@
       if (spaNavigate(url)) return;
       window.location.href = location.origin + url;
       return;
+    }
+
+    // 策略 2（兜底）：没 mint 时找列表里 href 含同名的 <a>（很难精准，先试 mint match）
+    const list = findVirtualList();
+    if (list && mint) {
+      const links = list.querySelectorAll('a');
+      for (const a of links) {
+        const href = a.getAttribute('href') || '';
+        if (href.includes(mint)) { a.click(); return; }
+      }
     }
     alert('找不到 ' + token + ' 的跳转入口');
   }
