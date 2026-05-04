@@ -210,15 +210,13 @@
     if (byKol.length > 0) cloneData.kol = mergeTrades(cloneData.kol, byKol);
     if (byMy.length > 0) cloneData.my = mergeTrades(cloneData.my, byMy);
 
-    // 喂入聚合检测
+    // 喂入聚合检测（DOM trades 没有钱包地址，dedupId 退回显示名）
     let added = 0;
     for (const t of totalCollected) {
       if (!t.isBuy) continue;
-      const key = `${t.wallet}|${t.token}|${t.timeMs || t.time}`;
-      if (seenKeys.has(key)) continue;
-      seenKeys.add(key);
-      buyRecords.push(t);
-      added++;
+      t.dedupId = t.walletAddr || t.wallet;
+      const key = `${t.dedupId}|${t.mint || t.token}|${t.timeMs || t.time}`;
+      if (addBuyRecord(t, key)) added++;
     }
     if (added > 0) {
       cleanOldRecords();
@@ -484,22 +482,16 @@
     // 是否清仓（卖出且 post=0）
     const isClose = !isBuy && (td.postTokenUiAmount === 0 || td.postTokenUiAmount === '0');
 
+    // 用 walletAddr 做 dedup（避免同钱包在 KOL/我的 列里有不同备注名时被算两次）
+    const dedupId = trade.walletAddr || trade.wallet;
+    trade.dedupId = dedupId;
+    const buyKey = `${dedupId}|${trade.mint || trade.token}|${trade.timeMs}`;
+    const closeKey = `C|${dedupId}|${trade.mint || trade.token}|${trade.timeMs}`;
+
     // bulk 模式跳过即时渲染/检测，仅累积数据
     if (bulkMode) {
-      if (isBuy) {
-        const dedupKey = `${trade.wallet}|${trade.token}|${trade.timeMs}`;
-        if (!seenKeys.has(dedupKey)) {
-          seenKeys.add(dedupKey);
-          buyRecords.push(trade);
-        }
-      }
-      if (isClose) {
-        const dk = `C|${trade.wallet}|${trade.mint || trade.token}|${trade.timeMs}`;
-        if (!seenClosedKeys.has(dk)) {
-          seenClosedKeys.add(dk);
-          closedRecords.push(trade);
-        }
-      }
+      if (isBuy) addBuyRecord(trade, buyKey);
+      if (isClose) addCloseRecord(trade, closeKey);
       pendingConvergenceCheck = true;
       return;
     }
@@ -509,26 +501,39 @@
     setStatus('🟢', `KOL: ${cloneData.kol.length} · 我的: ${cloneData.my.length}`);
 
     let needCheck = false;
-    if (isBuy) {
-      const dedupKey = `${trade.wallet}|${trade.token}|${trade.timeMs}`;
-      if (!seenKeys.has(dedupKey)) {
-        seenKeys.add(dedupKey);
-        buyRecords.push(trade);
-        needCheck = true;
-      }
-    }
-    if (isClose) {
-      const dk = `C|${trade.wallet}|${trade.mint || trade.token}|${trade.timeMs}`;
-      if (!seenClosedKeys.has(dk)) {
-        seenClosedKeys.add(dk);
-        closedRecords.push(trade);
-        needCheck = true;
-      }
-    }
+    if (isBuy) needCheck = addBuyRecord(trade, buyKey) || needCheck;
+    if (isClose) needCheck = addCloseRecord(trade, closeKey) || needCheck;
     if (needCheck) {
       cleanOldRecords();
       checkConvergence();
     }
+  }
+
+  // 添加买入记录，重复时合并 sources（用 Set 装多个来源）
+  function addBuyRecord(trade, key) {
+    if (seenKeys.has(key)) {
+      // 找到现存记录，merge source
+      const existing = buyRecords.find(r =>
+        (r.dedupId || r.walletAddr || r.wallet) === trade.dedupId &&
+        r.mint === trade.mint && r.timeMs === trade.timeMs
+      );
+      if (existing) {
+        if (!existing.sources) existing.sources = new Set([existing.source]);
+        existing.sources.add(trade.source);
+      }
+      return false;
+    }
+    seenKeys.add(key);
+    trade.sources = new Set([trade.source]);
+    buyRecords.push(trade);
+    return true;
+  }
+
+  function addCloseRecord(trade, key) {
+    if (seenClosedKeys.has(key)) return false;
+    seenClosedKeys.add(key);
+    closedRecords.push(trade);
+    return true;
   }
 
   function mergeTrades(existing, incoming) {
@@ -609,11 +614,11 @@
     let highestTierMain = 0;
     let highestTierMy = 0;
 
-    // 主面板（KOL 这个 list 名字保留，但内容是全聚合：KOL + 我的 一起算）
-    // 我的面板：只算 我的 列
+    // 主面板（KOL）= 全聚合
+    // 我的面板：只要 sources 里有「我的」就算（即使同时也在 KOL 频道里出现）
     const variants = [
-      { listName: 'kol', filter: () => true },           // 全聚合
-      { listName: 'my',  filter: r => r.source === '我的' } // 仅我的
+      { listName: 'kol', filter: () => true },
+      { listName: 'my',  filter: r => (r.sources && r.sources.has('我的')) || r.source === '我的' }
     ];
 
     for (const v of variants) {
@@ -637,7 +642,21 @@
           };
         }
         const g = groups[key];
-        if (!g.wallets[r.wallet]) g.wallets[r.wallet] = { amount: r.amount, time: r.time, timeMs: r.timeMs, source: r.source };
+        // 钱包按 dedupId（地址）分组，避免同钱包不同备注被算两次
+        const walletKey = r.dedupId || r.walletAddr || r.wallet;
+        if (!g.wallets[walletKey]) {
+          // 优先选「我的」做 source 显示（如果该钱包在两个频道都被推送过）
+          const isInMy = (r.sources && r.sources.has('我的')) || r.source === '我的';
+          g.wallets[walletKey] = {
+            displayName: r.wallet,
+            amount: r.amount, time: r.time, timeMs: r.timeMs,
+            source: isInMy ? '我的' : 'KOL'
+          };
+        } else {
+          // 已存在：如果新记录来源是「我的」，把 source 升级
+          const isInMy = (r.sources && r.sources.has('我的')) || r.source === '我的';
+          if (isInMy) g.wallets[walletKey].source = '我的';
+        }
         if (r.mcap) g.mcap = r.mcap;
         if (!g.chain && r.chain) g.chain = r.chain;
         if (!g.platform && r.platform) g.platform = r.platform;
@@ -649,16 +668,18 @@
         if (walletNames.length < config.minWallets) continue;
 
         // 给每个钱包打上 closed 标记：买入之后又清仓了
-        const walletDetails = walletNames.map(w => {
-          const wd = group.wallets[w];
+        // walletNames 现在是 dedupId（地址）数组
+        const walletDetails = walletNames.map(addr => {
+          const wd = group.wallets[addr];
           const closeMatch = closedRecords.find(c =>
-            c.wallet === w &&
+            ((c.dedupId || c.walletAddr || c.wallet) === addr) &&
             ((group.mint && c.mint === group.mint) ||
              (!group.mint && !c.mint && c.token === group.token)) &&
             c.timeMs > wd.timeMs
           );
           return {
-            name: w,
+            name: wd.displayName,    // 用于显示
+            addr,                    // 用于跨记录匹配
             amount: wd.amount,
             time: wd.time,
             timeMs: wd.timeMs,
@@ -1000,16 +1021,15 @@
     alertsKol = []; alertsMy = [];
     seenKeys.clear();
     buyRecords = [];
-    // 重新喂入两个来源的最近交易（带 source 标签）
+    // 重新喂入两个来源（用 addBuyRecord 跑同一套去重 + sources 合并逻辑）
     const fillFrom = (arr, sourceTag) => {
       for (const t of arr) {
-        if (t.isBuy && t.timeMs && (Date.now() - t.timeMs) < config.timeWindowMin * 60 * 1000) {
-          const key = `${t.wallet}|${t.token}|${t.timeMs}`;
-          if (!seenKeys.has(key)) {
-            seenKeys.add(key);
-            buyRecords.push({ ...t, source: sourceTag });
-          }
-        }
+        if (!t.isBuy || !t.timeMs) continue;
+        if ((Date.now() - t.timeMs) >= config.timeWindowMin * 60 * 1000) continue;
+        const tagged = { ...t, source: sourceTag };
+        tagged.dedupId = tagged.walletAddr || tagged.wallet;
+        const key = `${tagged.dedupId}|${tagged.mint || tagged.token}|${tagged.timeMs}`;
+        addBuyRecord(tagged, key);
       }
     };
     fillFrom(cloneData.kol, 'KOL');
