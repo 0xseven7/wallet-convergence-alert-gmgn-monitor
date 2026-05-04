@@ -30,6 +30,13 @@
   // 代币元数据：mint → { chain, symbol, logo }
   const tokenMeta = new Map();
 
+  // 缩写合约
+  function shortMint(m) {
+    if (!m) return '';
+    if (m.length <= 10) return m;
+    return m.slice(0, 4) + '…' + m.slice(-4);
+  }
+
   // ===== 检测代币发射平台 =====
   function detectPlatform(mint, chain, dexHint) {
     const m = (mint || '').toLowerCase();
@@ -579,7 +586,7 @@
         return `
         <div class="gcp-alert-item gcp-tier-${tier} ${a.isNew ? 'is-new' : ''} ${hasStar ? 'is-starred' : ''} ${isFaded ? 'is-faded' : ''}" data-token="${escHtml(a.token)}">
           <div class="gcp-alert-token">
-            <span class="gcp-alert-token-name gcp-token-link" data-mint="${escHtml(a.mint || '')}" data-chain="${escHtml(a.chain || '')}" data-token="${escHtml(a.token)}" title="跳转到 ${escHtml(a.token)}">${logoImg}${escHtml(a.token)} ↗</span>${a.platform ? `<span class="gcp-plat-badge ${escHtml(a.platform.cls)}" title="${escHtml(a.platform.label)}">${escHtml(a.platform.tag)}</span>` : ''}
+            <span class="gcp-alert-token-name gcp-token-link" data-mint="${escHtml(a.mint || '')}" data-chain="${escHtml(a.chain || '')}" data-token="${escHtml(a.token)}" title="跳转到 ${escHtml(a.token)}">${logoImg}${escHtml(a.token)} ↗</span>${a.mint ? `<span class="gcp-mint-tag" title="合约：${escHtml(a.mint)}（点击复制）" data-mint="${escHtml(a.mint)}">${escHtml(shortMint(a.mint))}</span>` : ''}${a.platform ? `<span class="gcp-plat-badge ${escHtml(a.platform.cls)}" title="${escHtml(a.platform.label)}">${escHtml(a.platform.tag)}</span>` : ''}
             <span class="gcp-alert-count">${effective} 个钱包${closedCount > 0 ? ` <span class="gcp-closed-tag">−${closedCount} 清仓</span>` : ''}${tierIcon}</span>
           </div>
           <div class="gcp-alert-time">${a.mcap ? '市值 ' + escHtml(a.mcap) : ''}${a.chain ? ' · ' + escHtml(a.chain.toUpperCase()) : ''}</div>
@@ -610,6 +617,18 @@
       el.addEventListener('click', (e) => {
         e.stopPropagation();
         jumpToToken(el.dataset.token, el.dataset.mint, el.dataset.chain);
+      });
+    });
+    container.querySelectorAll('.gcp-mint-tag').forEach(el => {
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const fullMint = el.dataset.mint || '';
+        try {
+          navigator.clipboard.writeText(fullMint);
+          const oldText = el.textContent;
+          el.textContent = '已复制';
+          setTimeout(() => { el.textContent = oldText; }, 1000);
+        } catch (e2) {}
       });
     });
     container.querySelectorAll('.gcp-star-toggle').forEach(el => {

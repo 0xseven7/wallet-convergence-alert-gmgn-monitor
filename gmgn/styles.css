@@ -614,3 +614,25 @@
 .gcp-alert-item.is-faded.is-starred::before {
   display: none;
 }
+
+/* 合约缩写 chip */
+.gcp-mint-tag {
+  display: inline-block;
+  font-family: 'SF Mono', 'Cascadia Mono', 'Consolas', monospace;
+  font-size: 10px;
+  color: #888;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  padding: 0 4px;
+  margin-left: 4px;
+  cursor: pointer;
+  user-select: none;
+  vertical-align: 1px;
+  transition: all 0.15s;
+}
+.gcp-mint-tag:hover {
+  background: rgba(226, 179, 64, 0.15);
+  color: #e2b340;
+  border-color: rgba(226, 179, 64, 0.4);
+}

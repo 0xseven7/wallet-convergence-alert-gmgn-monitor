@@ -41,6 +41,13 @@
     return r.wallet || '';
   }
 
+  // 缩写合约：开头 4 + 结尾 4
+  function shortMint(m) {
+    if (!m) return '';
+    if (m.length <= 10) return m;
+    return m.slice(0, 4) + '…' + m.slice(-4);
+  }
+
   // ===== 检测代币发射平台 =====
   function detectPlatform(mint, chain, dex, dexId) {
     const m = (mint || '').toLowerCase();
@@ -1072,7 +1079,7 @@
     return `
       <div class="xcp-alert-item xcp-tier-${tier} ${a.isNew ? 'is-new' : ''} ${isMy ? 'is-my-source' : ''} ${hasStar ? 'is-starred' : ''} ${isFaded ? 'is-faded' : ''}" data-token="${escHtml(a.token)}">
         <div class="xcp-alert-token">
-          <span class="xcp-alert-token-name xcp-token-link" data-token="${escHtml(a.token)}" data-mint="${escHtml(a.mint || '')}" data-chain="${escHtml(a.chain || '')}" title="跳转到 ${escHtml(a.token)} 交易页">${escHtml(a.token)} ↗</span>${a.platform ? `<span class="xcp-plat-badge ${escHtml(a.platform.cls)}" title="${escHtml(a.platform.label)}">${escHtml(a.platform.tag)}</span>` : ''}
+          <span class="xcp-alert-token-name xcp-token-link" data-token="${escHtml(a.token)}" data-mint="${escHtml(a.mint || '')}" data-chain="${escHtml(a.chain || '')}" title="跳转到 ${escHtml(a.token)} 交易页">${escHtml(a.token)} ↗</span>${a.mint ? `<span class="xcp-mint-tag" title="合约：${escHtml(a.mint)}（点击复制）" data-mint="${escHtml(a.mint)}">${escHtml(shortMint(a.mint))}</span>` : ''}${a.platform ? `<span class="xcp-plat-badge ${escHtml(a.platform.cls)}" title="${escHtml(a.platform.label)}">${escHtml(a.platform.tag)}</span>` : ''}
           <span class="xcp-alert-count">${effective} 个钱包${closedCount > 0 ? ` <span class="xcp-closed-tag">−${closedCount} 清仓</span>` : ''}${tierIcon}</span>
         </div>
         <div class="xcp-alert-time">${escHtml(a.timeRange)}${a.mcap ? ' · 市值 ' + escHtml(a.mcap) : ''}${mixSummary}</div>
@@ -1134,6 +1141,18 @@
       el.addEventListener('click', (e) => {
         e.stopPropagation();
         jumpToToken(el.dataset.token, el.dataset.mint, el.dataset.chain);
+      });
+    });
+    container.querySelectorAll('.xcp-mint-tag').forEach(el => {
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const fullMint = el.dataset.mint || '';
+        try {
+          navigator.clipboard.writeText(fullMint);
+          const oldText = el.textContent;
+          el.textContent = '已复制';
+          setTimeout(() => { el.textContent = oldText; }, 1000);
+        } catch (e2) {}
       });
     });
     container.querySelectorAll('.xcp-star-toggle').forEach(el => {
