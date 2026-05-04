@@ -31,6 +31,16 @@
   // 钱包名 → 分组名映射
   const walletGroups = new Map();
 
+  // 钱包显示名 → 地址（socket.io 推送时学习，DOM 扫描没地址时用来反查）
+  const walletNameToAddr = new Map();
+  // 把 record 规范成 canonical wallet id（优先 addr，没有就 name）
+  function canonicalWallet(r) {
+    if (r.walletAddr) return r.walletAddr;
+    const fromMap = walletNameToAddr.get(r.wallet);
+    if (fromMap) return fromMap;
+    return r.wallet || '';
+  }
+
   // ===== 检测代币发射平台 =====
   function detectPlatform(mint, chain, dex, dexId) {
     const m = (mint || '').toLowerCase();
@@ -210,11 +220,11 @@
     if (byKol.length > 0) cloneData.kol = mergeTrades(cloneData.kol, byKol);
     if (byMy.length > 0) cloneData.my = mergeTrades(cloneData.my, byMy);
 
-    // 喂入聚合检测（DOM trades 没有钱包地址，dedupId 退回显示名）
+    // 喂入聚合检测（DOM trades 通常无地址，canonicalWallet 会回查 name→addr 映射）
     let added = 0;
     for (const t of totalCollected) {
       if (!t.isBuy) continue;
-      t.dedupId = t.walletAddr || t.wallet;
+      t.dedupId = canonicalWallet(t);
       const key = `${t.dedupId}|${t.mint || t.token}|${t.timeMs || t.time}`;
       if (addBuyRecord(t, key)) added++;
     }
@@ -476,14 +486,19 @@
       platform: detectPlatform(mint, chain, td.dex || td.dexName || '', td.dexId || '')
     };
 
+    // 学习钱包名 → 地址（用来反查 DOM 扫描里没地址的 trade）
+    if (trade.walletAddr && trade.wallet && trade.wallet !== trade.walletAddr) {
+      walletNameToAddr.set(trade.wallet, trade.walletAddr);
+    }
+
     // 推入对应来源
     cloneData[source] = mergeTrades(cloneData[source], [trade]);
 
     // 是否清仓（卖出且 post=0）
     const isClose = !isBuy && (td.postTokenUiAmount === 0 || td.postTokenUiAmount === '0');
 
-    // 用 walletAddr 做 dedup（避免同钱包在 KOL/我的 列里有不同备注名时被算两次）
-    const dedupId = trade.walletAddr || trade.wallet;
+    // 规范化到 canonical wallet id（addr 优先 → name 反查 → name）
+    const dedupId = canonicalWallet(trade);
     trade.dedupId = dedupId;
     const buyKey = `${dedupId}|${trade.mint || trade.token}|${trade.timeMs}`;
     const closeKey = `C|${dedupId}|${trade.mint || trade.token}|${trade.timeMs}`;
@@ -512,9 +527,8 @@
   // 添加买入记录，重复时合并 sources（用 Set 装多个来源）
   function addBuyRecord(trade, key) {
     if (seenKeys.has(key)) {
-      // 找到现存记录，merge source
       const existing = buyRecords.find(r =>
-        (r.dedupId || r.walletAddr || r.wallet) === trade.dedupId &&
+        canonicalWallet(r) === trade.dedupId &&
         r.mint === trade.mint && r.timeMs === trade.timeMs
       );
       if (existing) {
@@ -642,8 +656,8 @@
           };
         }
         const g = groups[key];
-        // 钱包按 dedupId（地址）分组，避免同钱包不同备注被算两次
-        const walletKey = r.dedupId || r.walletAddr || r.wallet;
+        // 钱包按 canonical id 分组（动态查 name→addr 映射，不依赖 r.dedupId 旧值）
+        const walletKey = canonicalWallet(r);
         if (!g.wallets[walletKey]) {
           // 优先选「我的」做 source 显示（如果该钱包在两个频道都被推送过）
           const isInMy = (r.sources && r.sources.has('我的')) || r.source === '我的';
@@ -672,7 +686,7 @@
         const walletDetails = walletNames.map(addr => {
           const wd = group.wallets[addr];
           const closeMatch = closedRecords.find(c =>
-            ((c.dedupId || c.walletAddr || c.wallet) === addr) &&
+            (canonicalWallet(c) === addr) &&
             ((group.mint && c.mint === group.mint) ||
              (!group.mint && !c.mint && c.token === group.token)) &&
             c.timeMs > wd.timeMs
