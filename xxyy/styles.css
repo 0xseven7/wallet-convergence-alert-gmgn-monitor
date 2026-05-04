@@ -926,3 +926,41 @@
   color: #ff8c8c;
   border: 1px solid rgba(255, 71, 87, 0.4);
 }
+
+/* 散场状态：有效钱包数已低于阈值（比如本来 9 个，清仓 8 个剩 1 个）
+   保留历史信息但视觉上明显降级，避免和炫彩星标继续误导 */
+.xcp-inline .xcp-alert-item.is-faded {
+  opacity: 0.55;
+  filter: grayscale(0.45);
+}
+.xcp-inline .xcp-alert-item.is-faded .xcp-alert-token-name {
+  text-shadow: none !important;
+  font-size: 13px !important;
+  color: #888 !important;
+}
+.xcp-inline .xcp-alert-item.is-faded .xcp-alert-count {
+  background: rgba(255, 255, 255, 0.06) !important;
+  color: #888 !important;
+  font-weight: 500 !important;
+  box-shadow: none !important;
+}
+/* 散场态下，把所有 tier 高级动画/边框去掉 */
+.xcp-inline .xcp-alert-item.is-faded.xcp-tier-2,
+.xcp-inline .xcp-alert-item.is-faded.xcp-tier-3,
+.xcp-inline .xcp-alert-item.is-faded.xcp-tier-4 {
+  border-left: 2px solid #555 !important;
+  background: rgba(0, 0, 0, 0.15) !important;
+  animation: none !important;
+  border-radius: 4px !important;
+  padding-left: 8px !important;
+  margin: 2px 4px !important;
+}
+/* 散场 + 星标也压住 */
+.xcp-inline .xcp-alert-item.is-faded.is-starred {
+  background: rgba(0, 0, 0, 0.15) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  animation: none !important;
+}
+.xcp-inline .xcp-alert-item.is-faded.is-starred::before {
+  display: none;
+}

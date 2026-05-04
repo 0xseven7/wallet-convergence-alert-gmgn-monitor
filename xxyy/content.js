@@ -7,10 +7,12 @@
   const DEFAULT_CONFIG = {
     minWallets: 2,
     timeWindowMin: 5,
-    soundEnabled: true,
+    soundEnabled: true,        // 兼容旧版（已废弃，改用下面两个）
+    soundEnabledMain: true,
+    soundEnabledMy: true,
     collapsed: false,
     cloneTab: '我的',
-    tieredAlerts: true   // 4 档分级提醒（视觉 + 声音逐级升级）
+    tieredAlerts: true
   };
 
   let config = { ...DEFAULT_CONFIG };
@@ -96,6 +98,14 @@
   try {
     const saved = localStorage.getItem('xcp_config');
     if (saved) Object.assign(config, JSON.parse(saved));
+    // 旧版兼容：第一次升级时把全局 soundEnabled 同步到两个新字段
+    if (saved) {
+      const obj = JSON.parse(saved);
+      if (obj.soundEnabled !== undefined && obj.soundEnabledMain === undefined) {
+        config.soundEnabledMain = obj.soundEnabled;
+        config.soundEnabledMy = obj.soundEnabled;
+      }
+    }
   } catch (e) {}
 
   function saveConfig() {
@@ -595,7 +605,9 @@
     const windowMs = config.timeWindowMin * 60 * 1000;
 
     let totalTriggered = false;
-    let highestTierFired = 0;
+    let highestTierFired = 0;       // 兼容
+    let highestTierMain = 0;
+    let highestTierMy = 0;
 
     // 主面板（KOL 这个 list 名字保留，但内容是全聚合：KOL + 我的 一起算）
     // 我的面板：只算 我的 列
@@ -691,6 +703,10 @@
           if (newTier > prevTier && newTier > highestTierFired) {
             highestTierFired = newTier;
           }
+          if (newTier > prevTier) {
+            if (v.listName === 'kol' && newTier > highestTierMain) highestTierMain = newTier;
+            else if (v.listName === 'my' && newTier > highestTierMy) highestTierMy = newTier;
+          }
           setTimeout(() => { existing.isNew = false; renderAlerts(); }, 1500);
         } else {
           const alert = {
@@ -716,16 +732,22 @@
           }
           totalTriggered = true;
           if (newTier > highestTierFired) highestTierFired = newTier;
+          if (v.listName === 'kol' && newTier > highestTierMain) highestTierMain = newTier;
+          else if (v.listName === 'my' && newTier > highestTierMy) highestTierMy = newTier;
           setTimeout(() => { alert.isNew = false; renderAlerts(); }, 1500);
         }
       }
     }
 
     renderAlerts();
-    if (totalTriggered || highestTierFired > 0) {
-      playSound(highestTierFired || 1);
-      flashBadge();
+    // 按各自面板的声音开关分别响
+    if (highestTierMain > 0 && config.soundEnabledMain) {
+      playSound(highestTierMain);
     }
+    if (highestTierMy > 0 && config.soundEnabledMy) {
+      playSound(highestTierMy);
+    }
+    if (totalTriggered) flashBadge();
   }
 
   let _audioCtx = null;
@@ -751,7 +773,6 @@
   }
 
   function playSound(tier) {
-    if (!config.soundEnabled) return;
     const ctx = ensureAudioCtx();
     if (!ctx || ctx.state === 'suspended') return;
     tier = tier || 1;
@@ -874,12 +895,14 @@
 
     const soundBtn = rootEl.querySelector('.xcp-sound-btn');
     if (soundBtn) {
-      soundBtn.textContent = config.soundEnabled ? '🔔' : '🔕';
+      const soundKey = source === '我的' ? 'soundEnabledMy' : 'soundEnabledMain';
+      soundBtn.textContent = config[soundKey] ? '🔔' : '🔕';
+      soundBtn.title = config[soundKey] ? `本面板声音：开（点击关）` : `本面板声音：关（点击开）`;
       soundBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        config.soundEnabled = !config.soundEnabled;
-        // 同步到所有面板
-        document.querySelectorAll('.xcp-sound-btn').forEach(b => b.textContent = config.soundEnabled ? '🔔' : '🔕');
+        config[soundKey] = !config[soundKey];
+        soundBtn.textContent = config[soundKey] ? '🔔' : '🔕';
+        soundBtn.title = config[soundKey] ? `本面板声音：开（点击关）` : `本面板声音：关（点击开）`;
         saveConfig();
       });
     }
@@ -1011,8 +1034,9 @@
       if (myCount > 0) parts.push(`<span class="xcp-mix-my">★我的 ${myCount}</span>`);
       if (parts.length > 1) mixSummary = ' · ' + parts.join(' + ');
     }
+    const isFaded = effective < config.minWallets;   // 有效钱包已不够 → 降级显示
     return `
-      <div class="xcp-alert-item xcp-tier-${tier} ${a.isNew ? 'is-new' : ''} ${isMy ? 'is-my-source' : ''} ${hasStar ? 'is-starred' : ''}" data-token="${escHtml(a.token)}">
+      <div class="xcp-alert-item xcp-tier-${tier} ${a.isNew ? 'is-new' : ''} ${isMy ? 'is-my-source' : ''} ${hasStar ? 'is-starred' : ''} ${isFaded ? 'is-faded' : ''}" data-token="${escHtml(a.token)}">
         <div class="xcp-alert-token">
           <span class="xcp-alert-token-name xcp-token-link" data-token="${escHtml(a.token)}" data-mint="${escHtml(a.mint || '')}" data-chain="${escHtml(a.chain || '')}" title="跳转到 ${escHtml(a.token)} 交易页">${escHtml(a.token)} ↗</span>${a.platform ? `<span class="xcp-plat-badge ${escHtml(a.platform.cls)}" title="${escHtml(a.platform.label)}">${escHtml(a.platform.tag)}</span>` : ''}
           <span class="xcp-alert-count">${effective} 个钱包${closedCount > 0 ? ` <span class="xcp-closed-tag">−${closedCount} 清仓</span>` : ''}${tierIcon}</span>
@@ -1234,7 +1258,7 @@
           titleEmoji: '★',
           titleText: '我的 聚合',
           showStarList: true,
-          showSound: false,
+          showSound: true,
           id: 'xcp-clone-alert-panel'
         });
         const monitorEl = cloneCardEl.querySelector('.monitor');
@@ -1357,7 +1381,7 @@
               titleEmoji: '★',
               titleText: '我的 聚合',
               showStarList: true,
-              showSound: false,
+              showSound: true,
               id: 'xcp-inline-panel-my'
             });
             monitor2.insertBefore(cloneAlertPanelEl, bd2);

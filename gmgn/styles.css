@@ -579,3 +579,38 @@
   color: #ff8c8c;
   border: 1px solid rgba(255, 71, 87, 0.4);
 }
+
+/* 散场状态 — 有效钱包数已低于阈值时降级显示 */
+.gcp-alert-item.is-faded {
+  opacity: 0.55;
+  filter: grayscale(0.45);
+}
+.gcp-alert-item.is-faded .gcp-alert-token-name {
+  text-shadow: none !important;
+  font-size: 13px !important;
+  color: #888 !important;
+}
+.gcp-alert-item.is-faded .gcp-alert-count {
+  background: rgba(255, 255, 255, 0.06) !important;
+  color: #888 !important;
+  font-weight: 500 !important;
+  box-shadow: none !important;
+}
+.gcp-alert-item.is-faded.gcp-tier-2,
+.gcp-alert-item.is-faded.gcp-tier-3,
+.gcp-alert-item.is-faded.gcp-tier-4 {
+  border-left: 2px solid #555 !important;
+  background: rgba(0, 0, 0, 0.15) !important;
+  animation: none !important;
+  border-radius: 4px !important;
+  padding-left: 8px !important;
+  margin: 2px 4px !important;
+}
+.gcp-alert-item.is-faded.is-starred {
+  background: rgba(0, 0, 0, 0.15) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  animation: none !important;
+}
+.gcp-alert-item.is-faded.is-starred::before {
+  display: none;
+}
