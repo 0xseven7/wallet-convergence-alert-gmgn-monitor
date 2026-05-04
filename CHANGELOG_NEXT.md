@@ -1,9 +1,19 @@
-## v1.7.2 — 修同名不同合约的代币跳转错位
+## v1.8.0 — 严格 CA 隔离 + 平台徽章
 
-**问题**：聚合提醒里如果有两个同名（如都叫 DILLEY）但 CA 不同的代币，点击代币名都跳转到同一个 CA — 因为优先级搞反了，先按名字找原列表的 `.btn-token` click，匹到第一个就走了。
+### 严格按合约聚合（修长期 bug）
 
-**修复**：跳转优先级倒过来：
-1. 优先用 alert 自带的 mint+chain 走 `history.pushState` 直跳 → 精准到 CA
-2. 没有 mint 时才退回到原卡 click（可能不准但有总比没有好）
+之前没拿到 mint 的记录会 fallback 用名字 key 聚合 → 导致同名不同 CA 的代币错误地混进一条提醒（这版才彻底修）。
 
-xxyy 和 gmgn 都修。
+**新行为**：没有 mint 的记录直接**不参与聚合**（宁可漏几个不报，也不误报）。
+
+副作用：xxyy 早期 DOM 扫描进来的、没机会被 socket.io 补 mint 的记录会被丢掉。但 socket.io 持续推送 → 实际可用的记录都有 mint，影响极小。
+
+### 平台徽章
+
+代币名旁边自动显示发射平台小标签：
+- 🟢 **PUMP**：mint 末尾 `pump` → pump.fun
+- 🟠 **BONK**：mint 末尾 `bonk` → bonk.fun
+- 🟣 **BOOP**：mint 末尾 `boop` → boop.fun
+- 🔴 **FOUR**：BSC + dex 名含 four → four.meme
+
+xxyy 用 socket.io 的 `tradeData.dex` 字段更可靠；gmgn 暂只看 mint 后缀（BSC 的 four.meme 暂时识别不到，需要 dex 字段，后续看怎么从 DOM 抓）。

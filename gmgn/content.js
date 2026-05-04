@@ -30,6 +30,23 @@
   // 代币元数据：mint → { chain, symbol, logo }
   const tokenMeta = new Map();
 
+  // ===== 检测代币发射平台 =====
+  function detectPlatform(mint, chain, dexHint) {
+    const m = (mint || '').toLowerCase();
+    const c = (chain || '').toLowerCase();
+    const d = (dexHint || '').toLowerCase();
+    if (c === 'sol') {
+      if (m.endsWith('pump')) return { tag: 'pump', label: 'pump.fun', cls: 'gcp-plat-pump' };
+      if (m.endsWith('bonk')) return { tag: 'bonk', label: 'bonk.fun', cls: 'gcp-plat-bonk' };
+      if (m.endsWith('boop')) return { tag: 'boop', label: 'boop.fun', cls: 'gcp-plat-boop' };
+    }
+    if (c === 'bsc' || c === 'bnb') {
+      if (d.includes('four') || d.includes('4.meme')) return { tag: 'four', label: 'four.meme', cls: 'gcp-plat-four' };
+    }
+    if (d.includes('pump')) return { tag: 'pump', label: 'pump.fun', cls: 'gcp-plat-pump' };
+    return null;
+  }
+
   try {
     const saved = localStorage.getItem('gcp_config');
     if (saved) Object.assign(config, JSON.parse(saved));
@@ -187,6 +204,9 @@
       });
     }
 
+    // gmgn 没有显式的 dex 字段，靠 mint 后缀检测平台（BSC 的 four.meme 暂时识别不到）
+    const platform = detectPlatform(mint, chain, '');
+
     return {
       wallet,
       walletAvatar,
@@ -198,10 +218,11 @@
       amount,
       mcap,
       timeAgo,
-      tradeAge,    // line2 里的"45m"，比 timeAgo 更精确
+      tradeAge,
       timeMs,
       tokenLogo,
-      href
+      href,
+      platform
     };
   }
 
@@ -265,13 +286,16 @@
 
     for (const r of buyRecords) {
       if (!r.timeMs || (now - r.timeMs) > windowMs) continue;
-      const key = r.mint || ('NAME:' + r.token);
-      if (!groups[key]) groups[key] = { wallets: {}, mcap: r.mcap, mint: r.mint, chain: r.chain, token: r.token, tokenLogo: r.tokenLogo };
+      // 严格按 mint 聚合，没 mint 不参与
+      if (!r.mint) continue;
+      const key = r.mint;
+      if (!groups[key]) groups[key] = { wallets: {}, mcap: r.mcap, mint: r.mint, chain: r.chain, token: r.token, tokenLogo: r.tokenLogo, platform: r.platform || null };
       const g = groups[key];
       if (!g.wallets[r.wallet]) g.wallets[r.wallet] = { amount: r.amount, timeAgo: r.timeAgo, timeMs: r.timeMs, avatar: r.walletAvatar };
       if (r.mcap) g.mcap = r.mcap;
       if (r.token) g.token = r.token;
       if (r.tokenLogo && !g.tokenLogo) g.tokenLogo = r.tokenLogo;
+      if (r.platform && !g.platform) g.platform = r.platform;
     }
 
     let triggered = false, updated = false;
@@ -304,10 +328,8 @@
 
       const newTier = calcTier(effectiveCount);
 
-      const existing = alerts.find(a => {
-        if (group.mint && a.mint) return a.mint === group.mint;
-        return a.token === group.token && !a.mint && !group.mint;
-      });
+      // 严格按 mint 匹配（group.mint 一定存在）
+      const existing = alerts.find(a => a.mint && a.mint === group.mint);
 
       if (existing) {
         const sameCount = existing.walletCount === walletNames.length;
@@ -323,6 +345,7 @@
         existing.mint = group.mint || existing.mint;
         existing.chain = group.chain || existing.chain;
         existing.tokenLogo = group.tokenLogo || existing.tokenLogo;
+        existing.platform = group.platform || existing.platform;
         existing.tier = newTier;
         existing.isNew = true;
         updated = true;
@@ -334,6 +357,7 @@
           mint: group.mint,
           chain: group.chain,
           tokenLogo: group.tokenLogo,
+          platform: group.platform,
           walletCount: walletNames.length,
           effectiveCount,
           closedCount,
@@ -554,7 +578,7 @@
         return `
         <div class="gcp-alert-item gcp-tier-${tier} ${a.isNew ? 'is-new' : ''} ${hasStar ? 'is-starred' : ''}" data-token="${escHtml(a.token)}">
           <div class="gcp-alert-token">
-            <span class="gcp-alert-token-name gcp-token-link" data-mint="${escHtml(a.mint || '')}" data-chain="${escHtml(a.chain || '')}" data-token="${escHtml(a.token)}" title="跳转到 ${escHtml(a.token)}">${logoImg}${escHtml(a.token)} ↗</span>
+            <span class="gcp-alert-token-name gcp-token-link" data-mint="${escHtml(a.mint || '')}" data-chain="${escHtml(a.chain || '')}" data-token="${escHtml(a.token)}" title="跳转到 ${escHtml(a.token)}">${logoImg}${escHtml(a.token)} ↗</span>${a.platform ? `<span class="gcp-plat-badge ${escHtml(a.platform.cls)}" title="${escHtml(a.platform.label)}">${escHtml(a.platform.tag)}</span>` : ''}
             <span class="gcp-alert-count">${effective} 个钱包${closedCount > 0 ? ` <span class="gcp-closed-tag">−${closedCount} 清仓</span>` : ''}${tierIcon}</span>
           </div>
           <div class="gcp-alert-time">${a.mcap ? '市值 ' + escHtml(a.mcap) : ''}${a.chain ? ' · ' + escHtml(a.chain.toUpperCase()) : ''}</div>

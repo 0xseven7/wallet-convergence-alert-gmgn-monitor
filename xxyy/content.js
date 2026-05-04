@@ -29,6 +29,27 @@
   // 钱包名 → 分组名映射
   const walletGroups = new Map();
 
+  // ===== 检测代币发射平台 =====
+  function detectPlatform(mint, chain, dex, dexId) {
+    const m = (mint || '').toLowerCase();
+    const c = (chain || '').toLowerCase();
+    const d = (dex || '').toLowerCase();
+    const i = (dexId || '').toLowerCase();
+    // Solana 末尾约定
+    if (c === 'sol') {
+      if (m.endsWith('pump')) return { tag: 'pump', label: 'pump.fun', cls: 'xcp-plat-pump' };
+      if (m.endsWith('bonk')) return { tag: 'bonk', label: 'bonk.fun', cls: 'xcp-plat-bonk' };
+      if (m.endsWith('boop')) return { tag: 'boop', label: 'boop.fun', cls: 'xcp-plat-boop' };
+    }
+    // BSC：靠 dex 名
+    if (c === 'bsc' || c === 'bnb') {
+      if (d.includes('four') || d.includes('4.meme') || i.includes('four')) return { tag: 'four', label: 'four.meme', cls: 'xcp-plat-four' };
+    }
+    // 通用：dex 名包含 pump/bonk 也算
+    if (i.includes('pfamm') || d.includes('pump amm') || d === 'pumpfun') return { tag: 'pump', label: 'pump.fun', cls: 'xcp-plat-pump' };
+    return null;
+  }
+
   // 特别关注的钱包名集合
   let starred = new Set();
   try {
@@ -441,7 +462,10 @@
       action: actionLabel,
       isBuy,
       source: source === 'my' ? '我的' : 'KOL',
-      signature: td.signature || ''
+      signature: td.signature || '',
+      dex: td.dex || td.dexName || '',
+      dexId: td.dexId || '',
+      platform: detectPlatform(mint, chain, td.dex || td.dexName || '', td.dexId || '')
     };
 
     // 推入对应来源
@@ -587,23 +611,24 @@
       for (const r of buyRecords) {
         if (!r.timeMs || (now - r.timeMs) > windowMs) continue;
         if (!v.filter(r)) continue;
-        // 用 mint 做唯一 key，没有 mint 才退回 token 名
-        const key = r.mint || ('NAME:' + r.token);
+        // **严格模式**：没有 mint 的记录不参与聚合（避免同名不同 CA 误聚）
+        if (!r.mint) continue;
+        const key = r.mint;
         if (!groups[key]) {
           groups[key] = {
             wallets: {},
             token: r.token,    // 显示名
             mcap: r.mcap,
             mint: r.mint,
-            chain: r.chain
+            chain: r.chain,
+            platform: r.platform || null
           };
         }
         const g = groups[key];
         if (!g.wallets[r.wallet]) g.wallets[r.wallet] = { amount: r.amount, time: r.time, timeMs: r.timeMs, source: r.source };
         if (r.mcap) g.mcap = r.mcap;
-        if (r.mint && !g.mint) g.mint = r.mint;
-        if (r.chain && !g.chain) g.chain = r.chain;
-        // 取最新看到的 symbol 做显示（rare case 名字会变）
+        if (!g.chain && r.chain) g.chain = r.chain;
+        if (!g.platform && r.platform) g.platform = r.platform;
         if (r.token) g.token = r.token;
       }
 
@@ -638,11 +663,8 @@
         const latest = new Date(Math.max(...times));
         const timeRange = formatTime(earliest) + ' ~ ' + formatTime(latest);
 
-        // 已有提醒匹配：优先用 mint 比对，没 mint 才用名字
-        const existing = list.find(a => {
-          if (group.mint && a.mint) return a.mint === group.mint;
-          return a.token === group.token && !a.mint && !group.mint;
-        });
+        // 严格按 mint 匹配（group.mint 一定存在，因为前面 filter 过了）
+        const existing = list.find(a => a.mint && a.mint === group.mint);
         // tier 用 effective（清仓的不计入热度）
         const newTier = calcTier(effectiveCount);
 
@@ -662,6 +684,7 @@
           existing.mint = group.mint || existing.mint;
           existing.chain = group.chain || existing.chain;
           existing.tier = newTier;
+          existing.platform = group.platform || existing.platform;
           existing.isNew = true;
           existing.updatedAt = Date.now();
           // 仅升档发声（清仓导致的降档不响）
@@ -675,6 +698,7 @@
             source: v.listName,
             mint: group.mint,
             chain: group.chain,
+            platform: group.platform,
             walletCount: walletNames.length,
             effectiveCount,
             closedCount,
@@ -990,7 +1014,7 @@
     return `
       <div class="xcp-alert-item xcp-tier-${tier} ${a.isNew ? 'is-new' : ''} ${isMy ? 'is-my-source' : ''} ${hasStar ? 'is-starred' : ''}" data-token="${escHtml(a.token)}">
         <div class="xcp-alert-token">
-          <span class="xcp-alert-token-name xcp-token-link" data-token="${escHtml(a.token)}" data-mint="${escHtml(a.mint || '')}" data-chain="${escHtml(a.chain || '')}" title="跳转到 ${escHtml(a.token)} 交易页">${escHtml(a.token)} ↗</span>
+          <span class="xcp-alert-token-name xcp-token-link" data-token="${escHtml(a.token)}" data-mint="${escHtml(a.mint || '')}" data-chain="${escHtml(a.chain || '')}" title="跳转到 ${escHtml(a.token)} 交易页">${escHtml(a.token)} ↗</span>${a.platform ? `<span class="xcp-plat-badge ${escHtml(a.platform.cls)}" title="${escHtml(a.platform.label)}">${escHtml(a.platform.tag)}</span>` : ''}
           <span class="xcp-alert-count">${effective} 个钱包${closedCount > 0 ? ` <span class="xcp-closed-tag">−${closedCount} 清仓</span>` : ''}${tierIcon}</span>
         </div>
         <div class="xcp-alert-time">${escHtml(a.timeRange)}${a.mcap ? ' · 市值 ' + escHtml(a.mcap) : ''}${mixSummary}</div>
