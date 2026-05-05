@@ -273,21 +273,33 @@
     const tDate = parseTime(timeStr);
     const timeMs = tDate ? tDate.getTime() : Date.now();
 
-    // 用已知 tokenMeta 反查 — 通过 symbol/name 匹配（DOM 拿不到 mint）
+    // 从金额单位反推 chain（必须，不然同名跨链反查会乱串）
+    const amountText = amountEl ? amountEl.textContent.trim() : '';
+    let detectedChain = '';
+    if (/\bSOL\b/i.test(amountText)) detectedChain = 'sol';
+    else if (/\bBNB\b/i.test(amountText)) detectedChain = 'bsc';
+    else if (/\bETH\b/i.test(amountText)) detectedChain = 'eth';
+    else if (/\bBASE\b/i.test(amountText)) detectedChain = 'base';
+
+    // 反查 tokenMeta：必须 symbol/name 匹配 + chain 匹配（避免 FREEMAN-BSC 错填进 FREEMAN-SOL 的 trade）
     let meta = {};
     for (const m of tokenMeta.values()) {
-      if (m.symbol === tokenName || m.name === tokenName) { meta = m; break; }
+      const nameMatch = m.symbol === tokenName || m.name === tokenName;
+      if (!nameMatch) continue;
+      // 没识别出 chain 时也别用名字反查 — 宁可让 mint 留空被严格模式跳过
+      if (!detectedChain) continue;
+      if (m.chain === detectedChain) { meta = m; break; }
     }
     return {
       wallet: walletEl.textContent.trim(),
       token: tokenName,
       tokenSymbol: meta.symbol || tokenName,
       mint: meta.mint || '',
-      chain: meta.chain || '',
+      chain: meta.chain || detectedChain || '',
       logo: meta.logo || '',
       time: timeStr,
       timeMs,
-      amount: amountEl ? amountEl.textContent.trim() : '',
+      amount: amountText,
       mcap,
       action: actionText,
       isBuy,

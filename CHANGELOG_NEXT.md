@@ -1,30 +1,12 @@
-## v1.9.0 — gmgn 多面板扫描 + 详细状态诊断
+## v1.9.1 — 修跨链同名代币的 mint 错填
 
-### gmgn 多钱包追踪面板支持
+**真 bug**：xxyy 的 DOM 扫描没法直接拿到 mint，靠**代币名反查 tokenMeta**填补。如果同时存在 FREEMAN-BSC（`0x72…4444`）和 FREEMAN-SOL 两个同名 token，反查只取「第一个 symbol 匹配」的 meta —— SOL 上的 trade 被错误填上 BSC 的 mint，最终全部并进 BSC 那个聚合，列表里就出现「BNB 购买」和「SOL 购买」混在一起。
 
-之前 `findVirtualList()` 只取页面里第一个 `.virtual-list-container`，如果你像很多人那样**开多个钱包追踪面板**（每个监控不同链），后面那些都被忽略。
+**修复**（仅 xxyy DOM 扫描路径）：
+1. 从金额单位反推 chain（`SOL` → sol、`BNB` → bsc、`ETH` → eth、`BASE` → base）
+2. 反查 `tokenMeta` 时**必须 symbol + chain 都匹配**，不再只看 symbol
+3. 没识别到 chain 时，宁可让 mint 留空（被严格模式跳过），也不乱填
 
-**新行为**：
-- 扫描器遍历**所有**含「追踪」tab 的面板
-- 每个面板的可见 trade 行都进入聚合池（同一 mint 的不同链上的钱包也能聚合到一起）
-- MutationObserver 也分别绑到每个面板，新行随时进池
-- 注入 ☆ 按钮的逻辑同样覆盖所有面板
+socket.io 推送路径不受影响（mint 直接从 `tradeData.mint` 拿，不需要反查）。
 
-### 详细状态诊断（替代旧的 ⚪ 圆点）
-
-面板顶部的状态指示从单字符 emoji 升级成**有文字的小 chip**：
-
-- `🔍 等待` 灰色 — 还没扫描
-- `🔍 17 行 · 池 23` 绿色 — 一切正常
-- `⚠️ 0 行 · 池 0` 红色 — 出问题了
-
-**hover 显示完整诊断**：
-- gmgn：「3/3 个面板在追踪 tab / 当前可见 17 行 / 池中 23 笔买入 / 5 笔清仓」
-- xxyy：「KOL: 124 笔 · 我的: 8 笔 / 池中买入: 132 / 清仓: 14」
-
-警告状态 hover 会告诉你具体原因：
-- 「没找到钱包追踪面板」
-- 「所有面板都不在「追踪」tab」
-- 「列表无可见行（gmgn 自身筛选无活动钱包？）」
-
-定位「为什么没警报」从此不用打开 DevTools。
+**注意**：升级后**已经在池子里的错位记录**还会保留到时间窗口结束（默认 5 分钟）。等池子刷新或手动 console 跑 `__xcp.alertsKol = []; __xcp.buyRecords = []; __xcp.rerender()` 立刻清干净。
