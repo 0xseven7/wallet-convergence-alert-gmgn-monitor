@@ -101,17 +101,37 @@
     return panel.querySelector('.virtual-list-container');
   }
 
-  // 检查当前是否在 追踪 tab
-  function isOnTrackingTab() {
-    const panel = findTrackingPanel();
-    if (!panel) return false;
-    const tabs = panel.querySelectorAll('.pi-tabs-tab-btn');
-    for (const t of tabs) {
-      if (t.classList.contains('pi-tabs-tab-btn-active') || t.parentElement?.classList.contains('pi-tabs-tab-active')) {
-        return /追踪/.test(t.textContent.trim());
+  // 找所有 trade-like 的 virtual-list（用户可能开多个钱包追踪面板分别监控不同链）
+  // 返回 [{list, panel, isOnTracking}, ...]
+  function findAllTrackingLists() {
+    const lists = document.querySelectorAll('.virtual-list-container');
+    const result = [];
+    for (const list of lists) {
+      // 找最近的、含「追踪」tab 的祖先
+      let panel = list.closest('.flex.flex-col.size-full');
+      if (!panel) panel = list.closest('.flex.flex-col');
+      if (!panel) continue;
+      const tabs = panel.querySelectorAll('.pi-tabs-tab-btn');
+      const hasTrackTab = Array.from(tabs).some(t => /追踪/.test(t.textContent.trim()));
+      if (!hasTrackTab) continue;
+      // 检查当前是否激活在「追踪」
+      let active = null;
+      for (const t of tabs) {
+        if (t.classList.contains('pi-tabs-tab-btn-active') || t.parentElement?.classList.contains('pi-tabs-tab-active')) {
+          active = t.textContent.trim();
+          break;
+        }
       }
+      const isOnTracking = !active || /追踪/.test(active);
+      result.push({ list, panel, isOnTracking });
     }
-    return true;  // 找不到激活态就假定在追踪
+    return result;
+  }
+
+  // 检查至少有一个面板在 追踪 tab
+  function isOnTrackingTab() {
+    const all = findAllTrackingLists();
+    return all.some(p => p.isOnTracking);
   }
 
   // ===== 解析单条 trade =====
@@ -234,34 +254,98 @@
   }
 
   // ===== 扫描列表 =====
+  // 诊断信息（status 指示用）
+  let lastScanInfo = {
+    panelCount: 0,
+    activeTrackingPanels: 0,
+    rowCount: 0,
+    panelsOff: 0,            // 在非追踪 tab 的面板
+    error: ''
+  };
+
+  function updateStatus() {
+    if (!panelEl) return;
+    const st = panelEl.querySelector('.gcp-status');
+    if (!st) return;
+    const i = lastScanInfo;
+    const pool = buyRecords.length;
+    const closes = closedRecords.length;
+
+    let text, title;
+    if (i.error) {
+      text = `⚠️ ${i.rowCount} 行 · 池 ${pool}`;
+      title = i.error;
+      st.classList.add('is-warn');
+      st.classList.remove('is-ok');
+    } else if (i.rowCount > 0) {
+      text = `🔍 ${i.rowCount} 行 · 池 ${pool}`;
+      const parts = [
+        `${i.activeTrackingPanels}/${i.panelCount} 个面板在追踪 tab`,
+        `当前可见 ${i.rowCount} 行`,
+        `池中 ${pool} 笔买入${closes ? ' / ' + closes + ' 笔清仓' : ''}`,
+      ];
+      title = parts.join('\n');
+      st.classList.add('is-ok');
+      st.classList.remove('is-warn');
+    } else {
+      text = `🔍 0 行 · 池 ${pool}`;
+      title = '列表无可见行（可能未滚动或 gmgn 自身筛选）';
+      st.classList.remove('is-ok');
+      st.classList.remove('is-warn');
+    }
+    st.textContent = text;
+    st.title = title;
+  }
+
   function scanTrades() {
-    const list = findVirtualList();
-    if (!list) return;
-    if (!isOnTrackingTab()) return;
-    const rowsRoot = list.children[0]?.children[0];
-    if (!rowsRoot) return;
-    const rows = rowsRoot.children;
+    const all = findAllTrackingLists();
+    lastScanInfo.panelCount = all.length;
+    lastScanInfo.activeTrackingPanels = all.filter(p => p.isOnTracking).length;
+    lastScanInfo.panelsOff = all.length - lastScanInfo.activeTrackingPanels;
+
+    if (all.length === 0) {
+      lastScanInfo.rowCount = 0;
+      lastScanInfo.error = '没找到钱包追踪面板';
+      updateStatus();
+      return;
+    }
+    if (lastScanInfo.activeTrackingPanels === 0) {
+      lastScanInfo.rowCount = 0;
+      lastScanInfo.error = '所有面板都不在「追踪」tab';
+      updateStatus();
+      return;
+    }
 
     let added = 0;
-    for (const row of rows) {
-      const trade = parseTradeRow(row);
-      if (!trade) continue;
-      if (trade.isBuy) {
-        // 用 mint+wallet+timeAgo 组合做去重 key（gmgn 没有 signature）
-        const key = `${trade.mint || trade.token}|${trade.wallet}|${trade.timeAgo}`;
-        if (seenKeys.has(key)) continue;
-        seenKeys.add(key);
-        buyRecords.push(trade);
-        added++;
-      } else if (trade.action && trade.action.includes('清仓')) {
-        // 清仓事件：用同样的 key 模式去重，存入 closedRecords
-        const ck = `C|${trade.mint || trade.token}|${trade.wallet}|${trade.timeAgo}`;
-        if (seenClosedKeys.has(ck)) continue;
-        seenClosedKeys.add(ck);
-        closedRecords.push(trade);
-        added++;
+    let totalRows = 0;
+    // 遍历所有在「追踪」tab 的面板
+    for (const { list, isOnTracking } of all) {
+      if (!isOnTracking) continue;
+      const rowsRoot = list.children[0]?.children[0];
+      if (!rowsRoot) continue;
+      const rows = rowsRoot.children;
+      totalRows += rows.length;
+      for (const row of rows) {
+        const trade = parseTradeRow(row);
+        if (!trade) continue;
+        if (trade.isBuy) {
+          const key = `${trade.mint || trade.token}|${trade.wallet}|${trade.timeAgo}`;
+          if (seenKeys.has(key)) continue;
+          seenKeys.add(key);
+          buyRecords.push(trade);
+          added++;
+        } else if (trade.action && trade.action.includes('清仓')) {
+          const ck = `C|${trade.mint || trade.token}|${trade.wallet}|${trade.timeAgo}`;
+          if (seenClosedKeys.has(ck)) continue;
+          seenClosedKeys.add(ck);
+          closedRecords.push(trade);
+          added++;
+        }
       }
     }
+    lastScanInfo.rowCount = totalRows;
+    lastScanInfo.error = totalRows === 0 ? '追踪 tab 列表为空（gmgn 过滤无活动钱包？）' : '';
+    updateStatus();
 
     if (added > 0) {
       cleanOldRecords();
@@ -491,7 +575,7 @@
       <div class="gcp-settings">
         <label>≥ <input type="number" class="gcp-min-wallets" min="2" max="20" value="${config.minWallets}"> 钱包</label>
         <label>内 <input type="number" class="gcp-time-window" min="1" max="1440" value="${config.timeWindowMin}"> 分钟</label>
-        <span class="gcp-status" title="数据状态">⚪</span>
+        <span class="gcp-status" title="数据状态：监听中">🔍 等待</span>
       </div>
       <div class="gcp-alerts"><div class="gcp-empty">监听中…等待信号</div></div>
       <button class="gcp-clear-btn">清空提醒</button>
@@ -693,8 +777,13 @@
   }
 
   function injectOrigStars() {
-    const list = findVirtualList();
-    if (!list) return;
+    const all = findAllTrackingLists();
+    for (const { list, isOnTracking } of all) {
+      if (!isOnTracking) continue;
+      injectStarsInList(list);
+    }
+  }
+  function injectStarsInList(list) {
     const rowsRoot = list.children[0]?.children[0];
     if (!rowsRoot) return;
     for (const row of rowsRoot.children) {
@@ -787,14 +876,21 @@
   }
 
   // ===== Observer =====
+  let observers = [];
   function startObserver() {
-    const list = findVirtualList();
-    if (!list) return false;
-    if (observer) observer.disconnect();
-    observer = new MutationObserver(() => {
-      scanTrades();
-    });
-    observer.observe(list, { childList: true, subtree: true });
+    const all = findAllTrackingLists();
+    if (all.length === 0) return false;
+    // 拆掉旧的
+    observers.forEach(o => { try { o.disconnect(); } catch(e) {} });
+    observers = [];
+    // 给每个追踪面板一个 observer
+    for (const { list } of all) {
+      const ob = new MutationObserver(() => scanTrades());
+      ob.observe(list, { childList: true, subtree: true });
+      observers.push(ob);
+    }
+    // 兼容旧变量（有地方还在用 observer 判断）
+    observer = observers[0] || null;
     if (scanInterval) clearInterval(scanInterval);
     scanInterval = setInterval(scanTrades, 5000);
     return true;
@@ -807,12 +903,13 @@
       if (!document.getElementById('gcp-inline-panel')) {
         if (mountPanel()) renderAlerts();
       }
-      // 追踪列表存在才需要 observer
-      const list = findVirtualList();
-      if (list && !observer) {
+      // 追踪列表数量变化时重启 observer（新增/移除面板）
+      const all = findAllTrackingLists();
+      if (all.length > 0 && observers.length !== all.length) {
         startObserver();
-      } else if (!list && observer) {
-        observer.disconnect();
+      } else if (all.length === 0 && observers.length > 0) {
+        observers.forEach(o => { try { o.disconnect(); } catch(e) {} });
+        observers = [];
         observer = null;
       }
     }, 2000);

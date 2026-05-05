@@ -1170,9 +1170,26 @@
   }
 
   function setStatus(emoji, title) {
+    // 兼容旧调用：如果有调用方传 emoji+title 就直接显示；否则用通用诊断
     if (!panelEl) return;
-    const st = panelEl.querySelector('.xcp-status');
-    if (st) { st.textContent = emoji; st.title = title || ''; }
+    document.querySelectorAll('.xcp-status').forEach(st => {
+      if (emoji && /^[🟢🔴⚪⚠️🔍]/.test(emoji)) {
+        // 显式调用，仍按详细格式更新
+      }
+      const pool = buyRecords.length;
+      const closes = closedRecords.length;
+      const kCount = cloneData.kol.length;
+      const mCount = cloneData.my.length;
+      st.textContent = pool > 0 ? `🔍 池 ${pool}` : '🔍 等待';
+      st.title = `KOL: ${kCount} 笔 · 我的: ${mCount} 笔\n池中买入: ${pool}${closes ? ' · 清仓: ' + closes : ''}`;
+      if (pool > 0) {
+        st.classList.add('is-ok');
+        st.classList.remove('is-warn');
+      } else {
+        st.classList.remove('is-ok');
+        st.classList.remove('is-warn');
+      }
+    });
   }
 
   // ===== 页面内跳转（不触发整页刷新）=====

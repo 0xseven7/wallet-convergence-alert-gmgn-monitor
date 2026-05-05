@@ -636,3 +636,25 @@
   color: #e2b340;
   border-color: rgba(226, 179, 64, 0.4);
 }
+
+/* 状态指示 — 详细模式 */
+.gcp-status {
+  margin-left: auto;
+  font-size: 10px;
+  cursor: help;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #999;
+  font-family: 'SF Mono', 'Cascadia Mono', 'Consolas', monospace;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+}
+.gcp-status.is-ok {
+  background: rgba(76, 209, 55, 0.12);
+  color: #7bed9f;
+}
+.gcp-status.is-warn {
+  background: rgba(255, 71, 87, 0.15);
+  color: #ff8c8c;
+}
