@@ -5,12 +5,15 @@
 
   // ===== 配置 =====
   const DEFAULT_CONFIG = {
-    minWallets: 2,
+    minWallets: 2,             // KOL 主面板阈值
     timeWindowMin: 5,
-    soundEnabled: true,        // 兼容旧版（已废弃，改用下面两个）
+    minWalletsMy: 2,           // 我的面板阈值（独立）
+    timeWindowMinMy: 5,
+    soundEnabled: true,        // 兼容旧版（已废弃）
     soundEnabledMain: true,
     soundEnabledMy: true,
     collapsed: false,
+    collapsedMy: false,
     cloneTab: '我的',
     tieredAlerts: true
   };
@@ -115,12 +118,19 @@
   try {
     const saved = localStorage.getItem('xcp_config');
     if (saved) Object.assign(config, JSON.parse(saved));
-    // 旧版兼容：第一次升级时把全局 soundEnabled 同步到两个新字段
+    // 旧版兼容
     if (saved) {
       const obj = JSON.parse(saved);
       if (obj.soundEnabled !== undefined && obj.soundEnabledMain === undefined) {
         config.soundEnabledMain = obj.soundEnabled;
         config.soundEnabledMy = obj.soundEnabled;
+      }
+      // 旧版的 minWallets/timeWindowMin 统一同步到 my 字段
+      if (obj.minWalletsMy === undefined && obj.minWallets !== undefined) {
+        config.minWalletsMy = obj.minWallets;
+      }
+      if (obj.timeWindowMinMy === undefined && obj.timeWindowMin !== undefined) {
+        config.timeWindowMinMy = obj.timeWindowMin;
       }
     }
   } catch (e) {}
@@ -626,9 +636,10 @@
   // ===== 聚合检测 =====
   function cleanOldRecords() {
     const now = Date.now();
-    const cutoff = config.timeWindowMin * 60 * 1000;
+    // 取两个面板里更长的窗口，确保任一面板的检测都不丢数据
+    const maxWindowMin = Math.max(config.timeWindowMin, config.timeWindowMinMy);
+    const cutoff = maxWindowMin * 60 * 1000;
     buyRecords = buyRecords.filter(r => r.timeMs && (now - r.timeMs) < cutoff);
-    // closed 比 window 多保留 2x，确保 alert 能持续看到清仓状态
     closedRecords = closedRecords.filter(r => r.timeMs && (now - r.timeMs) < cutoff * 2);
     if (seenKeys.size > 5000) {
       seenKeys = new Set(Array.from(seenKeys).slice(-2500));
@@ -640,18 +651,26 @@
 
   function checkConvergence() {
     const now = Date.now();
-    const windowMs = config.timeWindowMin * 60 * 1000;
 
     let totalTriggered = false;
     let highestTierFired = 0;       // 兼容
     let highestTierMain = 0;
     let highestTierMy = 0;
 
-    // 主面板（KOL）= 全聚合
-    // 我的面板：只要 sources 里有「我的」就算（即使同时也在 KOL 频道里出现）
+    // 每个面板用自己的阈值 (minWallets / windowMin)
     const variants = [
-      { listName: 'kol', filter: () => true },
-      { listName: 'my',  filter: r => (r.sources && r.sources.has('我的')) || r.source === '我的' }
+      {
+        listName: 'kol',
+        filter: () => true,
+        minWallets: config.minWallets,
+        windowMs: config.timeWindowMin * 60 * 1000
+      },
+      {
+        listName: 'my',
+        filter: r => (r.sources && r.sources.has('我的')) || r.source === '我的',
+        minWallets: config.minWalletsMy,
+        windowMs: config.timeWindowMinMy * 60 * 1000
+      }
     ];
 
     for (const v of variants) {
@@ -659,7 +678,7 @@
       const groups = {};   // 合约地址 → 聚合数据
 
       for (const r of buyRecords) {
-        if (!r.timeMs || (now - r.timeMs) > windowMs) continue;
+        if (!r.timeMs || (now - r.timeMs) > v.windowMs) continue;
         if (!v.filter(r)) continue;
         // **严格模式**：没有 mint 的记录不参与聚合（避免同名不同 CA 误聚）
         if (!r.mint) continue;
@@ -698,7 +717,7 @@
 
       for (const [groupKey, group] of Object.entries(groups)) {
         const walletNames = Object.keys(group.wallets);
-        if (walletNames.length < config.minWallets) continue;
+        if (walletNames.length < v.minWallets) continue;
 
         // 给每个钱包打上 closed 标记：买入之后又清仓了
         // walletNames 现在是 dedupId（地址）数组
@@ -731,15 +750,14 @@
 
         // 严格按 mint 匹配（group.mint 一定存在，因为前面 filter 过了）
         const existing = list.find(a => a.mint && a.mint === group.mint);
-        // tier 用 effective（清仓的不计入热度）
-        const newTier = calcTier(effectiveCount);
+        // tier 用 effective（清仓的不计入热度），用本面板自己的阈值
+        const newTier = calcTier(effectiveCount, v.minWallets);
 
         if (existing) {
-          // 仅当 walletCount 或 closedCount 任一变化才更新
           const sameCount = existing.walletCount === walletNames.length;
           const sameClose = (existing.closedCount || 0) === closedCount;
           if (sameCount && sameClose) continue;
-          const prevTier = existing.tier || calcTier(existing.effectiveCount || existing.walletCount);
+          const prevTier = existing.tier || calcTier(existing.effectiveCount || existing.walletCount, v.minWallets);
           existing.walletCount = walletNames.length;
           existing.effectiveCount = effectiveCount;
           existing.closedCount = closedCount;
@@ -821,9 +839,10 @@
 
   // 档位分级：tier = min(4, walletCount - minWallets + 1)
   // 开关关闭时永远返回 1（无视觉/声音升级）
-  function calcTier(walletCount) {
+  function calcTier(walletCount, minWalletsArg) {
     if (!config.tieredAlerts) return 1;
-    return Math.min(4, Math.max(1, walletCount - config.minWallets + 1));
+    const mw = minWalletsArg != null ? minWalletsArg : config.minWallets;
+    return Math.min(4, Math.max(1, walletCount - mw + 1));
   }
 
   function playSound(tier) {
@@ -971,28 +990,31 @@
           b.title = config.tieredAlerts ? '分级提醒：开（点击关闭）' : '分级提醒：关（点击开启）';
         });
         saveConfig();
-        // 立刻重渲所有面板（已有提醒的 tier 重算）
-        for (const a of alertsKol) a.tier = calcTier(a.walletCount);
-        for (const a of alertsMy) a.tier = calcTier(a.walletCount);
+        // 立刻重渲所有面板（已有提醒的 tier 重算，各用各的阈值）
+        for (const a of alertsKol) a.tier = calcTier(a.effectiveCount || a.walletCount, config.minWallets);
+        for (const a of alertsMy) a.tier = calcTier(a.effectiveCount || a.walletCount, config.minWalletsMy);
         renderAlerts();
       });
     }
 
+    // 阈值绑定到本面板自己的 config 字段（不再跨面板同步）
+    const mwKey = source === '我的' ? 'minWalletsMy' : 'minWallets';
+    const twKey = source === '我的' ? 'timeWindowMinMy' : 'timeWindowMin';
+
     const minW = rootEl.querySelector('.xcp-min-wallets');
+    minW.value = config[mwKey];
     minW.addEventListener('change', (e) => {
-      config.minWallets = Math.max(2, parseInt(e.target.value) || 2);
-      e.target.value = config.minWallets;
-      // 同步所有面板的输入框
-      document.querySelectorAll('.xcp-min-wallets').forEach(i => i.value = config.minWallets);
+      config[mwKey] = Math.max(2, parseInt(e.target.value) || 2);
+      e.target.value = config[mwKey];
       saveConfig(); resetAndRescan();
     });
     minW.addEventListener('click', e => e.stopPropagation());
 
     const tw = rootEl.querySelector('.xcp-time-window');
+    tw.value = config[twKey];
     tw.addEventListener('change', (e) => {
-      config.timeWindowMin = Math.max(1, parseInt(e.target.value) || 5);
-      e.target.value = config.timeWindowMin;
-      document.querySelectorAll('.xcp-time-window').forEach(i => i.value = config.timeWindowMin);
+      config[twKey] = Math.max(1, parseInt(e.target.value) || 5);
+      e.target.value = config[twKey];
       saveConfig(); resetAndRescan();
     });
     tw.addEventListener('click', e => e.stopPropagation());
@@ -1055,10 +1077,12 @@
     seenKeys.clear();
     buyRecords = [];
     // 重新喂入两个来源（用 addBuyRecord 跑同一套去重 + sources 合并逻辑）
+    // 用最大窗口，确保两边面板各自检测时数据都齐
+    const maxWindowMs = Math.max(config.timeWindowMin, config.timeWindowMinMy) * 60 * 1000;
     const fillFrom = (arr, sourceTag) => {
       for (const t of arr) {
         if (!t.isBuy || !t.timeMs) continue;
-        if ((Date.now() - t.timeMs) >= config.timeWindowMin * 60 * 1000) continue;
+        if ((Date.now() - t.timeMs) >= maxWindowMs) continue;
         const tagged = { ...t, source: sourceTag };
         tagged.dedupId = tagged.walletAddr || tagged.wallet;
         const key = `${tagged.dedupId}|${tagged.mint || tagged.token}|${tagged.timeMs}`;
@@ -1075,7 +1099,7 @@
     const hasStar = isAlertStarred(a);
     const closedCount = a.closedCount || 0;
     const effective = (a.effectiveCount != null) ? a.effectiveCount : a.walletCount;
-    const tier = a.tier || calcTier(effective);
+    const tier = a.tier || calcTier(effective, isMy ? config.minWalletsMy : config.minWallets);
     const tierIcon = tier >= 4 ? ' 🚨' : tier >= 3 ? ' 🔥' : tier >= 2 ? ' ⚡' : '';
     // 主面板显示 KOL/我的 来源混合统计
     let mixSummary = '';
@@ -1087,7 +1111,8 @@
       if (myCount > 0) parts.push(`<span class="xcp-mix-my">★我的 ${myCount}</span>`);
       if (parts.length > 1) mixSummary = ' · ' + parts.join(' + ');
     }
-    const isFaded = effective < config.minWallets;   // 有效钱包已不够 → 降级显示
+    const panelMinWallets = isMy ? config.minWalletsMy : config.minWallets;
+    const isFaded = effective < panelMinWallets;   // 有效钱包已不够 → 降级显示
     return `
       <div class="xcp-alert-item xcp-tier-${tier} ${a.isNew ? 'is-new' : ''} ${isMy ? 'is-my-source' : ''} ${hasStar ? 'is-starred' : ''} ${isFaded ? 'is-faded' : ''}" data-token="${escHtml(a.token)}">
         <div class="xcp-alert-token">
