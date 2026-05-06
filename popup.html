@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GMGN 监控窗口设置</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="popup">
+      <h1>主窗口设置</h1>
+      <p class="hint">
+        把当前 Chrome 窗口设为主窗口后，GMGN follow 监控窗口里点开的非导航链接会优先在这里打开。
+      </p>
+
+      <section class="card">
+        <div class="label">当前窗口</div>
+        <div class="value" id="current-window">读取中...</div>
+        <div class="meta role" id="current-window-role" data-role="normal">正在识别当前窗口状态...</div>
+      </section>
+
+      <section class="card">
+        <div class="label">已选主窗口</div>
+        <div class="value" id="main-window">未设置</div>
+        <div class="meta" id="main-window-meta">请在目标 Chrome 窗口里点击“设为主窗口”。</div>
+      </section>
+
+      <div class="actions">
+        <button id="set-main-window" class="primary" type="button">设为主窗口</button>
+        <button id="clear-main-window" class="secondary" type="button">清除选择</button>
+      </div>
+
+      <p class="status" id="status"></p>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

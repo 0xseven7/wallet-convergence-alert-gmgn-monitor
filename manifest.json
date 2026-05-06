@@ -1,9 +1,17 @@
 {
   "manifest_version": 3,
-  "name": "钱包聚合买入提醒",
+  "name": "Wallet Convergence Alert",
   "version": "1.9.2",
-  "description": "监控 xxyy.io / gmgn.ai 钱包追踪面板，N 个以上钱包在时间窗口内买同一代币时弹炫彩提醒。支持特别关注、SPA 跳转、按合约去重。",
-  "permissions": ["storage"],
+  "description": "Monitor xxyy.io and gmgn.ai wallet tracking panels, alert on wallet convergence, and redirect GMGN monitor links to the main window.",
+  "permissions": ["storage", "tabs", "windows"],
+  "host_permissions": ["https://gmgn.ai/*", "https://www.gmgn.ai/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Wallet Convergence Alert",
+    "default_popup": "popup.html"
+  },
   "content_scripts": [
     {
       "matches": ["*://pro.xxyy.io/*", "*://www.xxyy.io/*", "*://xxyy.io/*"],
@@ -16,6 +24,17 @@
       "js": ["xxyy/content.js"],
       "css": ["xxyy/styles.css"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://gmgn.ai/follow*", "https://www.gmgn.ai/follow*"],
+      "js": ["gmgn/page-bridge.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://gmgn.ai/*", "https://www.gmgn.ai/*"],
+      "js": ["gmgn/redirector.js"],
+      "run_at": "document_start"
     },
     {
       "matches": ["*://gmgn.ai/*", "*://www.gmgn.ai/*"],

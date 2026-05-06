@@ -30,6 +30,189 @@
   // 代币元数据：mint → { chain, symbol, logo }
   const tokenMeta = new Map();
 
+  const SHARED_STATE_KEY = 'gcp_gmgn_sources_v1';
+  const SHARED_SOURCE_TTL_MS = 5 * 60 * 1000;
+  const canUseSharedStorage = typeof chrome !== 'undefined'
+    && chrome.storage
+    && chrome.storage.local;
+  const sourceId = getSourceId();
+  let sharedSources = {};
+  let publishSharedTimer = null;
+  let sharedRefreshInterval = null;
+
+  function getSourceId() {
+    try {
+      const saved = sessionStorage.getItem('gcp_source_id');
+      if (saved) return saved;
+      const id = (typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : `gcp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      sessionStorage.setItem('gcp_source_id', id);
+      return id;
+    } catch (e) {
+      return `gcp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    }
+  }
+
+  function stripTradeForStorage(r) {
+    return {
+      wallet: r.wallet || '',
+      walletAvatar: r.walletAvatar || '',
+      action: r.action || '',
+      isBuy: !!r.isBuy,
+      token: r.token || '',
+      mint: r.mint || '',
+      chain: r.chain || '',
+      amount: r.amount || '',
+      mcap: r.mcap || '',
+      timeAgo: r.timeAgo || '',
+      tradeAge: r.tradeAge || '',
+      timeMs: r.timeMs || 0,
+      tokenLogo: r.tokenLogo || '',
+      href: r.href || '',
+      platform: r.platform || null
+    };
+  }
+
+  function getCurrentChainHint() {
+    const pathMatch = location.pathname.match(/^\/(sol|eth|bsc|base|tron|blast)\b/i);
+    if (pathMatch) return pathMatch[1].toLowerCase();
+    const recent = buyRecords.find(r => r.chain) || closedRecords.find(r => r.chain);
+    return recent ? recent.chain : '';
+  }
+
+  function pruneSharedSources(sources, now = Date.now()) {
+    const next = {};
+    for (const [id, source] of Object.entries(sources || {})) {
+      if (!source || !source.updatedAt) continue;
+      if ((now - source.updatedAt) > SHARED_SOURCE_TTL_MS) continue;
+      next[id] = source;
+    }
+    return next;
+  }
+
+  function schedulePublishSharedSnapshot() {
+    if (!canUseSharedStorage || publishSharedTimer) return;
+    publishSharedTimer = setTimeout(() => {
+      publishSharedTimer = null;
+      publishSharedSnapshot();
+    }, 250);
+  }
+
+  async function publishSharedSnapshot() {
+    if (!canUseSharedStorage) return;
+    try {
+      const now = Date.now();
+      const stored = await chrome.storage.local.get(SHARED_STATE_KEY);
+      const sources = pruneSharedSources(stored[SHARED_STATE_KEY] || {}, now);
+      sources[sourceId] = {
+        sourceId,
+        url: location.href,
+        chain: getCurrentChainHint(),
+        updatedAt: now,
+        rowCount: lastScanInfo.rowCount || 0,
+        buys: buyRecords.slice(-300).map(stripTradeForStorage),
+        closes: closedRecords.slice(-300).map(stripTradeForStorage)
+      };
+      sharedSources = sources;
+      await chrome.storage.local.set({ [SHARED_STATE_KEY]: sources });
+      updateStatus();
+    } catch (e) {}
+  }
+
+  async function removeSharedSnapshot() {
+    if (!canUseSharedStorage) return;
+    try {
+      const stored = await chrome.storage.local.get(SHARED_STATE_KEY);
+      const sources = stored[SHARED_STATE_KEY] || {};
+      if (sources[sourceId]) {
+        delete sources[sourceId];
+        await chrome.storage.local.set({ [SHARED_STATE_KEY]: sources });
+      }
+    } catch (e) {}
+  }
+
+  async function loadSharedSnapshots(options = {}) {
+    if (!canUseSharedStorage) return;
+    try {
+      const stored = await chrome.storage.local.get(SHARED_STATE_KEY);
+      sharedSources = pruneSharedSources(stored[SHARED_STATE_KEY] || {});
+      if (options.recalculate) {
+        cleanOldRecords();
+        checkConvergence();
+        updateStatus();
+      }
+    } catch (e) {}
+  }
+
+  function startSharedPoolSync() {
+    if (!canUseSharedStorage) return;
+    loadSharedSnapshots({ recalculate: true });
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName !== 'local' || !changes[SHARED_STATE_KEY]) return;
+      sharedSources = pruneSharedSources(changes[SHARED_STATE_KEY].newValue || {});
+      cleanOldRecords();
+      checkConvergence();
+      updateStatus();
+    });
+    if (sharedRefreshInterval) clearInterval(sharedRefreshInterval);
+    sharedRefreshInterval = setInterval(() => {
+      loadSharedSnapshots({ recalculate: true });
+      schedulePublishSharedSnapshot();
+    }, 10000);
+    window.addEventListener('pagehide', removeSharedSnapshot, { once: true });
+  }
+
+  function getCombinedRecords(kind) {
+    const now = Date.now();
+    const windowMs = config.timeWindowMin * 60 * 1000 * (kind === 'closes' ? 2 : 1);
+    const local = kind === 'closes' ? closedRecords : buyRecords;
+    const combined = [];
+    const seen = new Set();
+
+    function addRecord(r, source) {
+      if (!r || !r.timeMs || (now - r.timeMs) > windowMs) return;
+      const key = [
+        source,
+        r.chain || '',
+        r.mint || r.token || '',
+        r.wallet || '',
+        r.timeMs || r.timeAgo || ''
+      ].join('|');
+      if (seen.has(key)) return;
+      seen.add(key);
+      combined.push(r);
+    }
+
+    for (const r of local) addRecord(r, 'local');
+    for (const [id, source] of Object.entries(pruneSharedSources(sharedSources, now))) {
+      if (id === sourceId) continue;
+      const records = Array.isArray(source[kind]) ? source[kind] : [];
+      for (const r of records) addRecord(r, id);
+    }
+    return combined;
+  }
+
+  function getCombinedBuyRecords() {
+    return getCombinedRecords('buys');
+  }
+
+  function getCombinedClosedRecords() {
+    return getCombinedRecords('closes');
+  }
+
+  function getSharedChainSummary() {
+    const counts = {};
+    for (const r of getCombinedBuyRecords()) {
+      const chain = (r.chain || 'unknown').toUpperCase();
+      counts[chain] = (counts[chain] || 0) + 1;
+    }
+    return Object.entries(counts)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([chain, count]) => `${chain}:${count}`)
+      .join(' ');
+  }
+
   // 缩写合约
   function shortMint(m) {
     if (!m) return '';
@@ -268,8 +451,9 @@
     const st = panelEl.querySelector('.gcp-status');
     if (!st) return;
     const i = lastScanInfo;
-    const pool = buyRecords.length;
-    const closes = closedRecords.length;
+    const pool = getCombinedBuyRecords().length;
+    const closes = getCombinedClosedRecords().length;
+    const chainSummary = getSharedChainSummary();
 
     let text, title;
     if (i.error) {
@@ -293,6 +477,10 @@
       st.classList.remove('is-ok');
       st.classList.remove('is-warn');
     }
+    if (chainSummary) {
+      text += ` | ${chainSummary}`;
+      title += `\nChains: ${chainSummary}`;
+    }
     st.textContent = text;
     st.title = title;
   }
@@ -306,12 +494,18 @@
     if (all.length === 0) {
       lastScanInfo.rowCount = 0;
       lastScanInfo.error = '没找到钱包追踪面板';
+      cleanOldRecords();
+      schedulePublishSharedSnapshot();
+      checkConvergence();
       updateStatus();
       return;
     }
     if (lastScanInfo.activeTrackingPanels === 0) {
       lastScanInfo.rowCount = 0;
       lastScanInfo.error = '所有面板都不在「追踪」tab';
+      cleanOldRecords();
+      schedulePublishSharedSnapshot();
+      checkConvergence();
       updateStatus();
       return;
     }
@@ -347,10 +541,9 @@
     lastScanInfo.error = totalRows === 0 ? '追踪 tab 列表为空（gmgn 过滤无活动钱包？）' : '';
     updateStatus();
 
-    if (added > 0) {
-      cleanOldRecords();
-      checkConvergence();
-    }
+    cleanOldRecords();
+    schedulePublishSharedSnapshot();
+    checkConvergence();
 
     if (seenKeys.size > 5000) {
       seenKeys = new Set(Array.from(seenKeys).slice(-2500));
@@ -374,12 +567,14 @@
     const now = Date.now();
     const windowMs = config.timeWindowMin * 60 * 1000;
     const groups = {};
+    const combinedBuyRecords = getCombinedBuyRecords();
+    const combinedClosedRecords = getCombinedClosedRecords();
 
-    for (const r of buyRecords) {
+    for (const r of combinedBuyRecords) {
       if (!r.timeMs || (now - r.timeMs) > windowMs) continue;
       // 严格按 mint 聚合，没 mint 不参与
       if (!r.mint) continue;
-      const key = r.mint;
+      const key = `${r.chain || 'unknown'}|${r.mint}`;
       if (!groups[key]) groups[key] = { wallets: {}, mcap: r.mcap, mint: r.mint, chain: r.chain, token: r.token, tokenLogo: r.tokenLogo, platform: r.platform || null };
       const g = groups[key];
       if (!g.wallets[r.wallet]) g.wallets[r.wallet] = { amount: r.amount, timeAgo: r.timeAgo, timeMs: r.timeMs, avatar: r.walletAvatar };
@@ -398,8 +593,9 @@
 
       const walletDetails = walletNames.map(w => {
         const wd = group.wallets[w];
-        const closeMatch = closedRecords.find(c =>
+        const closeMatch = combinedClosedRecords.find(c =>
           c.wallet === w &&
+          (c.chain || '') === (group.chain || '') &&
           ((group.mint && c.mint === group.mint) ||
            (!group.mint && !c.mint && c.token === group.token)) &&
           c.timeMs > wd.timeMs
@@ -420,7 +616,11 @@
       const newTier = calcTier(effectiveCount);
 
       // 严格按 mint 匹配（group.mint 一定存在）
-      const existing = alerts.find(a => a.mint && a.mint === group.mint);
+      const existing = alerts.find(a =>
+        a.mint &&
+        a.mint === group.mint &&
+        (a.chain || '') === (group.chain || '')
+      );
 
       if (existing) {
         const sameCount = existing.walletCount === walletNames.length;
@@ -504,6 +704,7 @@
 
   function playSound(tier) {
     if (!config.soundEnabled) return;
+    if (document.visibilityState === 'hidden') return;
     const ctx = ensureAudioCtx();
     if (!ctx || ctx.state === 'suspended') return;
     tier = tier || 1;
@@ -579,6 +780,11 @@
       </div>
       <div class="gcp-alerts"><div class="gcp-empty">监听中…等待信号</div></div>
       <button class="gcp-clear-btn">清空提醒</button>
+      <span class="gcp-resize-handle gcp-resize-left" data-dir="left"></span>
+      <span class="gcp-resize-handle gcp-resize-right" data-dir="right"></span>
+      <span class="gcp-resize-handle gcp-resize-bottom" data-dir="bottom"></span>
+      <span class="gcp-resize-handle gcp-resize-bottom-left" data-dir="bottom-left"></span>
+      <span class="gcp-resize-handle gcp-resize-bottom-right" data-dir="bottom-right"></span>
     `;
     return el;
   }
@@ -586,6 +792,12 @@
   function bindPanelEvents() {
     if (!panelEl) return;
     panelEl.querySelector('.gcp-header').addEventListener('click', (e) => {
+      if (panelEl.dataset.dragMoved === '1') {
+        e.stopPropagation();
+        e.preventDefault();
+        panelEl.dataset.dragMoved = '0';
+        return;
+      }
       if (e.target.closest('.gcp-icon-btn')) return;
       panelEl.classList.toggle('collapsed');
       config.collapsed = panelEl.classList.contains('collapsed');
@@ -641,7 +853,12 @@
   }
 
   function resetAndRescan() {
-    alerts = []; seenKeys.clear(); buyRecords = [];
+    alerts = [];
+    seenKeys.clear();
+    seenClosedKeys.clear();
+    buyRecords = [];
+    closedRecords = [];
+    schedulePublishSharedSnapshot();
     scanTrades(); renderAlerts();
   }
 
@@ -738,7 +955,25 @@
     } catch (e) { return false; }
   }
 
-  function jumpToToken(token, mint, chain) {
+  function isMonitorWindowPage() {
+    return location.pathname.startsWith('/follow');
+  }
+
+  async function openPanelLinkInMainWindow(url) {
+    if (!isMonitorWindowPage()) return false;
+    if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) return false;
+    try {
+      const result = await chrome.runtime.sendMessage({
+        type: 'open-in-main-window',
+        url
+      });
+      return !!(result && result.ok);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  async function jumpToToken(token, mint, chain) {
     // 策略 1（优先）：用 mint+chain 直接 SPA pushState，精准到 CA
     let useMint = mint, useChain = chain;
     if (!useMint || !useChain) {
@@ -749,6 +984,7 @@
     }
     if (useMint && useChain) {
       const url = `/${useChain}/token/${useMint}`;
+      if (await openPanelLinkInMainWindow(location.origin + url)) return;
       if (spaNavigate(url)) return;
       window.location.href = location.origin + url;
       return;
@@ -826,6 +1062,7 @@
     if (document.getElementById('gcp-inline-panel')) return true;
     panelEl = createPanel();
     panelEl.classList.add('gcp-floating');
+    restorePanelSize();
     // 恢复保存的位置
     try {
       const pos = JSON.parse(localStorage.getItem('gcp_pos') || '{}');
@@ -833,20 +1070,71 @@
       if (pos.top != null) panelEl.style.top = pos.top + 'px';
     } catch (e) {}
     document.body.appendChild(panelEl);
+    keepPanelInViewport();
     bindPanelEvents();
     enableDrag();
+    enableResize();
     return true;
   }
 
+  function keepPanelInViewport() {
+    if (!panelEl) return;
+    const rect = panelEl.getBoundingClientRect();
+    const isOutOfView =
+      rect.right < 40 ||
+      rect.left > window.innerWidth - 40 ||
+      rect.bottom < 40 ||
+      rect.top > window.innerHeight - 40;
+    if (!isOutOfView) return;
+
+    panelEl.style.top = '80px';
+    panelEl.style.right = '16px';
+    try {
+      localStorage.setItem('gcp_pos', JSON.stringify({ right: 16, top: 80 }));
+    } catch (e) {}
+  }
+
   // 拖拽
+  function clampPanelSize(width, height) {
+    const minWidth = 260;
+    const minHeight = 180;
+    const maxWidth = Math.max(minWidth, window.innerWidth - 20);
+    const maxHeight = Math.max(minHeight, window.innerHeight - 20);
+    return {
+      width: Math.max(minWidth, Math.min(maxWidth, Math.round(width || 360))),
+      height: Math.max(minHeight, Math.min(maxHeight, Math.round(height || 420)))
+    };
+  }
+
+  function restorePanelSize() {
+    if (!panelEl) return;
+    try {
+      const saved = JSON.parse(localStorage.getItem('gcp_size') || '{}');
+      const size = clampPanelSize(saved.width, saved.height);
+      if (saved.width != null) panelEl.style.width = size.width + 'px';
+      if (saved.height != null) panelEl.style.height = size.height + 'px';
+    } catch (e) {}
+  }
+
+  function savePanelSize() {
+    if (!panelEl || panelEl.classList.contains('collapsed')) return;
+    const rect = panelEl.getBoundingClientRect();
+    const size = clampPanelSize(rect.width, rect.height);
+    try {
+      localStorage.setItem('gcp_size', JSON.stringify(size));
+    } catch (e) {}
+  }
+
   function enableDrag() {
     if (!panelEl) return;
     const header = panelEl.querySelector('.gcp-header');
     if (!header) return;
-    let dragging = false, sx = 0, sy = 0, startRight = 0, startTop = 0;
+    let dragging = false, moved = false, sx = 0, sy = 0, startRight = 0, startTop = 0;
     header.addEventListener('mousedown', (e) => {
       if (e.target.closest('.gcp-icon-btn')) return;
       dragging = true;
+      moved = false;
+      panelEl.dataset.dragMoved = '0';
       sx = e.clientX; sy = e.clientY;
       const r = panelEl.getBoundingClientRect();
       startRight = window.innerWidth - r.right;
@@ -857,6 +1145,10 @@
       if (!dragging) return;
       const dx = e.clientX - sx;
       const dy = e.clientY - sy;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+        moved = true;
+        panelEl.dataset.dragMoved = '1';
+      }
       const newRight = Math.max(0, Math.min(window.innerWidth - 100, startRight - dx));
       const newTop = Math.max(0, Math.min(window.innerHeight - 40, startTop + dy));
       panelEl.style.right = newRight + 'px';
@@ -870,6 +1162,71 @@
         localStorage.setItem('gcp_pos', JSON.stringify({
           right: Math.round(window.innerWidth - r.right),
           top: Math.round(r.top)
+        }));
+      } catch (e) {}
+      if (moved) {
+        setTimeout(() => { if (panelEl) panelEl.dataset.dragMoved = '0'; }, 80);
+      }
+    });
+  }
+
+  function enableResize() {
+    if (!panelEl) return;
+    const handles = panelEl.querySelectorAll('.gcp-resize-handle');
+    let state = null;
+
+    handles.forEach(handle => {
+      handle.addEventListener('mousedown', (e) => {
+        if (panelEl.classList.contains('collapsed')) return;
+        const rect = panelEl.getBoundingClientRect();
+        state = {
+          dir: handle.dataset.dir || '',
+          sx: e.clientX,
+          sy: e.clientY,
+          left: rect.left,
+          right: window.innerWidth - rect.right,
+          width: rect.width,
+          height: rect.height
+        };
+        panelEl.classList.add('is-resizing');
+        e.preventDefault();
+        e.stopPropagation();
+      });
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (!state) return;
+      const dx = e.clientX - state.sx;
+      const dy = e.clientY - state.sy;
+      let width = state.width;
+      let height = state.height;
+      let right = state.right;
+
+      if (state.dir.includes('left')) width = state.width - dx;
+      if (state.dir.includes('right')) width = state.width + dx;
+      if (state.dir.includes('bottom')) height = state.height + dy;
+
+      const size = clampPanelSize(width, height);
+      if (state.dir.includes('right')) {
+        right = Math.max(0, window.innerWidth - state.left - size.width);
+      }
+
+      panelEl.style.width = size.width + 'px';
+      panelEl.style.height = size.height + 'px';
+      panelEl.style.right = right + 'px';
+      e.preventDefault();
+    });
+
+    document.addEventListener('mouseup', () => {
+      if (!state) return;
+      state = null;
+      panelEl.classList.remove('is-resizing');
+      savePanelSize();
+      const rect = panelEl.getBoundingClientRect();
+      try {
+        localStorage.setItem('gcp_pos', JSON.stringify({
+          right: Math.round(window.innerWidth - rect.right),
+          top: Math.round(rect.top)
         }));
       } catch (e) {}
     });
@@ -967,6 +1324,7 @@
     const tryInit = () => {
       if (mountPanel()) {
         renderAlerts();
+        startSharedPoolSync();
         startObserver();
         scanTrades();
         startMountWatcher();
@@ -989,7 +1347,11 @@
   // 调试
   window.__gcp = {
     config, alerts, buyRecords, tokenMeta, starred,
+    sourceId,
+    get sharedSources() { return sharedSources; },
+    get combinedBuyRecords() { return getCombinedBuyRecords(); },
     rerender: () => { lastRenderState = ''; renderAlerts(); },
-    rescan: () => scanTrades()
+    rescan: () => scanTrades(),
+    syncShared: () => loadSharedSnapshots({ recalculate: true })
   };
 })();

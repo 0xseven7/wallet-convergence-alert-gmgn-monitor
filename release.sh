@@ -11,14 +11,14 @@ rm -f "$OUT"
 
 echo "[INFO] 打包 v${VERSION} -> $OUT"
 
-ITEMS=(manifest.json icons xxyy gmgn)
+ITEMS=(manifest.json background.js popup.html popup.css popup.js icons xxyy gmgn)
 
 if command -v 7z >/dev/null 2>&1; then
   7z a -tzip "$OUT" "${ITEMS[@]}" >/dev/null
 elif command -v zip >/dev/null 2>&1; then
   zip -r "$OUT" "${ITEMS[@]}" >/dev/null
 else
-  powershell.exe -NoProfile -Command "Compress-Archive -Path 'manifest.json','icons','xxyy','gmgn' -DestinationPath '$OUT' -Force"
+  powershell.exe -NoProfile -Command "Compress-Archive -Path 'manifest.json','background.js','popup.html','popup.css','popup.js','icons','xxyy','gmgn' -DestinationPath '$OUT' -Force"
 fi
 
 SIZE=$(stat -c %s "$OUT" 2>/dev/null || stat -f %z "$OUT" 2>/dev/null || echo "?")
