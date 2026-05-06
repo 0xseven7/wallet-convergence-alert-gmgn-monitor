@@ -1,13 +1,12 @@
-## v1.9.2 — xxyy 双面板阈值独立设置
+## v1.9.4 — 同链同名同平台代币不再误聚
 
-之前 xxyy 主面板和「我的 聚合」面板共用同一组 `≥ N 钱包 / 内 X 分钟` 阈值，改一个两边都跟着变。现在拆开，**每个面板的阈值独立保存**：
+之前 v1.9.1 已经按 chain 区分了同名跨链的 token，但**同链同名同发射台**的两个 mint（比如两个都叫 FREEMAN 的 Solana pump.fun token）依然会被错位反查到第一个匹配的 mint。
 
-- 主面板（KOL 全聚合）：`config.minWallets` / `config.timeWindowMin`
-- 我的聚合：`config.minWalletsMy` / `config.timeWindowMinMy`
-- 改任一面板的输入框只影响那一面板，另一边不动
-- tier 档位、faded 散场态、聚合检测全部按面板自己的阈值算
-- 老版升级自动同步：原来的 `minWallets` 值会同步到新增的 `minWalletsMy`
+**修复**：xxyy 的 DOM 扫描反查 `tokenMeta` 时改成**唯一匹配**：
+- 同 symbol + 同 chain 在已知 meta 里只有 **1 个** mint → 用它
+- 有 **2+ 个** 候选 → **放弃猜测**，留空 mint
+- 留空的记录被严格模式（v1.8.0 起）直接丢掉，宁可漏报也不误聚
 
-例：你想用「**KOL 5 钱包 / 5 分钟**」追大热点，同时「**我的 2 钱包 / 30 分钟**」捕捉自己关注的小群体共振 — 现在能直接配。
+代价：DOM 扫描见到的歧义 token 暂时不算入聚合，等 socket.io 推送过来 trade 自带准确 mint 后才参与（通常几秒内会有）。
 
-gmgn 只有一个面板，不受影响。
+socket.io 路径不受影响（mint 直接来自 `tradeData.mint`，本来就准）。

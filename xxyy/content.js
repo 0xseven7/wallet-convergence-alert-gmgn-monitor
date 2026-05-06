@@ -283,7 +283,7 @@
     const tDate = parseTime(timeStr);
     const timeMs = tDate ? tDate.getTime() : Date.now();
 
-    // 从金额单位反推 chain（必须，不然同名跨链反查会乱串）
+    // 从金额单位反推 chain
     const amountText = amountEl ? amountEl.textContent.trim() : '';
     let detectedChain = '';
     if (/\bSOL\b/i.test(amountText)) detectedChain = 'sol';
@@ -291,14 +291,20 @@
     else if (/\bETH\b/i.test(amountText)) detectedChain = 'eth';
     else if (/\bBASE\b/i.test(amountText)) detectedChain = 'base';
 
-    // 反查 tokenMeta：必须 symbol/name 匹配 + chain 匹配（避免 FREEMAN-BSC 错填进 FREEMAN-SOL 的 trade）
+    // 反查 tokenMeta：symbol+chain 必须**唯一匹配**才用
+    // 如果同 symbol+chain 已知 2 个及以上 mint（如两个 FREEMAN-pump），无法区分 → 不填 mint
+    // 严格模式会跳过这条记录，宁可漏报也不误聚
     let meta = {};
-    for (const m of tokenMeta.values()) {
-      const nameMatch = m.symbol === tokenName || m.name === tokenName;
-      if (!nameMatch) continue;
-      // 没识别出 chain 时也别用名字反查 — 宁可让 mint 留空被严格模式跳过
-      if (!detectedChain) continue;
-      if (m.chain === detectedChain) { meta = m; break; }
+    if (detectedChain) {
+      const candidates = [];
+      for (const m of tokenMeta.values()) {
+        const nameMatch = m.symbol === tokenName || m.name === tokenName;
+        if (nameMatch && m.chain === detectedChain) {
+          candidates.push(m);
+          if (candidates.length > 1) break;   // 不需要枚举完，2+ 就放弃
+        }
+      }
+      if (candidates.length === 1) meta = candidates[0];
     }
     return {
       wallet: walletEl.textContent.trim(),
@@ -647,6 +653,17 @@
     if (seenClosedKeys.size > 5000) {
       seenClosedKeys = new Set(Array.from(seenClosedKeys).slice(-2500));
     }
+    cleanDissolvedAlerts();
+  }
+
+  // 全员清仓的提醒保留 5 分钟后自动移除
+  const DISSOLVED_KEEP_MS = 5 * 60 * 1000;
+  function cleanDissolvedAlerts() {
+    const now = Date.now();
+    const before = alertsKol.length + alertsMy.length;
+    alertsKol = alertsKol.filter(a => !a.dissolvedAt || (now - a.dissolvedAt) < DISSOLVED_KEEP_MS);
+    alertsMy  = alertsMy.filter(a => !a.dissolvedAt || (now - a.dissolvedAt) < DISSOLVED_KEEP_MS);
+    if (before !== alertsKol.length + alertsMy.length) renderAlerts();
   }
 
   function checkConvergence() {
@@ -761,6 +778,12 @@
           existing.walletCount = walletNames.length;
           existing.effectiveCount = effectiveCount;
           existing.closedCount = closedCount;
+          // 全员清仓 → 标记 dissolvedAt（之后 5 分钟由 cleanDissolvedAlerts 移除）；又有人买回来 → 清掉
+          if (effectiveCount === 0) {
+            if (!existing.dissolvedAt) existing.dissolvedAt = Date.now();
+          } else {
+            existing.dissolvedAt = null;
+          }
           existing.wallets = walletDetails;
           existing.mcap = group.mcap || existing.mcap;
           existing.timeRange = timeRange;
