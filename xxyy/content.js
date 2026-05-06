@@ -647,6 +647,17 @@
     if (seenClosedKeys.size > 5000) {
       seenClosedKeys = new Set(Array.from(seenClosedKeys).slice(-2500));
     }
+    cleanDissolvedAlerts();
+  }
+
+  // 全员清仓的提醒保留 5 分钟后自动移除
+  const DISSOLVED_KEEP_MS = 5 * 60 * 1000;
+  function cleanDissolvedAlerts() {
+    const now = Date.now();
+    const before = alertsKol.length + alertsMy.length;
+    alertsKol = alertsKol.filter(a => !a.dissolvedAt || (now - a.dissolvedAt) < DISSOLVED_KEEP_MS);
+    alertsMy  = alertsMy.filter(a => !a.dissolvedAt || (now - a.dissolvedAt) < DISSOLVED_KEEP_MS);
+    if (before !== alertsKol.length + alertsMy.length) renderAlerts();
   }
 
   function checkConvergence() {
@@ -761,6 +772,12 @@
           existing.walletCount = walletNames.length;
           existing.effectiveCount = effectiveCount;
           existing.closedCount = closedCount;
+          // 全员清仓 → 标记 dissolvedAt（之后 5 分钟由 cleanDissolvedAlerts 移除）；又有人买回来 → 清掉
+          if (effectiveCount === 0) {
+            if (!existing.dissolvedAt) existing.dissolvedAt = Date.now();
+          } else {
+            existing.dissolvedAt = null;
+          }
           existing.wallets = walletDetails;
           existing.mcap = group.mcap || existing.mcap;
           existing.timeRange = timeRange;
