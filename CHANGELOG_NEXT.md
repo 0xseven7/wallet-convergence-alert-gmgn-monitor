@@ -1,11 +1,12 @@
-## v1.9.3 — 全员清仓的提醒保留 5 分钟后自动清除
+## v1.9.4 — 同链同名同平台代币不再误聚
 
-之前提醒一旦触发就一直留着，散场（全部清仓）后还堆在面板里占地方。
+之前 v1.9.1 已经按 chain 区分了同名跨链的 token，但**同链同名同发射台**的两个 mint（比如两个都叫 FREEMAN 的 Solana pump.fun token）依然会被错位反查到第一个匹配的 mint。
 
-**新行为**：
-- 一条 alert 的有效钱包数（effectiveCount）降到 0 时，自动记录 `dissolvedAt` 时间戳
-- 5 分钟后该 alert 从面板里**自动移除**（清理由 30 秒一次的兜底定时器执行，最大滞后 30s）
-- 5 分钟内**如果有人买回来**（effectiveCount 重新 > 0）→ `dissolvedAt` 清空，alert 复活，不会再被清退
-- 期间 alert 仍以散场态（灰色 / 无动画）显示，能看到「-N 清仓」的统计
+**修复**：xxyy 的 DOM 扫描反查 `tokenMeta` 时改成**唯一匹配**：
+- 同 symbol + 同 chain 在已知 meta 里只有 **1 个** mint → 用它
+- 有 **2+ 个** 候选 → **放弃猜测**，留空 mint
+- 留空的记录被严格模式（v1.8.0 起）直接丢掉，宁可漏报也不误聚
 
-xxyy 和 gmgn 都生效。
+代价：DOM 扫描见到的歧义 token 暂时不算入聚合，等 socket.io 推送过来 trade 自带准确 mint 后才参与（通常几秒内会有）。
+
+socket.io 路径不受影响（mint 直接来自 `tradeData.mint`，本来就准）。
