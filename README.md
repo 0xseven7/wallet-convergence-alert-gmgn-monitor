@@ -1,67 +1,74 @@
 # 钱包聚合买入提醒
 
-一个同时支持 **xxyy.io** 和 **gmgn.ai** 的 Chrome 扩展，用来监控钱包追踪面板里的交易流，做聚合买入提醒，并给 GMGN 补一套独立的 Twitter 语音提示和 follow 信息流语音特别关注。
+一个同时支持 **xxyy.io** 和 **gmgn.ai** 的 Chrome 扩展，用来监控钱包追踪页面里的交易流，做聚合买入提醒，并为 GMGN 增加一套独立的 Twitter 语音提示、follow 信息流语音特别关注、主窗口跳转和页面清理能力。
 
-> ⚠️ 非官方第三方工具，仅供个人学习和自用。请自行评估使用风险。
+> 非官方第三方工具，仅供个人学习和自用。请自行评估使用风险。
 
 ## 功能概览
 
 | 功能 | xxyy.io | gmgn.ai |
-|---|---|---|
-| N 个钱包 X 分钟内买入同币时聚合提醒 | ✅ | ✅ |
-| 按合约去重，避免同名不同链误聚合 | ✅ | ✅ |
-| 页面内跳转到代币页，不整页刷新 | ✅ | ✅ |
-| 聚合买入提醒保留原始蜂鸣音 | ✅ | ✅ |
-| 独立 Twitter 监控语音模块 | ❌ | ✅ |
-| follow 信息流语音特别关注 | ❌ | ✅ |
-| 多个 follow 标签页共享聚合池 | ❌ | ✅ |
-| 监控页外链优先跳到指定主窗口 | ❌ | ✅ |
-| GMGN 全站移除导航栏“预测”按钮 | ❌ | ✅ |
-| 扩展内中文设置页 | ✅ | ✅ |
-| 自定义音源：内置音频 / 上传 MP3 / 远程链接 | — | ✅ |
-| TTS 音色 / 语速 / 音调 / 试听 | — | ✅ |
-| 开发态自动重载 | ✅ | ✅ |
+| --- | --- | --- |
+| N 个钱包在 X 分钟内买入同一代币时触发聚合提醒 | 支持 | 支持 |
+| 按 `chain + mint` 去重，避免同名不同链误聚合 | 支持 | 支持 |
+| 页面内跳转到代币页，不整页刷新 | 支持 | 支持 |
+| 聚合买入主提醒保留原始蜂鸣音 | 支持 | 支持 |
+| 多个监控页共享聚合池 | 不适用 | 支持 |
+| 独立 Twitter 语音模块 | 不适用 | 支持 |
+| follow 信息流语音特别关注 | 不适用 | 支持 |
+| 打开监控链接时优先跳到指定主窗口 | 不适用 | 支持 |
+| 全站移除 GMGN 导航栏“预测”按钮 | 不适用 | 支持 |
+| 中文扩展设置页 | 支持 | 支持 |
+| 自定义音源：内置音频 / 上传 MP3 / 远程音频链接 | 不适用 | 支持 |
+| TTS 音色 / 语速 / 音调 / 试听 | 不适用 | 支持 |
 
-## 当前版本重点
+## 最近新增的重点能力
 
-- GMGN 聚合数据源只在 `follow` 页面启用，其他 GMGN 页面不跑聚合扫描。
-- Twitter 语音提示是独立模块，不会改写现有聚合买入提醒逻辑。
-- GMGN follow 的“语音特别关注”与 GMGN 自带星标是两套不同逻辑。
-- 语音特别关注只播报 **10 秒内** 的新买卖，避免旧 DOM 重绘时重复念。
-- 扩展图标点击后会直接打开一个完整的中文设置页标签，不再使用小弹窗 popup。
+- GMGN 聚合扫描现在只在 `follow` 页面启用，支持：
+  - `https://gmgn.ai/follow`
+  - `https://gmgn.ai/follow?chain=base`
+  - `https://gmgn.ai/{chain}/follow`
+- GMGN 聚合数据源支持 `BSC / ETH / BASE`，不同 `follow` 标签页会共享聚合池。
+- GMGN 的 Twitter 提示是独立模块，不会改写原本的聚合买入提醒逻辑。
+- Twitter 语音只在当前可见前台 tab 播放，后台 tab 保持静默，避免重复提醒。
+- Twitter 语音支持按动作播报：发推、转推、回复、引用、关注、取消关注、删除、点赞、置顶、资料更新。
+- GMGN follow 里新增“语音特别关注”名单，和 GMGN 自带星标是两套不同逻辑。
+- 语音特别关注的钱包只会播报 **10 秒内** 的新买卖，避免旧 DOM 重绘后重复念。
+- 扩展图标现在会直接打开完整设置页标签，不再依赖小弹窗 popup。
+- 设置页支持上传自定义音频，也支持填写远程音频链接作为音源。
 
 ## 安装
 
-1. 去 [Releases](../../releases) 下载最新的 `wallet-convergence-alert-v*.zip`
+1. 前往 [Releases](../../releases) 下载最新的 `wallet-convergence-alert-v*.zip`
 2. 解压到本地目录
 3. 打开 `chrome://extensions/`
-4. 开启“开发者模式”
+4. 启用“开发者模式”
 5. 点击“加载已解压的扩展程序”，选择解压后的目录
-6. 安装完成后，点击扩展图标即可打开设置页标签
+6. 安装完成后，点击扩展图标即可打开设置页
 
-## 使用
+## 使用说明
 
 ### xxyy.io
 
 1. 打开 [pro.xxyy.io](https://pro.xxyy.io)
 2. 钱包监控区域会自动注入“聚合买入提醒”面板
-3. 满足阈值时触发聚合买入提醒，并保持原有蜂鸣音
+3. 当多个钱包在时间窗口内买入同一币种时触发提醒
+4. 点击代币名会在当前页内跳转，不做整页刷新
 
 ### gmgn.ai
 
-1. 打开 [gmgn.ai/follow](https://gmgn.ai/follow)
+1. 打开任意支持的 `follow` 页面
 2. 只有 `follow` 页面会启用聚合买入扫描和共享聚合池
-3. 面板里会显示当前页行数、聚合池大小，以及各链记录数量
-4. 代币名支持页面内跳转，不刷新整页
+3. 面板会显示当前扫描到的行数、聚合池大小、以及各链记录数
+4. 聚合买入主提醒仍然使用本地蜂鸣音，不依赖 TTS
+5. 页面内代币跳转仍然可用
 
 ### GMGN 语音特别关注
 
-- 在 follow 页聚合面板的钱包标签前，点击 `☆ / ★` 可加入或移出“语音特别关注”
-- 这套名单和 GMGN 自带星标不同
-- 也可以在扩展设置页里手动添加钱包名和播报名
-- 只有加入这套名单的钱包，后续在 follow 信息流里出现新的买卖时才会触发 TTS
-- 仅播报 **10 秒内** 的新记录
-- 当前标准播报用词：
+- 在 `follow` 聚合买入面板的钱包标签前，点击 `☆ / ★` 可以加入或移出“语音特别关注”
+- 这套名单和 GMGN 自带星标不同，不共用
+- 也可以在扩展设置页里手动维护这份名单，并设置播报名
+- 只有进入这份名单的钱包，后续在 `follow` 信息流里出现新买卖时才会触发语音
+- 当前播报词固定为：
   - `买入` -> “买入了”
   - `卖出` -> “卖出了”
   - `建仓` -> “建仓了”
@@ -73,11 +80,11 @@
 西瓜 买入了 1BNB pepe
 ```
 
-### Twitter 语音监控
+### GMGN Twitter 语音监控
 
-GMGN 全站会监听 `twitter_user_monitor_basic` 数据流，并按映射关系播放音频或 TTS。
+GMGN 全站会监听 `twitter_user_monitor_basic` WebSocket 消息，并按映射关系播放音频或 TTS。
 
-当前可区分的动作包括：
+支持区分的动作包括：
 
 - 发推
 - 转推
@@ -90,23 +97,31 @@ GMGN 全站会监听 `twitter_user_monitor_basic` 数据流，并按映射关系
 - 置顶
 - 资料更新
 
+播报名优先级：
+
+1. `remark`
+2. 设置页里为该账号配置的备注
+3. GMGN 推送里的 `name`
+4. `username`
+5. `id`
+
 示例：
 
 ```text
-elonmusk 发推了
+V神 发推了
 CZ 转推了
 某账号 取消关注了一个账号
 ```
 
 ## 设置页
 
-点击扩展图标会打开一个完整的设置页标签，当前支持：
+点击扩展图标后会直接打开完整设置页标签。当前支持：
 
 - 主窗口选择
-- 推特语音总开关
-- 未映射账号默认提示音
-- TTS 语音风格、语速、音调、试听
-- 推特事件筛选
+- Twitter 语音总开关
+- 未映射账号默认提示
+- TTS 音色、语速、音调、试听
+- Twitter 事件筛选
 - `Twitter ID -> 音源` 映射
 - GMGN 语音特别关注钱包名单
 - 自定义音源库
@@ -117,65 +132,67 @@ CZ 转推了
 
 支持三类音源：
 
-1. 内置提示音，如 `default.MP3`、`preset1.MP3`
-2. 本地上传音频，如 `MP3 / WAV / OGG / M4A / FLAC / ZIP`
-3. 远程音频链接，如 `https://example.com/alert.mp3`
+1. 内置提示音，例如 `default.MP3`、`preset1.MP3`
+2. 本地上传音频，例如 `MP3 / WAV / OGG / M4A / FLAC / ZIP`
+3. 远程音频链接，例如 `https://example.com/alert.mp3`
 
 ## 项目结构
 
 ```text
-wallet-convergence-alert/
-├── manifest.json
-├── background.js
-├── settings.html              # 扩展设置页（点击图标打开）
-├── popup.html                 # 复用的设置页结构模板
-├── popup.js                   # 设置页逻辑
-├── popup.css
-├── sounds/                    # 内置提示音
-├── lib/                       # 前端依赖（当前含 JSZip）
-├── dev/
-│   ├── auto-reload-client.js
-│   └── auto-reload-server.mjs
-├── xxyy/
-│   ├── network-hook.js
-│   ├── content.js
-│   └── styles.css
-└── gmgn/
-    ├── page-bridge.js
-    ├── redirector.js
-    ├── content.js
-    ├── twitter-audio-content.js
-    ├── twitter-audio-inject.js
-    └── styles.css
+wallet-convergence-alert-gmgn-monitor/
+├─ manifest.json
+├─ background.js
+├─ settings.html
+├─ popup.html
+├─ popup.js
+├─ popup.css
+├─ sounds/
+├─ lib/
+├─ xxyy/
+│  ├─ network-hook.js
+│  ├─ content.js
+│  └─ styles.css
+└─ gmgn/
+   ├─ page-bridge.js
+   ├─ redirector.js
+   ├─ content.js
+   ├─ twitter-audio-content.js
+   ├─ twitter-audio-inject.js
+   └─ styles.css
 ```
 
 ## 工作原理
 
 ### xxyy.io
 
-- 使用 MAIN world hook 拦截 `socket.io` 数据流
-- 启动时会拉一次历史交易
+- 通过 MAIN world hook 拦截 `socket.io` 数据流
+- 启动时会补拉一遍历史交易
 - 实时性较高
 
-### gmgn.ai
+### gmgn.ai 聚合买入
 
-- GMGN 数据主要在 Web Worker 内部流转，页面侧很难直接 hook 到交易接口
-- 因此聚合买入部分采用 `DOM 扫描 + MutationObserver + 定时兜底`
-- 仅在 `follow` 页面启用聚合扫描
-- 多个打开的 `follow` 标签页会共享记录池
+- GMGN 的交易流主要在页面内部 worker/DOM 层体现，直接网络层 hook 不稳定
+- 因此聚合买入提醒采用 `DOM 扫描 + MutationObserver + 定时兜底`
+- 仅在 `follow` 页面启用
+- 多个已打开的 `follow` 标签页会共享聚合快照
+- 聚合键基于 `chain + mint`
 
-### GMGN Twitter 语音
+### gmgn.ai Twitter 语音
 
-- 通过注入脚本监听 `twitter_user_monitor_basic` WebSocket 消息
-- 命中映射时优先播放指定音源
-- 未映射账号可回退到默认提示音或 TTS
-- 现有筛选开关仍然有效：
-  - `推文 / 转推 / 回复 / 引用` 各自独立
-  - `关注 / 取消关注 / 删除 / 点赞 / 置顶 / 资料更新` 归类到“其他”
+- 通过注入脚本监听 `twitter_user_monitor_basic` WebSocket
+- `gmgn/twitter-audio-inject.js` 负责抓取触发器并派发事件
+- `gmgn/twitter-audio-content.js` 负责筛选、映射、队列、TTS 和播放
+- 只有 `document.visibilityState === 'visible'` 的前台 tab 会播放
+- 命中映射时优先播指定音源；未映射账号可以退回默认音或 TTS
 
 ## 调试
 
-DevTools Console:
+DevTools Console 常用前缀：
+
+- `[GMGN Twitter Inject]`
+- `[GMGN Twitter Audio]`
+- `[GMGN Twitter Receive]`
+- `[GMGN Monitor Link Redirector]`
 
 ### xxyy
 
@@ -201,19 +218,6 @@ __gcp.rescan()
 
 ## 开发
 
-### 本地自动重载
-
-已解压扩展开发模式下，可以启动本地 watcher，在代码保存后自动重载扩展并刷新相关页面。
-
-```bash
-node dev/auto-reload-server.mjs
-```
-
-说明：
-
-- 状态接口默认是 `http://127.0.0.1:17373/status`
-- 第一次改完代码后，仍需要去 `chrome://extensions` 手动重载一次扩展，让自动重载客户端生效
-
 ### 打包
 
 ```bash
@@ -227,14 +231,14 @@ bash release.sh
 
 ## 隐私与外部请求
 
-- 聚合买入检测、follow 信息流扫描、钱包特别关注匹配，都在本地浏览器内完成
+- 聚合买入扫描、follow 信息流扫描、语音特别关注匹配，都在本地浏览器内完成
 - 配置数据保存在浏览器本地存储中
-- **如果启用 TTS**，扩展会请求外部 TTS 接口生成语音：
+- 如果启用 TTS，扩展会请求外部 TTS 接口：
   - `https://cloudflare-edge-tts.tech-melon.workers.dev/tts`
 - 如果外部 TTS 失败，会回退到浏览器原生 `speechSynthesis`
-- **如果你添加了远程音频链接**，浏览器会直接请求该音频 URL
-- GMGN 聚合买入主提醒本身不依赖外部 TTS，仍使用本地蜂鸣音
+- 如果你添加了远程音频链接，浏览器会直接请求对应音频 URL
+- GMGN 聚合买入主提醒本身仍然使用本地蜂鸣音，不依赖外部 TTS
 
-## 协议
+## License
 
 MIT

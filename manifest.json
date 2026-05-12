@@ -6,9 +6,7 @@
   "permissions": ["storage", "tabs", "windows", "unlimitedStorage"],
   "host_permissions": [
     "https://gmgn.ai/*",
-    "https://www.gmgn.ai/*",
-    "http://127.0.0.1/*",
-    "http://localhost/*"
+    "https://www.gmgn.ai/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -21,16 +19,6 @@
     "open_in_tab": true
   },
   "content_scripts": [
-    {
-      "matches": ["*://pro.xxyy.io/*", "*://www.xxyy.io/*", "*://xxyy.io/*"],
-      "js": ["dev/auto-reload-client.js"],
-      "run_at": "document_start"
-    },
-    {
-      "matches": ["https://gmgn.ai/*", "https://www.gmgn.ai/*"],
-      "js": ["dev/auto-reload-client.js"],
-      "run_at": "document_start"
-    },
     {
       "matches": ["*://pro.xxyy.io/*", "*://www.xxyy.io/*", "*://xxyy.io/*"],
       "js": ["xxyy/network-hook.js"],

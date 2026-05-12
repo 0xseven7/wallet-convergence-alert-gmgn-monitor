@@ -316,6 +316,41 @@
   font-weight: 600;
 }
 
+.gcp-alert-wallet-tag.is-blacklisted {
+  border: 1px solid rgba(255, 93, 115, 0.35);
+}
+
+.gcp-blacklist-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #7f8aa3;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.2s, color 0.2s, transform 0.2s, border-color 0.2s;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.gcp-blacklist-toggle:hover {
+  color: #ff8a9a;
+  border-color: rgba(255, 93, 115, 0.35);
+  transform: scale(1.08);
+}
+
+.gcp-blacklist-toggle.on {
+  background: rgba(255, 93, 115, 0.18);
+  border-color: rgba(255, 93, 115, 0.35);
+  color: #ff8a9a;
+}
+
 /* 注入到原列表的星标按钮 — 强约束 inline-flex，不撑行高 */
 .gcp-orig-star {
   cursor: pointer;
@@ -343,6 +378,25 @@
   background: linear-gradient(135deg, #ffd54f, #ffb300);
   border-color: rgba(255, 215, 0, 0.65);
   text-shadow: none;
+}
+
+.gcp-orig-blacklist {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 14px;
+  padding: 0 3px;
+  margin-right: 3px;
+  border-radius: 999px;
+  background: rgba(255, 93, 115, 0.18);
+  border: 1px solid rgba(255, 93, 115, 0.35);
+  color: #ff8a9a;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  user-select: none;
+  flex: 0 0 auto;
 }
 
 /* 星标钱包的整行高亮 */

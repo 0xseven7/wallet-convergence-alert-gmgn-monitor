@@ -24,7 +24,9 @@
   let mountCheckInterval = null;
   let injectStarsScheduled = false;
   const GMGN_SPEECH_WATCHLIST_KEY = 'gmgnSpeechWatchlist';
+  const GMGN_BLACKLIST_WALLETS_KEY = 'gmgnBlacklistWallets';
   let speechWatchlist = {};
+  let blacklistWallets = new Set();
 
   // 特别关注的钱包名
   let starred = new Set();
@@ -286,6 +288,12 @@
     }
     if (changes[GMGN_SPEECH_WATCHLIST_KEY]) {
       applySpeechWatchlist(changes[GMGN_SPEECH_WATCHLIST_KEY].newValue || {});
+      lastRenderState = '';
+      renderAlerts();
+      injectOrigStars();
+    }
+    if (changes[GMGN_BLACKLIST_WALLETS_KEY]) {
+      applyBlacklistWallets(changes[GMGN_BLACKLIST_WALLETS_KEY].newValue || {});
       lastRenderState = '';
       renderAlerts();
       injectOrigStars();
@@ -577,6 +585,50 @@
     return speechWatchlist[normalizedWallet]?.alias || '';
   }
 
+  function normalizeBlacklistWallets(raw) {
+    const next = new Set();
+    if (Array.isArray(raw)) {
+      raw.forEach((walletName) => {
+        const normalizedWallet = normalizeSpeechWatchWallet(walletName);
+        if (normalizedWallet) next.add(normalizedWallet);
+      });
+      return next;
+    }
+
+    for (const [walletName, enabled] of Object.entries(raw || {})) {
+      const normalizedWallet = normalizeSpeechWatchWallet(walletName);
+      if (!normalizedWallet || enabled === false) continue;
+      next.add(normalizedWallet);
+    }
+    return next;
+  }
+
+  function applyBlacklistWallets(raw) {
+    blacklistWallets = normalizeBlacklistWallets(raw);
+  }
+
+  async function loadBlacklistWallets() {
+    if (!canUseSharedStorage) {
+      applyBlacklistWallets({});
+      return;
+    }
+    try {
+      const stored = await chrome.storage.local.get(GMGN_BLACKLIST_WALLETS_KEY);
+      applyBlacklistWallets(stored[GMGN_BLACKLIST_WALLETS_KEY]);
+    } catch (e) {
+      applyBlacklistWallets({});
+    }
+  }
+
+  function persistBlacklistWallets() {
+    if (!canUseSharedStorage) return Promise.resolve();
+    const nextState = {};
+    blacklistWallets.forEach((walletName) => {
+      nextState[walletName] = true;
+    });
+    return chrome.storage.local.set({ [GMGN_BLACKLIST_WALLETS_KEY]: nextState }).catch(() => {});
+  }
+
   function toggleStar(walletName) {
     const normalizedWallet = normalizeSpeechWatchWallet(walletName);
     if (!normalizedWallet) return;
@@ -592,12 +644,34 @@
     injectOrigStars();
   }
 
+  function toggleBlacklistWallet(walletName) {
+    const normalizedWallet = normalizeSpeechWatchWallet(walletName);
+    if (!normalizedWallet) return;
+    if (blacklistWallets.has(normalizedWallet)) {
+      blacklistWallets.delete(normalizedWallet);
+    } else {
+      blacklistWallets.add(normalizedWallet);
+    }
+    void persistBlacklistWallets();
+    lastRenderState = '';
+    renderAlerts();
+    injectOrigStars();
+  }
+
   function isAlertStarred(a) {
     return a.wallets && a.wallets.some(w => starred.has(w.name));
   }
 
   function isTradeStarred(trade) {
     return !!(trade && trade.wallet && starred.has(trade.wallet));
+  }
+
+  function isWalletBlacklisted(walletName) {
+    return !!(walletName && blacklistWallets.has(walletName));
+  }
+
+  function hasStarredWallet(walletNames) {
+    return Array.isArray(walletNames) && walletNames.some((walletName) => starred.has(walletName));
   }
 
   function isBuyAction(action) {
@@ -1019,7 +1093,9 @@
 
     for (const [groupKey, group] of Object.entries(groups)) {
       const walletNames = Object.keys(group.wallets);
-      if (walletNames.length < config.minWallets) continue;
+      const hasPriorityWallet = hasStarredWallet(walletNames);
+      const requiredWallets = hasPriorityWallet ? 1 : config.minWallets;
+      if (walletNames.length < requiredWallets) continue;
 
       const walletDetails = walletNames.map(w => {
         const wd = group.wallets[w];
@@ -1412,7 +1488,8 @@
         const logoImg = a.tokenLogo
           ? `<img class="gcp-token-logo" src="${escHtml(a.tokenLogo)}" loading="lazy" referrerpolicy="no-referrer" />`
           : '';
-        const isFaded = effective < config.minWallets;
+        const requiredWallets = hasStar ? 1 : config.minWallets;
+        const isFaded = effective < requiredWallets;
         return `
         <div class="gcp-alert-item gcp-tier-${tier} ${a.isNew ? 'is-new' : ''} ${hasStar ? 'is-starred' : ''} ${isFaded ? 'is-faded' : ''}" data-token="${escHtml(a.token)}">
           <div class="gcp-alert-token">
@@ -1423,13 +1500,15 @@
           <div class="gcp-alert-wallets">
             ${a.wallets.map(w => {
               const star = starred.has(w.name);
+              const blacklisted = isWalletBlacklisted(w.name);
               const av = w.avatar
                 ? `<img class="gcp-wallet-avatar" src="${escHtml(w.avatar)}" loading="lazy" referrerpolicy="no-referrer" />`
                 : '';
               return `
-              <span class="gcp-alert-wallet-tag ${star ? 'is-starred' : ''} ${w.closed ? 'is-closed' : ''}" title="${w.closed ? '已清仓' : ''}">
+              <span class="gcp-alert-wallet-tag ${star ? 'is-starred' : ''} ${blacklisted ? 'is-blacklisted' : ''} ${w.closed ? 'is-closed' : ''}" title="${w.closed ? '已清仓' : ''}">
                 <span class="gcp-watch-toggle ${star ? 'on' : ''}" data-wallet="${escHtml(w.name)}" title="${star ? '取消语音特别关注' : '加入语音特别关注'}">${star ? '★' : '☆'}</span>
-                ${av}${escHtml(w.name)}
+                ${av}<span class="gcp-wallet-name">${escHtml(w.name)}</span>
+                <span class="gcp-blacklist-toggle ${blacklisted ? 'on' : ''}" data-wallet="${escHtml(w.name)}" title="${blacklisted ? '移出黑名单钱包' : '加入黑名单钱包'}">!</span>
                 <span class="gcp-wallet-amount">${escHtml(w.amount)}</span>
                 ${w.timeAgo ? '<span style="color:#666">' + escHtml(w.timeAgo) + '前</span>' : ''}
               </span>`;
@@ -1465,6 +1544,12 @@
       el.addEventListener('click', (e) => {
         e.stopPropagation();
         toggleStar(el.dataset.wallet);
+      });
+    });
+    container.querySelectorAll('.gcp-blacklist-toggle').forEach(el => {
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleBlacklistWallet(el.dataset.wallet);
       });
     });
   }
@@ -1557,6 +1642,7 @@
       if (!walletEl) continue;
       const wallet = walletEl.textContent.trim();
       const isStar = starred.has(wallet);
+      const isBlacklisted = isWalletBlacklisted(wallet);
 
       row.classList.toggle('gcp-orig-starred', isStar);
 
@@ -1583,6 +1669,21 @@
       starBtn.textContent = isStar ? '★' : '☆';
       starBtn.classList.toggle('on', isStar);
       starBtn.title = isStar ? '取消语音特别关注' : '加入语音特别关注';
+
+      let blacklistBadge = row.querySelector('.gcp-orig-blacklist');
+      if (isBlacklisted) {
+        if (!blacklistBadge) {
+          blacklistBadge = document.createElement('span');
+          blacklistBadge.className = 'gcp-orig-blacklist';
+          blacklistBadge.textContent = '!';
+          blacklistBadge.title = '黑名单钱包';
+          if (starBtn.parentElement) {
+            starBtn.parentElement.insertBefore(blacklistBadge, starBtn.nextSibling);
+          }
+        }
+      } else if (blacklistBadge) {
+        blacklistBadge.remove();
+      }
     }
   }
 
@@ -1998,6 +2099,7 @@
     ensureAudioSyncChannel();
     Promise.all([
       loadSpeechWatchlist(),
+      loadBlacklistWallets(),
       loadAudioSettings(),
       loadTtsSettings()
     ]).catch(() => null).finally(() => {

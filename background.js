@@ -4,12 +4,9 @@ const GET_MAIN_WINDOW_MESSAGE = 'get-main-window';
 const CLEAR_MAIN_WINDOW_MESSAGE = 'clear-main-window';
 const REGISTER_MONITOR_TAB_MESSAGE = 'register-monitor-tab';
 const ALLOW_MONITOR_NAVIGATION_MESSAGE = 'allow-monitor-navigation';
-const DEV_AUTO_RELOAD_TRIGGER_MESSAGE = 'dev-auto-reload-trigger';
 const LEGACY_MAIN_WINDOW_STORAGE_KEY = 'mainWindowId';
 const MAIN_WINDOW_STORAGE_KEY = 'mainWindowState';
 const MONITOR_STATE_STORAGE_KEY = 'monitorState';
-const DEV_AUTO_RELOAD_PENDING_KEY = 'devAutoReloadPending';
-const DEV_AUTO_RELOAD_PENDING_TTL_MS = 30 * 1000;
 const DEFAULT_MONITOR_URL = 'https://gmgn.ai/follow';
 const SETTINGS_PAGE_PATH = 'settings.html';
 const TWITTER_AUDIO_MAPPING_STORAGE_KEY = 'twitterAudioMappings';
@@ -45,7 +42,6 @@ let monitorState = {
   allowedNavigationUrl: null,
   suppressNextRedirect: false
 };
-let devAutoReloadInFlight = false;
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !message.type) {
@@ -108,13 +104,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     persistMonitorState();
     sendResponse({ ok: true });
     return false;
-  }
-
-  if (message.type === DEV_AUTO_RELOAD_TRIGGER_MESSAGE) {
-    triggerDevAutoReload(typeof message.token === 'string' ? message.token : '')
-      .then(() => sendResponse({ ok: true }))
-      .catch((error) => sendResponse({ ok: false, error: error.message }));
-    return true;
   }
 
   return false;
@@ -239,51 +228,7 @@ chrome.runtime.onInstalled.addListener(() => {
 async function initializeExtensionState() {
   await ensureMonitorState();
   await ensureTwitterAudioDefaults();
-  await handlePendingDevAutoReload();
   await refreshActionBadges();
-}
-
-async function triggerDevAutoReload(token) {
-  if (devAutoReloadInFlight) {
-    return;
-  }
-
-  devAutoReloadInFlight = true;
-  await chrome.storage.local.set({
-    [DEV_AUTO_RELOAD_PENDING_KEY]: {
-      requestedAt: Date.now(),
-      token
-    }
-  });
-
-  setTimeout(() => {
-    chrome.runtime.reload();
-  }, 120);
-}
-
-async function handlePendingDevAutoReload() {
-  const stored = await chrome.storage.local.get(DEV_AUTO_RELOAD_PENDING_KEY);
-  const pending = stored[DEV_AUTO_RELOAD_PENDING_KEY];
-  if (!pending || !pending.requestedAt) {
-    devAutoReloadInFlight = false;
-    return;
-  }
-
-  if ((Date.now() - pending.requestedAt) > DEV_AUTO_RELOAD_PENDING_TTL_MS) {
-    await chrome.storage.local.remove(DEV_AUTO_RELOAD_PENDING_KEY);
-    devAutoReloadInFlight = false;
-    return;
-  }
-
-  const extensionRootUrl = chrome.runtime.getURL('');
-  const tabs = await chrome.tabs.query({});
-  await Promise.allSettled(
-    tabs
-      .filter((tab) => Number.isInteger(tab.id) && isDevAutoReloadTargetUrl(tab.url, extensionRootUrl))
-      .map((tab) => chrome.tabs.reload(tab.id))
-  );
-  await chrome.storage.local.remove(DEV_AUTO_RELOAD_PENDING_KEY);
-  devAutoReloadInFlight = false;
 }
 
 async function openSettingsPageInWindow(preferredWindowId) {
@@ -890,25 +835,6 @@ function normalizeUrl(rawUrl) {
 function normalizeMonitorUrl(rawUrl) {
   const normalized = normalizeUrl(rawUrl);
   return normalized && isFollowUrl(normalized) ? normalized : null;
-}
-
-function isDevAutoReloadTargetUrl(rawUrl, extensionRootUrl) {
-  if (typeof extensionRootUrl === 'string' && rawUrl && rawUrl.startsWith(extensionRootUrl)) {
-    return true;
-  }
-  const normalized = normalizeUrl(rawUrl);
-  if (!normalized) return false;
-  if (normalized.startsWith('https://gmgn.ai/') || normalized.startsWith('https://www.gmgn.ai/')) {
-    return true;
-  }
-  if (
-    normalized.startsWith('https://pro.xxyy.io/')
-    || normalized.startsWith('https://www.xxyy.io/')
-    || normalized.startsWith('https://xxyy.io/')
-  ) {
-    return true;
-  }
-  return false;
 }
 
 function isFollowUrl(url) {

@@ -123,6 +123,21 @@
       <section class="card">
         <div class="card-heading">
           <div>
+            <h2>黑名单钱包</h2>
+            <p class="card-subtitle">黑名单钱包不会改变原有聚合与提醒逻辑，只会在 GMGN 页面里额外显示一个 ! 标记。</p>
+          </div>
+        </div>
+
+        <div class="form-stack">
+          <input type="text" id="blacklistWallet" placeholder="GMGN follow 里显示的钱包名，例如：西瓜" />
+          <button id="addBlacklistBtn" class="primary" type="button">添加黑名单钱包</button>
+          <div id="blacklistList" class="list-container"></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-heading">
+          <div>
             <h2>新增映射</h2>
             <p class="card-subtitle">把推特 ID 或钱包标签映射到内置提示音、自定义上传音频或链接音源。</p>
           </div>
@@ -230,7 +245,6 @@
     </div>
 
     <script src="lib/jszip.min.js"></script>
-    <script src="dev/auto-reload-client.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

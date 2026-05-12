@@ -4,6 +4,7 @@ const CLEAR_MAIN_WINDOW_MESSAGE = 'clear-main-window';
 
 const GMGN_AUDIO_SETTINGS_KEY = 'gmgnAudioSettings';
 const GMGN_SPEECH_WATCHLIST_KEY = 'gmgnSpeechWatchlist';
+const GMGN_BLACKLIST_WALLETS_KEY = 'gmgnBlacklistWallets';
 const BUILTIN_AUDIO_FILES = ['default.MP3', 'preset1.MP3', 'elonmusk.MP3', 'CZ.MP3', 'heyi.MP3'];
 const TTS_API = 'https://cloudflare-edge-tts.tech-melon.workers.dev/tts';
 const DEFAULT_TTS_VOICE = 'zh-CN-XiaoxiaoNeural';
@@ -55,6 +56,7 @@ const DEFAULT_TWITTER_AUDIO_STATE = {
   }
 };
 const DEFAULT_GMGN_SPEECH_WATCHLIST = {};
+const DEFAULT_GMGN_BLACKLIST_WALLETS = {};
 
 const els = {
   currentWindow: document.getElementById('current-window'),
@@ -89,6 +91,9 @@ const els = {
   speechWatchAliasInput: document.getElementById('speechWatchAlias'),
   addSpeechWatchBtn: document.getElementById('addSpeechWatchBtn'),
   speechWatchList: document.getElementById('speechWatchList'),
+  blacklistWalletInput: document.getElementById('blacklistWallet'),
+  addBlacklistBtn: document.getElementById('addBlacklistBtn'),
+  blacklistList: document.getElementById('blacklistList'),
   twitterIdInput: document.getElementById('twitterId'),
   twitterRemarkInput: document.getElementById('twitterRemark'),
   addRuleBtn: document.getElementById('addRuleBtn'),
@@ -122,6 +127,7 @@ let currentWindowId = null;
 let selectedMainWindowId = null;
 let twitterState = { ...DEFAULT_TWITTER_AUDIO_STATE };
 let gmgnSpeechWatchlist = { ...DEFAULT_GMGN_SPEECH_WATCHLIST };
+let gmgnBlacklistWallets = { ...DEFAULT_GMGN_BLACKLIST_WALLETS };
 
 initialize().catch((error) => {
   renderStatus(error.message || '初始化失败');
@@ -146,7 +152,8 @@ async function initialize() {
   const tasks = [
     loadMainWindowState(),
     loadTwitterAudioSettings(),
-    loadGmgnSpeechWatchlist()
+    loadGmgnSpeechWatchlist(),
+    loadGmgnBlacklistWallets()
   ];
   if (hasGmgnAudioControls) {
     tasks.push(loadGmgnAudioSettings());
@@ -160,6 +167,10 @@ function handleStorageChanges(changes, areaName) {
   if (changes[GMGN_SPEECH_WATCHLIST_KEY]) {
     gmgnSpeechWatchlist = normalizeGmgnSpeechWatchlist(changes[GMGN_SPEECH_WATCHLIST_KEY].newValue);
     renderGmgnSpeechWatchlist();
+  }
+  if (changes[GMGN_BLACKLIST_WALLETS_KEY]) {
+    gmgnBlacklistWallets = normalizeGmgnBlacklistWallets(changes[GMGN_BLACKLIST_WALLETS_KEY].newValue);
+    renderGmgnBlacklistWallets();
   }
 }
 
@@ -223,6 +234,7 @@ function bindEvents() {
   });
 
   els.addSpeechWatchBtn.addEventListener('click', addSpeechWatchWallet);
+  els.addBlacklistBtn.addEventListener('click', addBlacklistWallet);
   els.addRuleBtn.addEventListener('click', addMappingRule);
   els.uploadBtn.addEventListener('click', importCustomAudioFiles);
   els.addAudioUrlBtn.addEventListener('click', addCustomAudioUrl);
@@ -409,10 +421,23 @@ async function loadGmgnSpeechWatchlist() {
   renderGmgnSpeechWatchlist();
 }
 
+async function loadGmgnBlacklistWallets() {
+  const stored = await chrome.storage.local.get(GMGN_BLACKLIST_WALLETS_KEY);
+  gmgnBlacklistWallets = normalizeGmgnBlacklistWallets(stored[GMGN_BLACKLIST_WALLETS_KEY]);
+  renderGmgnBlacklistWallets();
+}
+
 async function persistGmgnSpeechWatchlist(nextWatchlist, message) {
   gmgnSpeechWatchlist = normalizeGmgnSpeechWatchlist(nextWatchlist);
   renderGmgnSpeechWatchlist();
   await chrome.storage.local.set({ [GMGN_SPEECH_WATCHLIST_KEY]: gmgnSpeechWatchlist });
+  showToast(message);
+}
+
+async function persistGmgnBlacklistWallets(nextBlacklistWallets, message) {
+  gmgnBlacklistWallets = normalizeGmgnBlacklistWallets(nextBlacklistWallets);
+  renderGmgnBlacklistWallets();
+  await chrome.storage.local.set({ [GMGN_BLACKLIST_WALLETS_KEY]: gmgnBlacklistWallets });
   showToast(message);
 }
 
@@ -446,6 +471,38 @@ function renderGmgnSpeechWatchlist() {
     });
 
     els.speechWatchList.appendChild(row);
+  }
+}
+
+function renderGmgnBlacklistWallets() {
+  els.blacklistList.innerHTML = '';
+  const entries = Object.keys(gmgnBlacklistWallets).sort((left, right) => left.localeCompare(right));
+
+  if (entries.length === 0) {
+    els.blacklistList.innerHTML = '<div class="empty-state">暂无黑名单钱包</div>';
+    return;
+  }
+
+  for (const walletName of entries) {
+    const row = document.createElement('div');
+    row.className = 'list-item';
+    row.innerHTML = `
+      <div class="item-info">
+        <span class="item-title">${escapeHtml(walletName)}</span>
+        <span class="item-sub">页面中会显示 ! 标记，不改变原有聚合和提醒逻辑</span>
+      </div>
+      <div class="action-btns">
+        <button class="btn-icon del" type="button">删除</button>
+      </div>
+    `;
+
+    row.querySelector('.del').addEventListener('click', async () => {
+      const nextBlacklistWallets = { ...gmgnBlacklistWallets };
+      delete nextBlacklistWallets[walletName];
+      await persistGmgnBlacklistWallets(nextBlacklistWallets, `已删除黑名单钱包：${walletName}`);
+    });
+
+    els.blacklistList.appendChild(row);
   }
 }
 
@@ -579,6 +636,26 @@ async function addSpeechWatchWallet() {
   );
   els.speechWatchWalletInput.value = '';
   els.speechWatchAliasInput.value = '';
+}
+
+async function addBlacklistWallet() {
+  const walletName = normalizeSpeechWatchWallet(els.blacklistWalletInput.value);
+  if (!walletName) {
+    showToast('请先输入要标记的黑名单钱包名');
+    return;
+  }
+
+  const existed = Boolean(gmgnBlacklistWallets[walletName]);
+  const nextBlacklistWallets = {
+    ...gmgnBlacklistWallets,
+    [walletName]: true
+  };
+
+  await persistGmgnBlacklistWallets(
+    nextBlacklistWallets,
+    existed ? `已更新黑名单钱包：${walletName}` : `已添加黑名单钱包：${walletName}`
+  );
+  els.blacklistWalletInput.value = '';
 }
 
 async function addMappingRule() {
@@ -1171,6 +1248,25 @@ function normalizeGmgnSpeechWatchlist(raw) {
     next[normalizedWallet] = {
       alias: normalizeSpeechWatchAlias(meta && meta.alias)
     };
+  }
+  return next;
+}
+
+function normalizeGmgnBlacklistWallets(raw) {
+  const next = {};
+  if (Array.isArray(raw)) {
+    for (const walletName of raw) {
+      const normalizedWallet = normalizeSpeechWatchWallet(walletName);
+      if (!normalizedWallet) continue;
+      next[normalizedWallet] = true;
+    }
+    return next;
+  }
+
+  for (const [walletName, enabled] of Object.entries(raw || {})) {
+    const normalizedWallet = normalizeSpeechWatchWallet(walletName);
+    if (!normalizedWallet || enabled === false) continue;
+    next[normalizedWallet] = true;
   }
   return next;
 }

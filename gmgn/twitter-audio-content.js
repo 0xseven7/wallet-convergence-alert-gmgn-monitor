@@ -594,9 +594,9 @@
   function getSpeakerName(trigger, rule) {
     if (typeof trigger?.remark === 'string' && trigger.remark.trim()) return trigger.remark.trim();
     if (typeof rule?.remark === 'string' && rule.remark.trim()) return rule.remark.trim();
+    if (typeof trigger?.name === 'string' && trigger.name.trim()) return trigger.name.trim();
     if (typeof trigger?.username === 'string' && trigger.username.trim()) return trigger.username.trim();
     if (typeof trigger?.id === 'string' && trigger.id.trim()) return trigger.id.trim();
-    if (typeof trigger?.name === 'string' && trigger.name.trim()) return trigger.name.trim();
     return trigger.id;
   }
 
