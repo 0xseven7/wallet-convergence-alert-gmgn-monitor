@@ -3,17 +3,23 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>GMGN 提示设置</title>
+    <title>扩展设置</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
-  <body>
+  <body class="settings-page">
     <div id="toast" class="toast"></div>
 
     <main class="popup-shell">
+      <header class="page-header">
+        <p class="eyebrow">Wallet Convergence Alert</p>
+        <h1>扩展设置</h1>
+        <p class="page-copy">在这个页面里管理主窗口、推特语音映射、自定义音源和默认提示音。</p>
+      </header>
+
       <section class="card">
         <div class="card-heading">
           <div>
-            <h1>主窗口</h1>
+            <h2>主窗口</h2>
             <p class="card-subtitle">GMGN follow 监控页打开的外部链接，会优先落到这里选中的 Chrome 窗口。</p>
           </div>
         </div>
@@ -153,7 +159,7 @@
         <div class="card-heading">
           <div>
             <h2>自定义音源库</h2>
-            <p class="card-subtitle">支持导入本地音频 / ZIP，也支持直接填写音频链接作为提示声来源。</p>
+            <p class="card-subtitle">支持导入本地音频 / ZIP，也支持直接填写音频链接作为提示声音来源。</p>
           </div>
         </div>
 

@@ -4,10 +4,39 @@ const GET_MAIN_WINDOW_MESSAGE = 'get-main-window';
 const CLEAR_MAIN_WINDOW_MESSAGE = 'clear-main-window';
 const REGISTER_MONITOR_TAB_MESSAGE = 'register-monitor-tab';
 const ALLOW_MONITOR_NAVIGATION_MESSAGE = 'allow-monitor-navigation';
+const DEV_AUTO_RELOAD_TRIGGER_MESSAGE = 'dev-auto-reload-trigger';
 const LEGACY_MAIN_WINDOW_STORAGE_KEY = 'mainWindowId';
 const MAIN_WINDOW_STORAGE_KEY = 'mainWindowState';
 const MONITOR_STATE_STORAGE_KEY = 'monitorState';
+const DEV_AUTO_RELOAD_PENDING_KEY = 'devAutoReloadPending';
+const DEV_AUTO_RELOAD_PENDING_TTL_MS = 30 * 1000;
 const DEFAULT_MONITOR_URL = 'https://gmgn.ai/follow';
+const SETTINGS_PAGE_PATH = 'settings.html';
+const TWITTER_AUDIO_MAPPING_STORAGE_KEY = 'twitterAudioMappings';
+const GMGN_FOLLOW_CHAIN_SEGMENT = '(?:sol|eth|bsc|base|tron|blast)';
+const TWITTER_AUDIO_DEFAULTS = {
+  twitterAudioMappings: {
+    elonmusk: { id: 'elonmusk.MP3', name: 'elonmusk.MP3', remark: '' },
+    cz_binance: { id: 'CZ.MP3', name: 'CZ.MP3', remark: '' },
+    heyibinance: { id: 'heyi.MP3', name: 'heyi.MP3', remark: '' }
+  },
+  customAudios: {},
+  isMasterEnabled: true,
+  globalVolume: 1,
+  defaultAudio: 'default.MP3',
+  eventFilters: {
+    tweet: true,
+    repost: true,
+    reply: true,
+    quote: true,
+    other: true
+  },
+  playDefaultUnmapped: true,
+  enableTTS: true,
+  ttsVoice: 'zh-CN-XiaoxiaoNeural',
+  ttsRate: '+0%',
+  ttsPitch: '+0%'
+};
 
 let monitorState = {
   tabId: null,
@@ -16,6 +45,7 @@ let monitorState = {
   allowedNavigationUrl: null,
   suppressNextRedirect: false
 };
+let devAutoReloadInFlight = false;
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !message.type) {
@@ -78,6 +108,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     persistMonitorState();
     sendResponse({ ok: true });
     return false;
+  }
+
+  if (message.type === DEV_AUTO_RELOAD_TRIGGER_MESSAGE) {
+    triggerDevAutoReload(typeof message.token === 'string' ? message.token : '')
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
   }
 
   return false;
@@ -147,6 +184,11 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   await chrome.tabs.update(tabId, { url: monitorState.followUrl || DEFAULT_MONITOR_URL });
 });
 
+chrome.action.onClicked.addListener((tab) => {
+  const preferredWindowId = tab && Number.isInteger(tab.windowId) ? tab.windowId : null;
+  void openSettingsPageInWindow(preferredWindowId);
+});
+
 chrome.tabs.onActivated.addListener(() => {
   void refreshActionBadges();
 });
@@ -196,7 +238,134 @@ chrome.runtime.onInstalled.addListener(() => {
 
 async function initializeExtensionState() {
   await ensureMonitorState();
+  await ensureTwitterAudioDefaults();
+  await handlePendingDevAutoReload();
   await refreshActionBadges();
+}
+
+async function triggerDevAutoReload(token) {
+  if (devAutoReloadInFlight) {
+    return;
+  }
+
+  devAutoReloadInFlight = true;
+  await chrome.storage.local.set({
+    [DEV_AUTO_RELOAD_PENDING_KEY]: {
+      requestedAt: Date.now(),
+      token
+    }
+  });
+
+  setTimeout(() => {
+    chrome.runtime.reload();
+  }, 120);
+}
+
+async function handlePendingDevAutoReload() {
+  const stored = await chrome.storage.local.get(DEV_AUTO_RELOAD_PENDING_KEY);
+  const pending = stored[DEV_AUTO_RELOAD_PENDING_KEY];
+  if (!pending || !pending.requestedAt) {
+    devAutoReloadInFlight = false;
+    return;
+  }
+
+  if ((Date.now() - pending.requestedAt) > DEV_AUTO_RELOAD_PENDING_TTL_MS) {
+    await chrome.storage.local.remove(DEV_AUTO_RELOAD_PENDING_KEY);
+    devAutoReloadInFlight = false;
+    return;
+  }
+
+  const extensionRootUrl = chrome.runtime.getURL('');
+  const tabs = await chrome.tabs.query({});
+  await Promise.allSettled(
+    tabs
+      .filter((tab) => Number.isInteger(tab.id) && isDevAutoReloadTargetUrl(tab.url, extensionRootUrl))
+      .map((tab) => chrome.tabs.reload(tab.id))
+  );
+  await chrome.storage.local.remove(DEV_AUTO_RELOAD_PENDING_KEY);
+  devAutoReloadInFlight = false;
+}
+
+async function openSettingsPageInWindow(preferredWindowId) {
+  const settingsUrl = chrome.runtime.getURL(SETTINGS_PAGE_PATH);
+  const existingTabs = await chrome.tabs.query({ url: settingsUrl });
+  const existingTab = existingTabs.find((tab) => tab.windowId === preferredWindowId && Number.isInteger(tab.id));
+
+  if (existingTab && Number.isInteger(existingTab.id)) {
+    await chrome.tabs.update(existingTab.id, { active: true });
+    await chrome.windows.update(existingTab.windowId, { focused: true });
+    return;
+  }
+
+  const createProperties = {
+    url: settingsUrl,
+    active: true
+  };
+
+  if (Number.isInteger(preferredWindowId)) {
+    createProperties.windowId = preferredWindowId;
+  }
+
+  const createdTab = await chrome.tabs.create(createProperties);
+  if (Number.isInteger(createdTab.windowId)) {
+    await chrome.windows.update(createdTab.windowId, { focused: true });
+  }
+}
+
+async function ensureTwitterAudioDefaults() {
+  const stored = await chrome.storage.local.get([
+    TWITTER_AUDIO_MAPPING_STORAGE_KEY,
+    'customAudios',
+    'isMasterEnabled',
+    'globalVolume',
+    'defaultAudio',
+    'eventFilters',
+    'playDefaultUnmapped',
+    'enableTTS',
+    'ttsVoice',
+    'ttsRate',
+    'ttsPitch'
+  ]);
+
+  const nextState = {};
+
+  if (!stored[TWITTER_AUDIO_MAPPING_STORAGE_KEY] || typeof stored[TWITTER_AUDIO_MAPPING_STORAGE_KEY] !== 'object') {
+    nextState[TWITTER_AUDIO_MAPPING_STORAGE_KEY] = TWITTER_AUDIO_DEFAULTS.twitterAudioMappings;
+  }
+  if (!stored.customAudios || typeof stored.customAudios !== 'object') {
+    nextState.customAudios = TWITTER_AUDIO_DEFAULTS.customAudios;
+  }
+  if (typeof stored.isMasterEnabled !== 'boolean') {
+    nextState.isMasterEnabled = TWITTER_AUDIO_DEFAULTS.isMasterEnabled;
+  }
+  if (typeof stored.globalVolume !== 'number') {
+    nextState.globalVolume = TWITTER_AUDIO_DEFAULTS.globalVolume;
+  }
+  if (typeof stored.defaultAudio !== 'string') {
+    nextState.defaultAudio = TWITTER_AUDIO_DEFAULTS.defaultAudio;
+  }
+  if (!stored.eventFilters || typeof stored.eventFilters !== 'object') {
+    nextState.eventFilters = TWITTER_AUDIO_DEFAULTS.eventFilters;
+  }
+  if (typeof stored.playDefaultUnmapped !== 'boolean') {
+    nextState.playDefaultUnmapped = TWITTER_AUDIO_DEFAULTS.playDefaultUnmapped;
+  }
+  if (typeof stored.enableTTS !== 'boolean') {
+    nextState.enableTTS = TWITTER_AUDIO_DEFAULTS.enableTTS;
+  }
+  if (typeof stored.ttsVoice !== 'string') {
+    nextState.ttsVoice = TWITTER_AUDIO_DEFAULTS.ttsVoice;
+  }
+  if (typeof stored.ttsRate !== 'string') {
+    nextState.ttsRate = TWITTER_AUDIO_DEFAULTS.ttsRate;
+  }
+  if (typeof stored.ttsPitch !== 'string') {
+    nextState.ttsPitch = TWITTER_AUDIO_DEFAULTS.ttsPitch;
+  }
+
+  if (Object.keys(nextState).length > 0) {
+    await chrome.storage.local.set(nextState);
+  }
 }
 
 async function openInMainWindow(url, monitorWindowId) {
@@ -723,11 +892,33 @@ function normalizeMonitorUrl(rawUrl) {
   return normalized && isFollowUrl(normalized) ? normalized : null;
 }
 
+function isDevAutoReloadTargetUrl(rawUrl, extensionRootUrl) {
+  if (typeof extensionRootUrl === 'string' && rawUrl && rawUrl.startsWith(extensionRootUrl)) {
+    return true;
+  }
+  const normalized = normalizeUrl(rawUrl);
+  if (!normalized) return false;
+  if (normalized.startsWith('https://gmgn.ai/') || normalized.startsWith('https://www.gmgn.ai/')) {
+    return true;
+  }
+  if (
+    normalized.startsWith('https://pro.xxyy.io/')
+    || normalized.startsWith('https://www.xxyy.io/')
+    || normalized.startsWith('https://xxyy.io/')
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function isFollowUrl(url) {
   try {
     const parsed = new URL(url);
     const isGmgnHost = parsed.hostname === 'gmgn.ai' || parsed.hostname.endsWith('.gmgn.ai');
-    return parsed.protocol === 'https:' && isGmgnHost && parsed.pathname.startsWith('/follow');
+    if (parsed.protocol !== 'https:' || !isGmgnHost) {
+      return false;
+    }
+    return new RegExp(`^/(?:follow(?:/|$)|${GMGN_FOLLOW_CHAIN_SEGMENT}/follow(?:/|$))`, 'i').test(parsed.pathname);
   } catch (_error) {
     return false;
   }

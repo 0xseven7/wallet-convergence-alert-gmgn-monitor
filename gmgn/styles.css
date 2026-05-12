@@ -99,7 +99,7 @@
   align-items: center;
   gap: 4px;
   color: #999;
-  font-size: 11px;
+  font-size: 10px;
 }
 
 .gcp-settings input[type="number"] {
@@ -293,16 +293,22 @@
   50%      { transform: rotate(15deg) scale(1.15); }
 }
 
-.gcp-star-toggle {
+.gcp-watch-toggle {
   cursor: pointer;
   color: #555;
   font-size: 12px;
   user-select: none;
   padding: 0 2px;
-  transition: all 0.2s;
+  transition: color 0.2s, transform 0.2s;
 }
-.gcp-star-toggle:hover { color: #ffd700; transform: scale(1.2); }
-.gcp-star-toggle.on { color: #ffd700; text-shadow: 0 0 4px rgba(255, 215, 0, 0.8); }
+.gcp-watch-toggle:hover {
+  color: #ffd700;
+  transform: scale(1.2);
+}
+.gcp-watch-toggle.on {
+  color: #ffd700;
+  text-shadow: 0 0 4px rgba(255, 215, 0, 0.8);
+}
 
 .gcp-alert-wallet-tag.is-starred {
   background: linear-gradient(135deg, rgba(255, 215, 0, 0.2), rgba(255, 100, 200, 0.15));
@@ -320,15 +326,24 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 12px;
-  height: 12px;
+  min-width: 18px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   flex: 0 0 auto;             /* 在 flex 容器里不被压缩 */
   margin-right: 3px;
   vertical-align: middle;
-  transition: color 0.2s, transform 0.2s;
+  transition: color 0.2s, transform 0.2s, background 0.2s, border-color 0.2s;
 }
-.gcp-orig-star:hover { color: #ffd700; transform: scale(1.25); }
-.gcp-orig-star.on { color: #ffd700; text-shadow: 0 0 4px rgba(255, 215, 0, 0.7); }
+.gcp-orig-star:hover { color: #ffd700; transform: scale(1.12); border-color: rgba(255, 215, 0, 0.45); }
+.gcp-orig-star.on {
+  color: #1b1200;
+  background: linear-gradient(135deg, #ffd54f, #ffb300);
+  border-color: rgba(255, 215, 0, 0.65);
+  text-shadow: none;
+}
 
 /* 星标钱包的整行高亮 */
 .gcp-orig-starred {

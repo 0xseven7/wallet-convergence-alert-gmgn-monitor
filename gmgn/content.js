@@ -23,6 +23,8 @@
   let scanInterval = null;
   let mountCheckInterval = null;
   let injectStarsScheduled = false;
+  const GMGN_SPEECH_WATCHLIST_KEY = 'gmgnSpeechWatchlist';
+  let speechWatchlist = {};
 
   // 特别关注的钱包名
   let starred = new Set();
@@ -39,6 +41,45 @@
   let sharedSources = {};
   let publishSharedTimer = null;
   let sharedRefreshInterval = null;
+  let sharedPoolSyncStarted = false;
+  let followModeActive = false;
+  let routeWatcherInstalled = false;
+  const GMGN_AUDIO_SETTINGS_KEY = 'gmgnAudioSettings';
+  const AUDIO_SYNC_CHANNEL_NAME = 'gmgn_convergence_audio_sync_channel';
+  const TTS_STORAGE_KEYS = ['ttsVoice', 'ttsRate', 'ttsPitch'];
+  const AUDIO_LOCK_MS = 4500;
+  const PRESET_AUDIO_OPTIONS = new Set(['default.MP3', 'preset1.MP3', 'elonmusk.MP3', 'CZ.MP3', 'heyi.MP3']);
+  const DEFAULT_TTS_SETTINGS = {
+    voice: 'zh-CN-XiaoxiaoNeural',
+    rate: '+0%',
+    pitch: '+0%'
+  };
+  const TTS_API = 'https://cloudflare-edge-tts.tech-melon.workers.dev/tts';
+  const TTS_VOICE_OPTIONS = new Set([
+    'zh-CN-XiaoxiaoNeural',
+    'zh-CN-YunjianNeural',
+    'zh-CN-XiaoyiNeural',
+    'en-US-AvaMultilingualNeural'
+  ]);
+  const TTS_RATE_OPTIONS = new Set(['-10%', '+0%', '+15%', '+30%']);
+  const TTS_PITCH_OPTIONS = new Set(['-5%', '+0%', '+5%']);
+  const DEFAULT_AUDIO_SETTINGS = {
+    enabled: true,
+    preset: 'default.MP3',
+    ttsEnabled: true,
+    volume: 1
+  };
+  let audioSettings = { ...DEFAULT_AUDIO_SETTINGS };
+  let ttsSettings = { ...DEFAULT_TTS_SETTINGS };
+  let preloadedAlertAudio = null;
+  let audioSyncChannel = null;
+  let isLockedByOtherTab = false;
+  let watchedTradesPrimed = false;
+  let watchedTradeSpeechQueue = Promise.resolve();
+  const spokenWatchedTradeKeys = new Map();
+  const WATCHED_TRADE_TTS_MAX_AGE_MS = 10 * 1000;
+  const SUPPORTED_GMGN_CHAINS = new Set(['sol', 'eth', 'bsc', 'bnb', 'base', 'tron', 'blast']);
+  const FOLLOW_PATH_RE = /^\/(?:follow(?:\/|$)|(?:sol|eth|bsc|base|tron|blast)\/follow(?:\/|$))/i;
 
   function getSourceId() {
     try {
@@ -74,11 +115,78 @@
     };
   }
 
+  function normalizeChainName(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (!SUPPORTED_GMGN_CHAINS.has(normalized)) return '';
+    return normalized === 'bnb' ? 'bsc' : normalized;
+  }
+
+  function getLocationChainHint() {
+    try {
+      const currentUrl = new URL(location.href);
+      const queryChain = normalizeChainName(
+        currentUrl.searchParams.get('chain')
+        || currentUrl.searchParams.get('network')
+        || currentUrl.searchParams.get('tab')
+      );
+      if (queryChain) return queryChain;
+
+      const followPrefixMatch = currentUrl.pathname.match(/^\/(sol|eth|bsc|bnb|base|tron|blast)\/follow(?:\/|$)/i);
+      if (followPrefixMatch) return normalizeChainName(followPrefixMatch[1]);
+
+      const followSuffixMatch = currentUrl.pathname.match(/^\/follow\/(sol|eth|bsc|bnb|base|tron|blast)(?:\/|$)/i);
+      if (followSuffixMatch) return normalizeChainName(followSuffixMatch[1]);
+
+      const pathMatch = currentUrl.pathname.match(/^\/(sol|eth|bsc|bnb|base|tron|blast)(?:\/|$)/i);
+      if (pathMatch) return normalizeChainName(pathMatch[1]);
+    } catch (e) {}
+    return '';
+  }
+
+  function parseGmgnTokenHref(rawHref) {
+    const href = String(rawHref || '').trim();
+    if (!href) return { href: '', chain: '', mint: '' };
+
+    const pathMatch = href.match(/\/(sol|eth|bsc|bnb|base|tron|blast)\/token\/([1-9A-HJ-NP-Za-km-z]{32,}|0x[a-fA-F0-9]{40})/i);
+    if (pathMatch) {
+      return {
+        href,
+        chain: normalizeChainName(pathMatch[1]),
+        mint: pathMatch[2]
+      };
+    }
+
+    try {
+      const parsed = new URL(href, location.href);
+      const queryMatch = parsed.pathname.match(/\/token\/([1-9A-HJ-NP-Za-km-z]{32,}|0x[a-fA-F0-9]{40})/i);
+      if (queryMatch) {
+        return {
+          href,
+          chain: normalizeChainName(parsed.searchParams.get('chain') || parsed.searchParams.get('network')),
+          mint: queryMatch[1]
+        };
+      }
+    } catch (e) {}
+
+    return { href, chain: '', mint: '' };
+  }
+
+  function getTradeRowTokenLinkInfo(row) {
+    const anchors = Array.from(row?.querySelectorAll?.('a[href]') || []);
+    for (const anchor of anchors) {
+      const parsed = parseGmgnTokenHref(anchor.getAttribute('href') || anchor.href || '');
+      if (parsed.mint) return parsed;
+    }
+
+    const fallbackAnchor = anchors[0];
+    return parseGmgnTokenHref(fallbackAnchor ? (fallbackAnchor.getAttribute('href') || fallbackAnchor.href || '') : '');
+  }
+
   function getCurrentChainHint() {
-    const pathMatch = location.pathname.match(/^\/(sol|eth|bsc|base|tron|blast)\b/i);
-    if (pathMatch) return pathMatch[1].toLowerCase();
+    const locationChain = getLocationChainHint();
+    if (locationChain) return locationChain;
     const recent = buyRecords.find(r => r.chain) || closedRecords.find(r => r.chain);
-    return recent ? recent.chain : '';
+    return recent ? normalizeChainName(recent.chain) : '';
   }
 
   function pruneSharedSources(sources, now = Date.now()) {
@@ -132,6 +240,25 @@
     } catch (e) {}
   }
 
+  window.addEventListener('pagehide', () => {
+    void removeSharedSnapshot();
+  }, { once: true });
+
+  window.addEventListener('pagehide', () => {
+    if (audioSyncChannel) {
+      audioSyncChannel.close();
+      audioSyncChannel = null;
+    }
+    if (preloadedAlertAudio) {
+      try {
+        preloadedAlertAudio.pause();
+        preloadedAlertAudio.removeAttribute('src');
+        preloadedAlertAudio.load();
+      } catch (e) {}
+      preloadedAlertAudio = null;
+    }
+  }, { once: true });
+
   async function loadSharedSnapshots(options = {}) {
     if (!canUseSharedStorage) return;
     try {
@@ -145,22 +272,154 @@
     } catch (e) {}
   }
 
-  function startSharedPoolSync() {
-    if (!canUseSharedStorage) return;
-    loadSharedSnapshots({ recalculate: true });
-    chrome.storage.onChanged.addListener((changes, areaName) => {
-      if (areaName !== 'local' || !changes[SHARED_STATE_KEY]) return;
+  function handleSharedStorageChange(changes, areaName) {
+    if (areaName !== 'local') return;
+    if (changes[SHARED_STATE_KEY]) {
       sharedSources = pruneSharedSources(changes[SHARED_STATE_KEY].newValue || {});
       cleanOldRecords();
       checkConvergence();
       updateStatus();
-    });
+    }
+    if (changes[GMGN_AUDIO_SETTINGS_KEY]) {
+      audioSettings = normalizeAudioSettings(changes[GMGN_AUDIO_SETTINGS_KEY].newValue);
+      warmupAlertAudio();
+    }
+    if (changes[GMGN_SPEECH_WATCHLIST_KEY]) {
+      applySpeechWatchlist(changes[GMGN_SPEECH_WATCHLIST_KEY].newValue || {});
+      lastRenderState = '';
+      renderAlerts();
+      injectOrigStars();
+    }
+    if (changes.ttsVoice || changes.ttsRate || changes.ttsPitch) {
+      ttsSettings = normalizeTtsSettings({
+        ttsVoice: changes.ttsVoice ? changes.ttsVoice.newValue : ttsSettings.voice,
+        ttsRate: changes.ttsRate ? changes.ttsRate.newValue : ttsSettings.rate,
+        ttsPitch: changes.ttsPitch ? changes.ttsPitch.newValue : ttsSettings.pitch
+      });
+    }
+  }
+
+  function startSharedPoolSync() {
+    if (!canUseSharedStorage || sharedPoolSyncStarted) return;
+    sharedPoolSyncStarted = true;
+    loadSharedSnapshots({ recalculate: true });
+    chrome.storage.onChanged.addListener(handleSharedStorageChange);
     if (sharedRefreshInterval) clearInterval(sharedRefreshInterval);
     sharedRefreshInterval = setInterval(() => {
       loadSharedSnapshots({ recalculate: true });
       schedulePublishSharedSnapshot();
     }, 10000);
-    window.addEventListener('pagehide', removeSharedSnapshot, { once: true });
+  }
+
+  function stopSharedPoolSync() {
+    if (!canUseSharedStorage || !sharedPoolSyncStarted) return;
+    sharedPoolSyncStarted = false;
+    chrome.storage.onChanged.removeListener(handleSharedStorageChange);
+    if (sharedRefreshInterval) {
+      clearInterval(sharedRefreshInterval);
+      sharedRefreshInterval = null;
+    }
+    if (publishSharedTimer) {
+      clearTimeout(publishSharedTimer);
+      publishSharedTimer = null;
+    }
+    sharedSources = {};
+  }
+
+  function normalizeAudioSettings(raw) {
+    const settings = {
+      ...DEFAULT_AUDIO_SETTINGS,
+      ...(raw || {})
+    };
+    if (typeof settings.enabled !== 'boolean') settings.enabled = DEFAULT_AUDIO_SETTINGS.enabled;
+    if (typeof settings.ttsEnabled !== 'boolean') settings.ttsEnabled = DEFAULT_AUDIO_SETTINGS.ttsEnabled;
+    if (!PRESET_AUDIO_OPTIONS.has(settings.preset)) settings.preset = DEFAULT_AUDIO_SETTINGS.preset;
+    const volume = Number(settings.volume);
+    settings.volume = Number.isFinite(volume)
+      ? Math.min(1, Math.max(0, volume))
+      : DEFAULT_AUDIO_SETTINGS.volume;
+    return settings;
+  }
+
+  function normalizeTtsSettings(raw) {
+    return {
+      voice: normalizeTtsVoice(raw && raw.ttsVoice),
+      rate: normalizeTtsRate(raw && raw.ttsRate),
+      pitch: normalizeTtsPitch(raw && raw.ttsPitch)
+    };
+  }
+
+  function normalizeTtsVoice(value) {
+    return TTS_VOICE_OPTIONS.has(value) ? value : DEFAULT_TTS_SETTINGS.voice;
+  }
+
+  function normalizeTtsRate(value) {
+    return TTS_RATE_OPTIONS.has(value) ? value : DEFAULT_TTS_SETTINGS.rate;
+  }
+
+  function normalizeTtsPitch(value) {
+    return TTS_PITCH_OPTIONS.has(value) ? value : DEFAULT_TTS_SETTINGS.pitch;
+  }
+
+  function parsePercentString(value) {
+    const match = /^([+-]?\d+(?:\.\d+)?)%$/.exec(String(value || '').trim());
+    return match ? Number(match[1]) : 0;
+  }
+
+  function speechSynthesisRateFromConfig(value) {
+    return Math.min(2, Math.max(0.5, 1 + (parsePercentString(value) / 100)));
+  }
+
+  function speechSynthesisPitchFromConfig(value) {
+    return Math.min(2, Math.max(0, 1 + (parsePercentString(value) / 100)));
+  }
+
+  async function loadAudioSettings() {
+    if (!canUseSharedStorage) return;
+    try {
+      const stored = await chrome.storage.local.get(GMGN_AUDIO_SETTINGS_KEY);
+      audioSettings = normalizeAudioSettings(stored[GMGN_AUDIO_SETTINGS_KEY]);
+      warmupAlertAudio();
+    } catch (e) {}
+  }
+
+  async function loadTtsSettings() {
+    if (!canUseSharedStorage) return;
+    try {
+      const stored = await chrome.storage.local.get(TTS_STORAGE_KEYS);
+      ttsSettings = normalizeTtsSettings(stored);
+    } catch (e) {}
+  }
+
+  function getAlertAudioSrc() {
+    return chrome.runtime.getURL(`sounds/${audioSettings.preset}`);
+  }
+
+  function warmupAlertAudio() {
+    const src = getAlertAudioSrc();
+    if (preloadedAlertAudio) {
+      try {
+        if (preloadedAlertAudio.src === src) return;
+        preloadedAlertAudio.pause();
+        preloadedAlertAudio.removeAttribute('src');
+        preloadedAlertAudio.load();
+      } catch (e) {}
+    }
+    const audio = new Audio();
+    audio.preload = 'auto';
+    audio.src = src;
+    audio.load();
+    preloadedAlertAudio = audio;
+  }
+
+  function ensureAudioSyncChannel() {
+    if (audioSyncChannel) return;
+    audioSyncChannel = new BroadcastChannel(AUDIO_SYNC_CHANNEL_NAME);
+    audioSyncChannel.onmessage = (event) => {
+      if (event.data !== 'PLAYING_AUDIO') return;
+      isLockedByOtherTab = true;
+      setTimeout(() => { isLockedByOtherTab = false; }, AUDIO_LOCK_MS);
+    };
   }
 
   function getCombinedRecords(kind) {
@@ -240,21 +499,93 @@
   try {
     const saved = localStorage.getItem('gcp_config');
     if (saved) Object.assign(config, JSON.parse(saved));
-    const savedStars = localStorage.getItem('gcp_starred');
-    if (savedStars) starred = new Set(JSON.parse(savedStars));
   } catch (e) {}
 
   function saveConfig() {
     try { localStorage.setItem('gcp_config', JSON.stringify(config)); } catch (e) {}
   }
+  function normalizeSpeechWatchlist(raw) {
+    const next = {};
+    for (const [walletName, meta] of Object.entries(raw || {})) {
+      const normalizedWallet = normalizeSpeechWatchWallet(walletName);
+      if (!normalizedWallet) continue;
+      next[normalizedWallet] = {
+        alias: typeof meta?.alias === 'string' ? meta.alias.trim() : ''
+      };
+    }
+    return next;
+  }
+
+  function applySpeechWatchlist(raw) {
+    speechWatchlist = normalizeSpeechWatchlist(raw);
+    starred = new Set(Object.keys(speechWatchlist));
+  }
+
+  async function loadSpeechWatchlist() {
+    try {
+      if (canUseSharedStorage) {
+        const stored = await chrome.storage.local.get(GMGN_SPEECH_WATCHLIST_KEY);
+        const storedList = stored[GMGN_SPEECH_WATCHLIST_KEY];
+        if (storedList && typeof storedList === 'object') {
+          applySpeechWatchlist(storedList);
+          return;
+        }
+      }
+
+      const savedStars = localStorage.getItem('gcp_starred');
+      if (!savedStars) {
+        applySpeechWatchlist({});
+        return;
+      }
+
+      const legacyWallets = JSON.parse(savedStars);
+      const migrated = {};
+      if (Array.isArray(legacyWallets)) {
+        legacyWallets.forEach((walletName) => {
+          const normalizedWallet = normalizeSpeechWatchWallet(walletName);
+          if (!normalizedWallet) return;
+          migrated[normalizedWallet] = { alias: '' };
+        });
+      }
+      applySpeechWatchlist(migrated);
+      void persistSpeechWatchlist();
+    } catch (e) {
+      applySpeechWatchlist({});
+    }
+  }
+
+  function persistSpeechWatchlist() {
+    try {
+      localStorage.setItem('gcp_starred', JSON.stringify(Object.keys(speechWatchlist)));
+    } catch (e) {}
+    if (canUseSharedStorage) {
+      return chrome.storage.local.set({ [GMGN_SPEECH_WATCHLIST_KEY]: speechWatchlist }).catch(() => {});
+    }
+    return Promise.resolve();
+  }
+
   function saveStarred() {
-    try { localStorage.setItem('gcp_starred', JSON.stringify(Array.from(starred))); } catch (e) {}
+    void persistSpeechWatchlist();
+  }
+
+  function normalizeSpeechWatchWallet(value) {
+    return String(value || '').trim();
+  }
+
+  function getSpeechWatchAlias(walletName) {
+    const normalizedWallet = normalizeSpeechWatchWallet(walletName);
+    return speechWatchlist[normalizedWallet]?.alias || '';
   }
 
   function toggleStar(walletName) {
-    if (!walletName) return;
-    if (starred.has(walletName)) starred.delete(walletName);
-    else starred.add(walletName);
+    const normalizedWallet = normalizeSpeechWatchWallet(walletName);
+    if (!normalizedWallet) return;
+    if (starred.has(normalizedWallet)) {
+      delete speechWatchlist[normalizedWallet];
+    } else {
+      speechWatchlist[normalizedWallet] = speechWatchlist[normalizedWallet] || { alias: '' };
+    }
+    applySpeechWatchlist(speechWatchlist);
     saveStarred();
     lastRenderState = '';
     renderAlerts();
@@ -263,6 +594,70 @@
 
   function isAlertStarred(a) {
     return a.wallets && a.wallets.some(w => starred.has(w.name));
+  }
+
+  function isTradeStarred(trade) {
+    return !!(trade && trade.wallet && starred.has(trade.wallet));
+  }
+
+  function isBuyAction(action) {
+    return /(加仓|建仓|买入)/.test(action || '');
+  }
+
+  function isSellAction(action) {
+    return /(减仓|卖出|清仓)/.test(action || '');
+  }
+
+  function normalizeWatchedTradeVerb(trade) {
+    const action = trade && trade.action ? trade.action : '';
+    if (/清仓/.test(action)) return '清仓了';
+    if (/建仓/.test(action)) return '建仓了';
+    if (/(减仓|卖出)/.test(action)) return '卖出了';
+    if (/(加仓|买入)/.test(action) || trade.isBuy) return '买入了';
+    return '操作了';
+  }
+
+  function buildWatchedTradeSpeechText(trade) {
+    const rawWalletName = (trade && trade.wallet) ? trade.wallet.trim() : '';
+    const walletName = getSpeechWatchAlias(rawWalletName) || rawWalletName || '关注钱包';
+    const verb = normalizeWatchedTradeVerb(trade);
+    const assetText = `${trade && trade.amount ? trade.amount : ''}${trade && trade.token ? trade.token : ''}`.trim() || '这个代币';
+    return `${walletName} ${verb} ${assetText}`;
+  }
+
+  function buildWatchedTradeSpeechKey(trade) {
+    const timeBucket = Math.round(((trade && trade.timeMs) || Date.now()) / 60000);
+    return [
+      trade && trade.wallet ? trade.wallet : '',
+      normalizeWatchedTradeVerb(trade),
+      trade && trade.chain ? trade.chain : '',
+      trade && (trade.mint || trade.token) ? (trade.mint || trade.token) : '',
+      trade && trade.amount ? trade.amount : '',
+      timeBucket
+    ].join('|');
+  }
+
+  function isRecentEnoughForWatchedTradeSpeech(trade, now = Date.now()) {
+    if (!trade) return false;
+    const secondsMatch = /^(\d+)s$/.exec(String(trade.timeAgo || '').trim());
+    if (!secondsMatch) return false;
+    const ageSeconds = Number(secondsMatch[1]);
+    if (!Number.isFinite(ageSeconds) || ageSeconds < 0 || ageSeconds > 10) return false;
+    if (!trade.timeMs) return false;
+    const ageMs = now - trade.timeMs;
+    return ageMs >= 0 && ageMs <= WATCHED_TRADE_TTS_MAX_AGE_MS;
+  }
+
+  function flushWatchedTradeAnnouncements(trades) {
+    if (!Array.isArray(trades) || trades.length === 0) return;
+    const now = Date.now();
+    for (const trade of trades) {
+      if (!isRecentEnoughForWatchedTradeSpeech(trade, now)) continue;
+      const speechKey = buildWatchedTradeSpeechKey(trade);
+      if (hasSpokenWatchedTradeRecently(speechKey, now)) continue;
+      markWatchedTradeSpoken(speechKey, now);
+      queueWatchedTradeSpeech(trade);
+    }
   }
 
   // ===== DOM 定位：找到追踪 tab 的虚拟列表 =====
@@ -320,13 +715,16 @@
   // ===== 解析单条 trade =====
   function parseTradeRow(row) {
     if (!row || !row.querySelector) return null;
-    const a = row.querySelector('a');
+    const anchors = Array.from(row.querySelectorAll('a[href]'));
+    const a = anchors.find((anchor) => anchor.querySelector('.text-yellow-100[data-sentry-component="AutoTruncateText"]'))
+      || anchors.find((anchor) => anchor.querySelector('[data-sentry-component="AutoTruncateText"]'))
+      || anchors[0];
     if (!a) return null;
 
-    const href = a.getAttribute('href') || '';
-    const m = href.match(/\/(sol|eth|bsc|base|tron|blast)\/token\/([1-9A-HJ-NP-Za-km-z]{32,}|0x[a-fA-F0-9]{40})/i);
-    const chain = m ? m[1].toLowerCase() : '';
-    const mint = m ? m[2] : '';
+    const tokenLink = getTradeRowTokenLinkInfo(row);
+    const href = tokenLink.href || a.getAttribute('href') || '';
+    const chain = tokenLink.chain || getLocationChainHint();
+    const mint = tokenLink.mint || '';
 
     // 钱包名：第一个 .text-yellow-100 的 AutoTruncateText
     const walletEl = a.querySelector('.text-yellow-100[data-sentry-component="AutoTruncateText"]')
@@ -486,6 +884,10 @@
   }
 
   function scanTrades() {
+    if (!followModeActive || !isMonitorWindowPage()) {
+      return;
+    }
+
     const all = findAllTrackingLists();
     lastScanInfo.panelCount = all.length;
     lastScanInfo.activeTrackingPanels = all.filter(p => p.isOnTracking).length;
@@ -512,6 +914,8 @@
 
     let added = 0;
     let totalRows = 0;
+    const watchedTradesToSpeak = [];
+    const canAnnounceWatchedTrades = watchedTradesPrimed;
     // 遍历所有在「追踪」tab 的面板
     for (const { list, isOnTracking } of all) {
       if (!isOnTracking) continue;
@@ -528,12 +932,26 @@
           seenKeys.add(key);
           buyRecords.push(trade);
           added++;
+          if (canAnnounceWatchedTrades && isTradeStarred(trade)) {
+            watchedTradesToSpeak.push(trade);
+          }
         } else if (trade.action && trade.action.includes('清仓')) {
           const ck = `C|${trade.mint || trade.token}|${trade.wallet}|${trade.timeAgo}`;
           if (seenClosedKeys.has(ck)) continue;
           seenClosedKeys.add(ck);
           closedRecords.push(trade);
           added++;
+          if (canAnnounceWatchedTrades && isTradeStarred(trade)) {
+            watchedTradesToSpeak.push(trade);
+          }
+        } else if (isSellAction(trade.action)) {
+          const sk = `S|${trade.chain || ''}|${trade.mint || trade.token}|${trade.wallet}|${trade.amount}|${trade.timeAgo}`;
+          if (seenClosedKeys.has(sk)) continue;
+          seenClosedKeys.add(sk);
+          added++;
+          if (canAnnounceWatchedTrades && isTradeStarred(trade)) {
+            watchedTradesToSpeak.push(trade);
+          }
         }
       }
     }
@@ -544,6 +962,8 @@
     cleanOldRecords();
     schedulePublishSharedSnapshot();
     checkConvergence();
+    flushWatchedTradeAnnouncements(watchedTradesToSpeak);
+    watchedTradesPrimed = true;
 
     if (seenKeys.size > 5000) {
       seenKeys = new Set(Array.from(seenKeys).slice(-2500));
@@ -772,6 +1192,99 @@
     setTimeout(() => badge.classList.remove('is-active'), 3000);
   }
 
+  function pruneSpokenWatchedTradeKeys(now = Date.now()) {
+    for (const [key, timestamp] of spokenWatchedTradeKeys.entries()) {
+      if ((now - timestamp) > 5 * 60 * 1000) {
+        spokenWatchedTradeKeys.delete(key);
+      }
+    }
+  }
+
+  function markWatchedTradeSpoken(key, now = Date.now()) {
+    pruneSpokenWatchedTradeKeys(now);
+    spokenWatchedTradeKeys.set(key, now);
+  }
+
+  function hasSpokenWatchedTradeRecently(key, now = Date.now()) {
+    pruneSpokenWatchedTradeKeys(now);
+    return spokenWatchedTradeKeys.has(key);
+  }
+
+  function queueWatchedTradeSpeech(trade) {
+    const speechText = buildWatchedTradeSpeechText(trade);
+    if (!speechText) return;
+    watchedTradeSpeechQueue = watchedTradeSpeechQueue
+      .then(() => playWatchedTradeSpeech(speechText))
+      .catch(() => {});
+  }
+
+  async function playWatchedTradeSpeech(text) {
+    if (!config.soundEnabled || !audioSettings.enabled || !audioSettings.ttsEnabled) return;
+    if (document.visibilityState === 'hidden') return;
+    if (isLockedByOtherTab) return;
+
+    isLockedByOtherTab = true;
+    setTimeout(() => { isLockedByOtherTab = false; }, AUDIO_LOCK_MS);
+    if (audioSyncChannel) {
+      try { audioSyncChannel.postMessage('PLAYING_AUDIO'); } catch (e) {}
+    }
+
+    try {
+      const response = await fetch(TTS_API, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          text,
+          voice: ttsSettings.voice,
+          rate: ttsSettings.rate,
+          pitch: ttsSettings.pitch
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`TTS request failed with ${response.status}`);
+      }
+
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      try {
+        const audio = new Audio(objectUrl);
+        audio.volume = Math.min(Math.max(audioSettings.volume, 0), 1);
+        const playbackFinished = new Promise((resolve) => {
+          audio.addEventListener('ended', resolve, { once: true });
+          audio.addEventListener('error', resolve, { once: true });
+        });
+        await audio.play();
+        await playbackFinished;
+      } finally {
+        URL.revokeObjectURL(objectUrl);
+      }
+    } catch (e) {
+      await fallbackNativeWatchedTradeTts(text);
+    }
+  }
+
+  function fallbackNativeWatchedTradeTts(text) {
+    if (!('speechSynthesis' in window)) return Promise.resolve();
+    return new Promise((resolve) => {
+      try {
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = 'zh-CN';
+        utterance.rate = speechSynthesisRateFromConfig(ttsSettings.rate);
+        utterance.pitch = speechSynthesisPitchFromConfig(ttsSettings.pitch);
+        utterance.volume = Math.min(Math.max(audioSettings.volume, 0), 1);
+        utterance.addEventListener('end', resolve, { once: true });
+        utterance.addEventListener('error', resolve, { once: true });
+        window.speechSynthesis.speak(utterance);
+      } catch (e) {
+        resolve();
+      }
+    });
+  }
+
   // ===== 面板 =====
   function createPanel() {
     const el = document.createElement('div');
@@ -915,7 +1428,7 @@
                 : '';
               return `
               <span class="gcp-alert-wallet-tag ${star ? 'is-starred' : ''} ${w.closed ? 'is-closed' : ''}" title="${w.closed ? '已清仓' : ''}">
-                <span class="gcp-star-toggle ${star ? 'on' : ''}" data-wallet="${escHtml(w.name)}" title="${star ? '取消特别关注' : '加入特别关注'}">${star ? '★' : '☆'}</span>
+                <span class="gcp-watch-toggle ${star ? 'on' : ''}" data-wallet="${escHtml(w.name)}" title="${star ? '取消语音特别关注' : '加入语音特别关注'}">${star ? '★' : '☆'}</span>
                 ${av}${escHtml(w.name)}
                 <span class="gcp-wallet-amount">${escHtml(w.amount)}</span>
                 ${w.timeAgo ? '<span style="color:#666">' + escHtml(w.timeAgo) + '前</span>' : ''}
@@ -948,7 +1461,7 @@
         } catch (e2) {}
       });
     });
-    container.querySelectorAll('.gcp-star-toggle').forEach(el => {
+    container.querySelectorAll('.gcp-watch-toggle').forEach(el => {
       el.addEventListener('click', (e) => {
         e.stopPropagation();
         toggleStar(el.dataset.wallet);
@@ -972,7 +1485,7 @@
   }
 
   function isMonitorWindowPage() {
-    return location.pathname.startsWith('/follow');
+    return FOLLOW_PATH_RE.test(location.pathname);
   }
 
   async function openPanelLinkInMainWindow(url) {
@@ -1069,27 +1582,62 @@
       }
       starBtn.textContent = isStar ? '★' : '☆';
       starBtn.classList.toggle('on', isStar);
-      starBtn.title = isStar ? '取消特别关注' : '加入特别关注';
+      starBtn.title = isStar ? '取消语音特别关注' : '加入语音特别关注';
     }
   }
 
   // ===== 挂载面板 =====
+/*
   function mountPanel() {
-    if (document.getElementById('gcp-inline-panel')) return true;
-    panelEl = createPanel();
-    panelEl.classList.add('gcp-floating');
-    restorePanelSize();
+    if (!isMonitorWindowPage() || !document.body) return false;
+    const mountedPanel = document.getElementById('gcp-inline-panel');
+    if (mountedPanel) {
+      panelEl = mountedPanel;
+      return true;
+    }
+    if (!panelEl) {
+      panelEl = createPanel();
+      panelEl.classList.add('gcp-floating');
+      restorePanelSize();
+      try {
     // 恢复保存的位置
     try {
       const pos = JSON.parse(localStorage.getItem('gcp_pos') || '{}');
       if (pos.right != null) panelEl.style.right = pos.right + 'px';
       if (pos.top != null) panelEl.style.top = pos.top + 'px';
-    } catch (e) {}
+      } catch (e) {}
+      bindPanelEvents();
+      enableDrag();
+      enableResize();
+    }
     document.body.appendChild(panelEl);
     keepPanelInViewport();
-    bindPanelEvents();
-    enableDrag();
-    enableResize();
+    return true;
+  }
+
+*/
+  function mountPanel() {
+    if (!isMonitorWindowPage() || !document.body) return false;
+    const mountedPanel = document.getElementById('gcp-inline-panel');
+    if (mountedPanel) {
+      panelEl = mountedPanel;
+      return true;
+    }
+    if (!panelEl) {
+      panelEl = createPanel();
+      panelEl.classList.add('gcp-floating');
+      restorePanelSize();
+      try {
+        const pos = JSON.parse(localStorage.getItem('gcp_pos') || '{}');
+        if (pos.right != null) panelEl.style.right = pos.right + 'px';
+        if (pos.top != null) panelEl.style.top = pos.top + 'px';
+      } catch (e) {}
+      bindPanelEvents();
+      enableDrag();
+      enableResize();
+    }
+    document.body.appendChild(panelEl);
+    keepPanelInViewport();
     return true;
   }
 
@@ -1251,6 +1799,7 @@
   // ===== Observer =====
   let observers = [];
   function startObserver() {
+    if (!followModeActive || !isMonitorWindowPage()) return false;
     const all = findAllTrackingLists();
     if (all.length === 0) return false;
     // 拆掉旧的
@@ -1269,9 +1818,23 @@
     return true;
   }
 
+  function stopObserver() {
+    observers.forEach(o => { try { o.disconnect(); } catch(e) {} });
+    observers = [];
+    observer = null;
+    if (scanInterval) {
+      clearInterval(scanInterval);
+      scanInterval = null;
+    }
+  }
+
   function startMountWatcher() {
     if (mountCheckInterval) clearInterval(mountCheckInterval);
     mountCheckInterval = setInterval(() => {
+      if (!isMonitorWindowPage()) {
+        deactivateFollowMode();
+        return;
+      }
       // 浮窗独立存在：只要不在 DOM 里就重新挂
       if (!document.getElementById('gcp-inline-panel')) {
         if (mountPanel()) renderAlerts();
@@ -1289,6 +1852,100 @@
   }
 
   // ===== 检查新版本 =====
+  function stopMountWatcher() {
+    if (mountCheckInterval) {
+      clearInterval(mountCheckInterval);
+      mountCheckInterval = null;
+    }
+  }
+
+  function resetRuntimeState() {
+    alerts = [];
+    buyRecords = [];
+    closedRecords = [];
+    seenKeys.clear();
+    seenClosedKeys.clear();
+    spokenWatchedTradeKeys.clear();
+    tokenMeta.clear();
+    sharedSources = {};
+    watchedTradesPrimed = false;
+    watchedTradeSpeechQueue = Promise.resolve();
+    lastScanInfo = {
+      panelCount: 0,
+      activeTrackingPanels: 0,
+      rowCount: 0,
+      panelsOff: 0,
+      error: ''
+    };
+    lastRenderState = '';
+  }
+
+  function activateFollowMode() {
+    if (!isMonitorWindowPage()) return false;
+    followModeActive = true;
+    if (!mountPanel()) {
+      followModeActive = false;
+      return false;
+    }
+    ensureAudioSyncChannel();
+    warmupAlertAudio();
+    renderAlerts();
+    startSharedPoolSync();
+    startObserver();
+    scanTrades();
+    startMountWatcher();
+    checkForUpdate();
+    return true;
+  }
+
+  function deactivateFollowMode() {
+    if (!followModeActive && !document.getElementById('gcp-inline-panel')) return;
+    followModeActive = false;
+    stopMountWatcher();
+    stopObserver();
+    stopSharedPoolSync();
+    if ('speechSynthesis' in window) {
+      try { window.speechSynthesis.cancel(); } catch (e) {}
+    }
+    resetRuntimeState();
+    if (panelEl && panelEl.isConnected) {
+      panelEl.remove();
+    }
+    void removeSharedSnapshot();
+  }
+
+  function syncFollowMode() {
+    if (isMonitorWindowPage()) {
+      return activateFollowMode();
+    }
+    deactivateFollowMode();
+    return false;
+  }
+
+  function installRouteWatcher() {
+    if (routeWatcherInstalled) return;
+    routeWatcherInstalled = true;
+
+    const syncAfterNavigation = () => queueMicrotask(syncFollowMode);
+    const nativePushState = history.pushState;
+    const nativeReplaceState = history.replaceState;
+
+    history.pushState = function patchedPushState(...args) {
+      const result = nativePushState.apply(this, args);
+      syncAfterNavigation();
+      return result;
+    };
+
+    history.replaceState = function patchedReplaceState(...args) {
+      const result = nativeReplaceState.apply(this, args);
+      syncAfterNavigation();
+      return result;
+    };
+
+    window.addEventListener('popstate', syncFollowMode);
+    window.addEventListener('hashchange', syncFollowMode);
+  }
+
   const REPO = '0xuezhang985/wallet-convergence-alert';
   function cmpVer(a, b) {
     const pa = a.split('.').map(n => parseInt(n) || 0);
@@ -1337,21 +1994,23 @@
 
   // ===== 初始化 =====
   function init() {
-    const tryInit = () => {
-      if (mountPanel()) {
-        renderAlerts();
-        startSharedPoolSync();
-        startObserver();
-        scanTrades();
-        startMountWatcher();
-        checkForUpdate();
-        return true;
-      }
-      return false;
-    };
-    if (tryInit()) return;
-    const w = setInterval(() => { if (tryInit()) clearInterval(w); }, 1500);
-    setTimeout(() => clearInterval(w), 60000);
+    installRouteWatcher();
+    ensureAudioSyncChannel();
+    Promise.all([
+      loadSpeechWatchlist(),
+      loadAudioSettings(),
+      loadTtsSettings()
+    ]).catch(() => null).finally(() => {
+      const tryInit = () => {
+        if (syncFollowMode()) {
+          return true;
+        }
+        return false;
+      };
+      if (tryInit()) return;
+      const w = setInterval(() => { if (tryInit()) clearInterval(w); }, 1500);
+      setTimeout(() => clearInterval(w), 60000);
+    });
   }
 
   if (document.readyState === 'loading') {
@@ -1364,6 +2023,8 @@
   window.__gcp = {
     config, alerts, buyRecords, tokenMeta, starred,
     sourceId,
+    get audioSettings() { return audioSettings; },
+    get speechWatchlist() { return speechWatchlist; },
     get sharedSources() { return sharedSources; },
     get combinedBuyRecords() { return getCombinedBuyRecords(); },
     rerender: () => { lastRenderState = ''; renderAlerts(); },

@@ -4,6 +4,7 @@ const ALLOW_MONITOR_NAVIGATION_MESSAGE = 'allow-monitor-navigation';
 const PAGE_OPEN_EVENT = 'gmgn-monitor-open-url';
 const PREDICTION_LINK_SELECTOR = 'a[href*="future.news"]';
 const DEBUG_PREFIX = '[GMGN Monitor Link Redirector]';
+const FOLLOW_PATH_RE = /^\/(?:follow(?:\/|$)|(?:sol|eth|bsc|base|tron|blast)\/follow(?:\/|$))/i;
 
 initializeNavigationCleanup();
 initializeMonitorRedirect();
@@ -69,6 +70,10 @@ function initializeMonitorRedirect() {
   document.addEventListener(
     'click',
     (event) => {
+      if (!isFollowPage()) {
+        return;
+      }
+
       if (!isPrimaryUnmodifiedClick(event)) {
         return;
       }
@@ -108,6 +113,10 @@ function initializeMonitorRedirect() {
   );
 
   window.addEventListener(PAGE_OPEN_EVENT, (event) => {
+    if (!isFollowPage()) {
+      return;
+    }
+
     const customEvent = event;
     const detail = customEvent.detail;
     if (!detail || !detail.url) {
@@ -213,7 +222,7 @@ function isPredictionLink(anchor) {
 }
 
 function isFollowPage() {
-  return window.location.pathname.startsWith('/follow');
+  return FOLLOW_PATH_RE.test(window.location.pathname);
 }
 
 function suppressEvent(event) {

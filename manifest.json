@@ -3,16 +3,34 @@
   "name": "Wallet Convergence Alert",
   "version": "1.9.4",
   "description": "Monitor xxyy.io and gmgn.ai wallet tracking panels, alert on wallet convergence, and redirect GMGN monitor links to the main window.",
-  "permissions": ["storage", "tabs", "windows"],
-  "host_permissions": ["https://gmgn.ai/*", "https://www.gmgn.ai/*"],
+  "permissions": ["storage", "tabs", "windows", "unlimitedStorage"],
+  "host_permissions": [
+    "https://gmgn.ai/*",
+    "https://www.gmgn.ai/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
   "background": {
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Wallet Convergence Alert",
-    "default_popup": "popup.html"
+    "default_title": "Wallet Convergence Alert"
+  },
+  "options_ui": {
+    "page": "settings.html",
+    "open_in_tab": true
   },
   "content_scripts": [
+    {
+      "matches": ["*://pro.xxyy.io/*", "*://www.xxyy.io/*", "*://xxyy.io/*"],
+      "js": ["dev/auto-reload-client.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["https://gmgn.ai/*", "https://www.gmgn.ai/*"],
+      "js": ["dev/auto-reload-client.js"],
+      "run_at": "document_start"
+    },
     {
       "matches": ["*://pro.xxyy.io/*", "*://www.xxyy.io/*", "*://xxyy.io/*"],
       "js": ["xxyy/network-hook.js"],
@@ -26,7 +44,12 @@
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://gmgn.ai/follow*", "https://www.gmgn.ai/follow*"],
+      "matches": [
+        "https://gmgn.ai/follow*",
+        "https://www.gmgn.ai/follow*",
+        "https://gmgn.ai/*/follow*",
+        "https://www.gmgn.ai/*/follow*"
+      ],
       "js": ["gmgn/page-bridge.js"],
       "run_at": "document_start",
       "world": "MAIN"
@@ -37,10 +60,38 @@
       "run_at": "document_start"
     },
     {
-      "matches": ["*://gmgn.ai/*", "*://www.gmgn.ai/*"],
+      "matches": ["https://gmgn.ai/*", "https://www.gmgn.ai/*"],
+      "js": ["gmgn/twitter-audio-inject.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://gmgn.ai/*", "https://www.gmgn.ai/*"],
+      "js": ["gmgn/twitter-audio-content.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://gmgn.ai/follow*",
+        "https://www.gmgn.ai/follow*",
+        "https://gmgn.ai/*/follow*",
+        "https://www.gmgn.ai/*/follow*"
+      ],
       "js": ["gmgn/content.js"],
       "css": ["gmgn/styles.css"],
       "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "sounds/default.MP3",
+        "sounds/preset1.MP3",
+        "sounds/elonmusk.MP3",
+        "sounds/CZ.MP3",
+        "sounds/heyi.MP3"
+      ],
+      "matches": ["https://gmgn.ai/*", "https://www.gmgn.ai/*"]
     }
   ],
   "icons": {
