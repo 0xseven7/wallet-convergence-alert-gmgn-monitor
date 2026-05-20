@@ -3,6 +3,8 @@ const REGISTER_MONITOR_TAB_MESSAGE = 'register-monitor-tab';
 const ALLOW_MONITOR_NAVIGATION_MESSAGE = 'allow-monitor-navigation';
 const PAGE_OPEN_EVENT = 'gmgn-monitor-open-url';
 const PREDICTION_LINK_SELECTOR = 'a[href*="future.news"]';
+const COOKING_COMPONENT_SELECTOR = '[data-sentry-component="CookingCoinButton"]';
+const COOKING_NAV_TEXT_RE = /\b(cook|cooking)\b/i;
 const DEBUG_PREFIX = '[GMGN Monitor Link Redirector]';
 const FOLLOW_PATH_RE = /^\/(?:follow(?:\/|$)|(?:sol|eth|bsc|base|tron|blast)\/follow(?:\/|$))/i;
 
@@ -157,7 +159,7 @@ function initializeNavigationCleanup() {
     scheduled = true;
     queueMicrotask(() => {
       scheduled = false;
-      removePredictionNavigationItems();
+      removeUndesiredNavigationItems();
     });
   };
 
@@ -180,7 +182,7 @@ function initializeNavigationCleanup() {
 
   attachObserver();
   scheduleCleanup();
-  cleanupIntervalId = window.setInterval(removePredictionNavigationItems, 1500);
+  cleanupIntervalId = window.setInterval(removeUndesiredNavigationItems, 1500);
 
   if (!observerAttached) {
     document.addEventListener('DOMContentLoaded', attachObserver, { once: true });
@@ -197,6 +199,12 @@ function initializeNavigationCleanup() {
   );
 }
 
+function removeUndesiredNavigationItems() {
+  removePredictionNavigationItems();
+  removeCookingComponentItems();
+  removeCookingNavigationItems();
+}
+
 function removePredictionNavigationItems() {
   const predictionLinks = document.querySelectorAll(PREDICTION_LINK_SELECTOR);
 
@@ -205,15 +213,76 @@ function removePredictionNavigationItems() {
   }
 
   for (const element of predictionLinks) {
-    removeNavigationItem(element);
+    removeNavigationItem(element, 'prediction navigation item');
   }
 }
 
-function removeNavigationItem(element) {
-  const removableContainer = element.closest('li, [role="listitem"], .item, .menu-item, .nav-item, .navbar-item, a');
-  const target = removableContainer || element;
+function removeCookingComponentItems() {
+  const cookingComponents = document.querySelectorAll(COOKING_COMPONENT_SELECTOR);
 
-  debugLog('Removed prediction navigation item.', element.href);
+  if (cookingComponents.length > 0) {
+    debugLog(`Found ${cookingComponents.length} CookingCoinButton component(s).`);
+  }
+
+  for (const element of cookingComponents) {
+    const detail = element.textContent.replace(/\s+/g, ' ').trim() || 'CookingCoinButton';
+    debugLog('Removed CookingCoinButton component.', detail);
+    element.remove();
+  }
+}
+
+function removeCookingNavigationItems() {
+  const seenTargets = new Set();
+  const candidateSelectors = [
+    'nav a[href]',
+    'nav button',
+    'nav [role="button"]',
+    'nav [role="link"]',
+    'header nav a[href]',
+    'header nav button',
+    '[role="navigation"] a[href]',
+    '[role="navigation"] button',
+    '.nav a[href]',
+    '.nav button',
+    '.navbar a[href]',
+    '.navbar button',
+    '.navigation a[href]',
+    '.navigation button'
+  ];
+
+  for (const element of document.querySelectorAll(candidateSelectors.join(', '))) {
+    if (!matchesCookingNavigationItem(element)) {
+      continue;
+    }
+
+    const target = element.closest('li, [role="listitem"], .item, .menu-item, .nav-item, .navbar-item, button, a') || element;
+    if (seenTargets.has(target)) {
+      continue;
+    }
+
+    seenTargets.add(target);
+    removeNavigationItem(element, 'cook navigation item');
+  }
+}
+
+function matchesCookingNavigationItem(element) {
+  if (!(element instanceof Element)) {
+    return false;
+  }
+
+  const text = element.textContent.replace(/\s+/g, ' ').trim();
+  if (!text) {
+    return false;
+  }
+
+  return COOKING_NAV_TEXT_RE.test(text);
+}
+
+function removeNavigationItem(element, label = 'navigation item') {
+  const removableContainer = element.closest('li, [role="listitem"], .item, .menu-item, .nav-item, .navbar-item, button, a');
+  const target = removableContainer || element;
+  const detail = element.href || element.textContent.replace(/\s+/g, ' ').trim();
+  debugLog(`Removed ${label}.`, detail);
   target.remove();
 }
 

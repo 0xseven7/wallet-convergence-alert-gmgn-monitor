@@ -1,28 +1,30 @@
-## v1.9.4 — GMGN 监控与钱包标记增强
+## v1.9.4 - GMGN monitor and aggregation refinements
 
-这次版本重点在 GMGN 监控工作流、聚合买入例外规则和钱包标记能力：
+This build focuses on making GMGN follow monitoring more stable, easier to read, and less noisy in day-to-day use.
 
-- 新增 `主窗口 / 监控窗口` 分离工作流
-  - `监控窗口` 负责停留在 `gmgn.ai/follow` 跑聚合买入、Twitter 语音和信息流扫描
-  - `主窗口` 负责打开代币详情、外链和后续跳转页面
-  - 从监控页触发的跳转会优先导流到主窗口，监控页尽量继续留在 `follow`
+- Aggregate buy alerts are now easier to read and control
+  - Default sorting is by buyer count, with optional sorting by latest or market cap
+  - Added chain filtering for `All / BSC / ETH / BASE / SOL`
+  - Chain labels now use clearer color badges in both the status bar and alert cards
+  - Market cap is highlighted more clearly inside aggregate cards
 
-- 收藏钱包现在有单独放行规则
-  - 即使只有 `1` 个收藏钱包买入，也会出现在聚合买入提醒里
-  - 不再必须等到达到全局 `≥ N 钱包` 阈值
+- Aggregate signal handling is more accurate
+  - Added sell-pool tracking alongside buy and close tracking
+  - Fixed stale or incorrect market-cap display in aggregate cards
+  - Fixed repeated resort/re-render loops caused by unstable row timing
+  - Disabled multi-page shared aggregation so one GMGN follow page can aggregate directly across mixed chains shown in that page
 
-- 新增黑名单钱包
-  - 可在设置页维护黑名单钱包名单
-  - 命中黑名单的钱包会在 GMGN 页面里显示红色 `!` 标记
-  - 聚合买入面板里也提供了 `!` 快捷按钮，可直接加/取消黑名单
-  - 黑名单仅做标记，不改变原有聚合和提醒逻辑
+- Wallet-focused workflows were refined
+  - Starred wallets can still surface low-count aggregate entries, but no longer trigger overly heavy visual emphasis
+  - Added blacklist wallet markers and quick blacklist toggles inside aggregate cards
+  - Watched-wallet speech now sounds more natural and includes chain-specific quote assets such as `BNB`, `ETH`, and `baseETH`
 
-- 继续保留并强化现有 GMGN 监控能力
-  - `follow` 页面专用聚合扫描
-  - `BSC / ETH / BASE` 共享聚合池
-  - 独立 Twitter 语音模块
-  - 语音特别关注名单与 `10 秒内` 新买卖播报规则
+- Twitter voice alerts were improved
+  - Speech now prefers `remark`, then GMGN `name`, before falling back further
+  - Added clearer action wording and natural pauses in TTS
+  - Tweet deletions now announce correctly
+  - Background GMGN tabs no longer duplicate Twitter voice playback
 
-- 移除了本地开发自动重载逻辑
-  - 不再依赖本地 `17373` watcher/status 服务
-  - 扩展回到手动 reload 的开发方式
+- GMGN page cleanup was expanded
+  - Removes prediction navigation links
+  - Removes `CookingCoinButton` nodes and related `Cook / cooking` navigation entries

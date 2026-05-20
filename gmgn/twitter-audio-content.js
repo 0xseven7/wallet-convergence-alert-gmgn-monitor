@@ -601,30 +601,39 @@
   }
 
   function buildTwitterTtsText(name, actionType) {
-    if (actionType === 'repost') return `${name} 转推了`;
-    if (actionType === 'reply') return `${name} 回复了`;
-    if (actionType === 'quote') return `${name} 引用了推文`;
-    if (actionType === 'follow') return `${name} 关注了新账号`;
-    if (actionType === 'unfollow') return `${name} 取消关注了一个账号`;
-    if (actionType === 'delete') return `${name} 删除了一条推文`;
-    if (actionType === 'like') return `${name} 点赞了一条推文`;
-    if (actionType === 'pin') return `${name} 置顶了一条推文`;
-    if (actionType === 'update') return `${name} 更新了账号资料`;
-    if (actionType === 'tweet') return `${name} 发推了`;
-    if (actionType === 'other') return `${name} 有新的推特动态`;
-    return `${name} 有新的推特动态`;
+    if (actionType === 'repost') return `${name}，转推了`;
+    if (actionType === 'reply') return `${name}，回复了`;
+    if (actionType === 'quote') return `${name}，引用了推文`;
+    if (actionType === 'follow') return `${name}，关注了新账号`;
+    if (actionType === 'unfollow') return `${name}，取消关注了一个账号`;
+    if (actionType === 'delete') return `${name}，删除了一条推文`;
+    if (actionType === 'like') return `${name}，点赞了一条推文`;
+    if (actionType === 'pin') return `${name}，置顶了一条推文`;
+    if (actionType === 'update') return `${name}，更新了账号资料`;
+    if (actionType === 'tweet') return `${name}，发推了`;
+    if (actionType === 'other') return `${name}，有新的推特动态`;
+    return `${name}，有新的推特动态`;
   }
 
   function normalizeEventType(value) {
     const actionType = String(value || '').trim().toLowerCase();
     if (!actionType) return 'other';
     if (
+      actionType === 'delete'
+      || actionType === 'deleted'
+      || actionType === 'delete_tweet'
+      || actionType === 'remove'
+      || /删除了这条推文|删除推文|已删除推文|删除|删推|deleted.*tweet/.test(actionType)
+    ) {
+      return 'delete';
+    }
+    if (
       actionType === 'tweet'
       || actionType === 'post'
       || actionType === 'new_tweet'
       || actionType === 'create'
       || actionType === 'create_tweet'
-      || /发推|推文/.test(actionType)
+      || /发推|新推文|发布推文/.test(actionType)
     ) {
       return 'tweet';
     }
@@ -666,15 +675,6 @@
       return 'unfollow';
     }
     if (
-      actionType === 'delete'
-      || actionType === 'deleted'
-      || actionType === 'delete_tweet'
-      || actionType === 'remove'
-      || /删除|删推/.test(actionType)
-    ) {
-      return 'delete';
-    }
-    if (
       actionType === 'like'
       || actionType === 'liked'
       || /点赞/.test(actionType)
@@ -703,6 +703,7 @@
 
   function getEventFilterBucket(actionType) {
     if (actionType === 'tweet') return 'tweet';
+    if (actionType === 'delete') return 'tweet';
     if (actionType === 'repost') return 'repost';
     if (actionType === 'reply') return 'reply';
     if (actionType === 'quote') return 'quote';
