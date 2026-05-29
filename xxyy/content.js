@@ -1733,6 +1733,7 @@
   }
 
   async function checkForUpdate() {
+    return;
     try {
       // 6 小时内只查一次
       const cacheRaw = localStorage.getItem('xcp_update_cache');
@@ -1756,6 +1757,7 @@
   }
 
   function showUpdateBanner(latest) {
+    return;
     if (!panelEl) return;
     if (panelEl.querySelector('.xcp-update-banner')) return;
     const b = document.createElement('div');
@@ -1785,7 +1787,6 @@
         // 主动猜测钱包分组端点
         fetchWalletGroups();
         // 检查 GitHub release 新版本
-        checkForUpdate();
         return true;
       }
       return false;

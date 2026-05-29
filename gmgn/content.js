@@ -15,9 +15,11 @@
   };
   const ALERT_SORT_OPTIONS = new Set(['walletCount', 'latest', 'mcap']);
   const ALERT_CHAIN_FILTER_OPTIONS = ['all', 'bsc', 'eth', 'base', 'sol'];
+  const HIDDEN_ALERTS_KEY = 'gcp_hidden_alerts_v1';
 
   let config = { ...DEFAULT_CONFIG };
   let alerts = [];
+  let hiddenAlertsByGroup = loadHiddenAlertsState();
   let buyRecords = [];
   let sellRecords = [];
   let closedRecords = [];
@@ -67,6 +69,7 @@
     blast: { label: 'BLAST', cls: 'gcp-chain-blast' },
     unknown: { label: 'UNKNOWN', cls: 'gcp-chain-unknown' }
   };
+  const AGGREGATE_DEBUG_PREFIX = '[GMGN Aggregate Debug]';
   const DEFAULT_TTS_SETTINGS = {
     voice: 'zh-CN-XiaoxiaoNeural',
     rate: '+0%',
@@ -544,6 +547,34 @@
     return `<span class="gcp-chain-badge ${meta.cls}">${escHtml(meta.label)}${suffix}</span>`;
   }
 
+  function getAggregateChainSoundProfile(chain) {
+    const normalized = normalizeChainName(chain);
+    if (normalized === 'bsc') return { key: 'bsc', label: 'BSC', scale: 1.0 };
+    if (normalized === 'eth') return { key: 'eth', label: 'ETH', scale: 1.16 };
+    if (normalized === 'base') return { key: 'base', label: 'BASE', scale: 1.3 };
+    if (normalized === 'sol') return { key: 'sol', label: 'SOL', scale: 1.46 };
+    return { key: normalized || 'default', label: getChainDisplay(chain).label, scale: 1.08 };
+  }
+
+  function chooseAggregateSoundCue(currentCue, nextCue) {
+    if (!nextCue) return currentCue;
+    if (!currentCue) return nextCue;
+    if ((nextCue.tier || 0) !== (currentCue.tier || 0)) {
+      return (nextCue.tier || 0) > (currentCue.tier || 0) ? nextCue : currentCue;
+    }
+    if ((nextCue.latestTradeTimeMs || 0) !== (currentCue.latestTradeTimeMs || 0)) {
+      return (nextCue.latestTradeTimeMs || 0) > (currentCue.latestTradeTimeMs || 0) ? nextCue : currentCue;
+    }
+    return currentCue;
+  }
+
+  function scaleBeepSeq(seq, scale) {
+    return seq.map((item) => ({
+      ...item,
+      f: Math.round(item.f * scale)
+    }));
+  }
+
   // ===== 检测代币发射平台 =====
   function detectPlatform(mint, chain, dexHint) {
     const m = (mint || '').toLowerCase();
@@ -570,6 +601,54 @@
 
   function saveConfig() {
     try { localStorage.setItem('gcp_config', JSON.stringify(config)); } catch (e) {}
+  }
+
+  function getDebugTimestamp() {
+    const now = new Date();
+    const pad = (value) => String(value).padStart(2, '0');
+    return `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+  }
+
+  function aggregateDebugLog(message, detail) {
+    if (typeof console === 'undefined' || typeof console.warn !== 'function') return;
+    if (typeof detail !== 'undefined') {
+      console.warn(`${AGGREGATE_DEBUG_PREFIX} ${getDebugTimestamp()} ${message}`, detail);
+      return;
+    }
+    console.warn(`${AGGREGATE_DEBUG_PREFIX} ${getDebugTimestamp()} ${message}`);
+  }
+
+  function normalizeHiddenAlertsState(raw) {
+    const next = {};
+    for (const [key, value] of Object.entries(raw || {})) {
+      const normalizedKey = String(key || '').trim();
+      const latestTradeTimeMs = Number(value);
+      if (!normalizedKey || !Number.isFinite(latestTradeTimeMs) || latestTradeTimeMs <= 0) continue;
+      next[normalizedKey] = latestTradeTimeMs;
+    }
+    return next;
+  }
+
+  function loadHiddenAlertsState() {
+    try {
+      const saved = localStorage.getItem(HIDDEN_ALERTS_KEY);
+      if (!saved) return {};
+      return normalizeHiddenAlertsState(JSON.parse(saved));
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function saveHiddenAlertsState() {
+    try {
+      const next = normalizeHiddenAlertsState(hiddenAlertsByGroup);
+      hiddenAlertsByGroup = next;
+      if (Object.keys(next).length) {
+        localStorage.setItem(HIDDEN_ALERTS_KEY, JSON.stringify(next));
+      } else {
+        localStorage.removeItem(HIDDEN_ALERTS_KEY);
+      }
+    } catch (e) {}
   }
 
   function parseCompactDollarValue(value) {
@@ -630,6 +709,53 @@
   function filterAlertsByChain(list) {
     if (config.chainFilter === 'all') return list;
     return list.filter((alert) => normalizeChainName(alert?.chain) === config.chainFilter);
+  }
+
+  function buildAlertGroupKey(parts) {
+    const mintOrToken = normalizeTradeKeyPart(parts?.mint || parts?.token);
+    if (!mintOrToken) return '';
+    return `${normalizeChainName(parts?.chain) || 'unknown'}|${mintOrToken}`;
+  }
+
+  function getAlertGroupKey(alert) {
+    return buildAlertGroupKey(alert || {});
+  }
+
+  function isAlertHidden(alert) {
+    const groupKey = getAlertGroupKey(alert);
+    if (!groupKey) return false;
+    const hiddenAtTradeTime = hiddenAlertsByGroup[groupKey];
+    if (!hiddenAtTradeTime) return false;
+    return (alert?.latestTradeTimeMs || 0) <= hiddenAtTradeTime;
+  }
+
+  function releaseHiddenAlertIfNewBuy(groupKey, latestTradeTimeMs) {
+    if (!groupKey) return false;
+    const hiddenAtTradeTime = hiddenAlertsByGroup[groupKey];
+    if (!hiddenAtTradeTime) return false;
+    if ((latestTradeTimeMs || 0) <= hiddenAtTradeTime) return false;
+    delete hiddenAlertsByGroup[groupKey];
+    saveHiddenAlertsState();
+    return true;
+  }
+
+  function pruneHiddenAlertsState() {
+    const activeKeys = new Set(alerts.map(getAlertGroupKey).filter(Boolean));
+    let changed = false;
+    for (const key of Object.keys(hiddenAlertsByGroup)) {
+      if (activeKeys.has(key)) continue;
+      delete hiddenAlertsByGroup[key];
+      changed = true;
+    }
+    if (changed) saveHiddenAlertsState();
+  }
+
+  function hideAlertUntilNextBuy(groupKey, latestTradeTimeMs) {
+    if (!groupKey) return;
+    hiddenAlertsByGroup[groupKey] = latestTradeTimeMs || Date.now();
+    saveHiddenAlertsState();
+    lastRenderState = '';
+    renderAlerts();
   }
   function normalizeSpeechWatchlist(raw) {
     const next = {};
@@ -1286,6 +1412,7 @@
     const now = Date.now();
     const before = alerts.length;
     alerts = alerts.filter(a => !a.dissolvedAt || (now - a.dissolvedAt) < DISSOLVED_KEEP_MS);
+    pruneHiddenAlertsState();
     if (alerts.length !== before) renderAlerts();
   }
 
@@ -1330,12 +1457,17 @@
     let triggered = false, updated = false;
     let shouldPlayAggregateCue = false;
     let highestTierFired = 0;
+    let selectedSoundCue = null;
+    let qualifyingGroupCount = 0;
+    const debugEvents = [];
 
     for (const [groupKey, group] of Object.entries(groups)) {
+      const becameVisibleAgain = releaseHiddenAlertIfNewBuy(groupKey, group.latestTradeTimeMs || 0);
       const walletNames = Object.keys(group.wallets);
       const hasPriorityWallet = hasStarredWallet(walletNames);
       const requiredWallets = hasPriorityWallet ? 1 : config.minWallets;
       if (walletNames.length < requiredWallets) continue;
+      qualifyingGroupCount += 1;
       const qualifiesStandardThreshold = walletNames.length >= config.minWallets;
 
       const walletDetails = walletNames.map(w => {
@@ -1398,9 +1530,28 @@
         existing.updatedAt = Date.now();
         existing.isNew = true;
         updated = true;
-        if (qualifiesStandardThreshold && (crossedStandardThreshold || newTier > prevTier)) {
+        const soundReasons = [];
+        if (crossedStandardThreshold) soundReasons.push('crossed-standard-threshold');
+        if (newTier > prevTier) soundReasons.push(`tier-up:${prevTier}->${newTier}`);
+        if (becameVisibleAgain) soundReasons.push('became-visible-again');
+        if (qualifiesStandardThreshold && soundReasons.length) {
           highestTierFired = Math.max(highestTierFired, newTier || 1);
           shouldPlayAggregateCue = true;
+          selectedSoundCue = chooseAggregateSoundCue(selectedSoundCue, {
+            tier: newTier || 1,
+            chain: group.chain,
+            latestTradeTimeMs: group.latestTradeTimeMs || 0
+          });
+          debugEvents.push({
+            type: 'existing-alert-sound',
+            groupKey,
+            token: group.token,
+            chain: group.chain,
+            walletCount: walletNames.length,
+            effectiveCount,
+            latestTradeTimeMs: group.latestTradeTimeMs || 0,
+            reasons: soundReasons
+          });
         }
         setTimeout(() => { existing.isNew = false; renderAlerts(); }, 1500);
       } else {
@@ -1421,20 +1572,69 @@
           updatedAt: Date.now(),
           isNew: true
         };
+        const alertsBeforePush = alerts.length;
         alerts.unshift(alert);
-        if (alerts.length > 30) alerts = alerts.slice(0, 30);
+        let trimmedGroupKeys = [];
+        if (alerts.length > 30) {
+          trimmedGroupKeys = alerts.slice(30).map(getAlertGroupKey).filter(Boolean);
+          alerts = alerts.slice(0, 30);
+        }
+        pruneHiddenAlertsState();
         triggered = true;
+        if (alertsBeforePush >= 30 || trimmedGroupKeys.length) {
+          debugEvents.push({
+            type: 'new-alert-while-full',
+            groupKey,
+            token: group.token,
+            walletCount: walletNames.length,
+            effectiveCount,
+            latestTradeTimeMs: group.latestTradeTimeMs || 0,
+            alertsBeforePush,
+            trimmedGroupKeys
+          });
+        } else {
+          debugEvents.push({
+            type: 'new-alert',
+            groupKey,
+            token: group.token,
+            walletCount: walletNames.length,
+            effectiveCount,
+            latestTradeTimeMs: group.latestTradeTimeMs || 0
+          });
+        }
         if (qualifiesStandardThreshold) {
           highestTierFired = Math.max(highestTierFired, newTier || 1);
           shouldPlayAggregateCue = true;
+          selectedSoundCue = chooseAggregateSoundCue(selectedSoundCue, {
+            tier: newTier || 1,
+            chain: group.chain,
+            latestTradeTimeMs: group.latestTradeTimeMs || 0
+          });
         }
         setTimeout(() => { alert.isNew = false; renderAlerts(); }, 1500);
       }
     }
 
     if (triggered || updated) {
+      const suspiciousEvents = debugEvents.filter((event) => event.type === 'new-alert-while-full' || event.type === 'existing-alert-sound');
+      if (shouldPlayAggregateCue || suspiciousEvents.length) {
+        aggregateDebugLog('checkConvergence result.', {
+          rowCount: lastScanInfo.rowCount || 0,
+          buyPool: combinedBuyRecords.length,
+          closePool: combinedClosedRecords.length,
+          groupCount: Object.keys(groups).length,
+          qualifyingGroupCount,
+          alertsCount: alerts.length,
+          triggered,
+          updated,
+          shouldPlayAggregateCue,
+          highestTierFired,
+          selectedSoundCue,
+          events: suspiciousEvents.length ? suspiciousEvents : debugEvents.slice(-5)
+        });
+      }
       renderAlerts();
-      if (shouldPlayAggregateCue) { playSound(highestTierFired || 1); flashBadge(); }
+      if (shouldPlayAggregateCue) { playSound((selectedSoundCue && selectedSoundCue.tier) || highestTierFired || 1, selectedSoundCue && selectedSoundCue.chain); flashBadge(); }
     }
   }
 
@@ -1468,35 +1668,46 @@
     }
   }
 
-  function playSound(tier) {
+  function playSound(tier, chain) {
     if (!config.soundEnabled) return;
     if (document.visibilityState === 'hidden') return;
     const ctx = ensureAudioCtx();
     if (!ctx || ctx.state === 'suspended') return;
     tier = tier || 1;
+    const soundProfile = getAggregateChainSoundProfile(chain);
+    aggregateDebugLog('playSound invoked.', {
+      tier,
+      chain: chain || '',
+      soundProfile,
+      alertCount: alerts.length,
+      visibleAlertCount: filterAlertsByChain(sortAlertsForDisplay(alerts)).filter((alert) => !isAlertHidden(alert)).length,
+      rowCount: lastScanInfo.rowCount || 0,
+      buyPool: getCombinedBuyRecords().length,
+      sellPool: getCombinedSellRecords().length
+    });
     try {
       if (tier === 1) {
-        playBeepSeq(ctx, [{ f: 880, t: 0, d: 0.1 }, { f: 880, t: 0.15, d: 0.1 }], 0.25);
+        playBeepSeq(ctx, scaleBeepSeq([{ f: 880, t: 0, d: 0.1 }, { f: 880, t: 0.15, d: 0.1 }], soundProfile.scale), 0.25);
       } else if (tier === 2) {
-        playBeepSeq(ctx, [
+        playBeepSeq(ctx, scaleBeepSeq([
           { f: 1000, t: 0, d: 0.08 },
           { f: 1000, t: 0.10, d: 0.08 },
           { f: 1000, t: 0.20, d: 0.08 }
-        ], 0.27);
+        ], soundProfile.scale), 0.27);
       } else if (tier === 3) {
         const seq = [];
         for (let i = 0; i < 5; i++) {
           seq.push({ f: 1100, t: i * 0.07, d: 0.06 });
           seq.push({ f: 1320, t: i * 0.07, d: 0.06 });
         }
-        playBeepSeq(ctx, seq, 0.20);
+        playBeepSeq(ctx, scaleBeepSeq(seq, soundProfile.scale), 0.20);
       } else {
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
         osc.connect(gain); gain.connect(ctx.destination);
         osc.type = 'sawtooth';
-        osc.frequency.setValueAtTime(880, ctx.currentTime);
-        osc.frequency.exponentialRampToValueAtTime(1760, ctx.currentTime + 0.4);
+        osc.frequency.setValueAtTime(880 * soundProfile.scale, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(1760 * soundProfile.scale, ctx.currentTime + 0.4);
         gain.gain.setValueAtTime(0.30, ctx.currentTime);
         gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
         osc.start(ctx.currentTime);
@@ -1505,8 +1716,8 @@
         const gain2 = ctx.createGain();
         osc2.connect(gain2); gain2.connect(ctx.destination);
         osc2.type = 'square';
-        osc2.frequency.setValueAtTime(440, ctx.currentTime);
-        osc2.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.4);
+        osc2.frequency.setValueAtTime(440 * soundProfile.scale, ctx.currentTime);
+        osc2.frequency.exponentialRampToValueAtTime(880 * soundProfile.scale, ctx.currentTime + 0.4);
         gain2.gain.setValueAtTime(0.10, ctx.currentTime);
         gain2.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
         osc2.start(ctx.currentTime);
@@ -1771,17 +1982,21 @@
     const container = panelEl.querySelector('.gcp-alerts');
     const badge = panelEl.querySelector('.gcp-badge');
     if (!container || !badge) return;
-    const visibleAlerts = filterAlertsByChain(sortAlertsForDisplay(alerts));
+    const filteredAlerts = filterAlertsByChain(sortAlertsForDisplay(alerts));
+    const visibleAlerts = filteredAlerts.filter((alert) => !isAlertHidden(alert));
     badge.textContent = visibleAlerts.length !== alerts.length ? `${visibleAlerts.length}/${alerts.length}` : String(alerts.length);
 
     let html;
     if (visibleAlerts.length === 0) {
       html = alerts.length === 0
         ? '<div class="gcp-empty">监听中…等待信号</div>'
-        : '<div class="gcp-empty">当前链筛选下暂无提醒</div>';
+        : filteredAlerts.length === 0
+          ? '<div class="gcp-empty">当前链筛选下暂无提醒</div>'
+          : '<div class="gcp-empty">当前提醒已隐藏，等待新买入</div>';
     } else {
       html = visibleAlerts.map(a => {
         const hasStar = isAlertStarred(a);
+        const groupKey = getAlertGroupKey(a);
         const closedCount = a.closedCount || 0;
         const effective = (a.effectiveCount != null) ? a.effectiveCount : a.walletCount;
         const tier = a.tier || calcTier(effective);
@@ -1792,13 +2007,16 @@
         const chainBadge = a.chain ? renderChainBadge(a.chain) : '';
         const mcapBadge = a.mcap ? `<span class="gcp-alert-mcap">市值 ${escHtml(a.mcap)}</span>` : '';
         const metaLine = `${mcapBadge}${chainBadge}`;
+        const hideBtn = groupKey
+          ? `<button class="gcp-alert-hide-btn" data-group-key="${escHtml(groupKey)}" data-latest-trade-time="${escHtml(a.latestTradeTimeMs || 0)}" title="闅愯棌杩欐潯鎻愰啋锛岀洿鍒颁笅娆℃湁鏂颁拱鍏?">×</button>`
+          : '';
         const requiredWallets = hasStar ? 1 : config.minWallets;
         const isFaded = effective < requiredWallets;
         return `
         <div class="gcp-alert-item gcp-tier-${tier} ${a.isNew ? 'is-new' : ''} ${isFaded ? 'is-faded' : ''}" data-token="${escHtml(a.token)}">
           <div class="gcp-alert-token">
             <span class="gcp-alert-token-name gcp-token-link" data-mint="${escHtml(a.mint || '')}" data-chain="${escHtml(a.chain || '')}" data-token="${escHtml(a.token)}" title="跳转到 ${escHtml(a.token)}">${logoImg}${escHtml(a.token)} ↗</span>${a.mint ? `<span class="gcp-mint-tag" title="合约：${escHtml(a.mint)}（点击复制）" data-mint="${escHtml(a.mint)}">${escHtml(shortMint(a.mint))}</span>` : ''}${a.platform ? `<span class="gcp-plat-badge ${escHtml(a.platform.cls)}" title="${escHtml(a.platform.label)}">${escHtml(a.platform.tag)}</span>` : ''}
-            <span class="gcp-alert-count">${effective} 个钱包${closedCount > 0 ? ` <span class="gcp-closed-tag">−${closedCount} 清仓</span>` : ''}${tierIcon}</span>
+            <span class="gcp-alert-actions"><span class="gcp-alert-count">${effective} 个钱包${closedCount > 0 ? ` <span class="gcp-closed-tag">−${closedCount} 清仓</span>` : ''}${tierIcon}</span>${hideBtn}</span>
           </div>
           <div class="gcp-alert-time">${metaLine}</div>
           <div class="gcp-alert-wallets">
@@ -1854,6 +2072,12 @@
       el.addEventListener('click', (e) => {
         e.stopPropagation();
         toggleBlacklistWallet(el.dataset.wallet);
+      });
+    });
+    container.querySelectorAll('.gcp-alert-hide-btn').forEach(el => {
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        hideAlertUntilNextBuy(el.dataset.groupKey || '', parseInt(el.dataset.latestTradeTime || '0', 10) || 0);
       });
     });
   }
@@ -2301,7 +2525,6 @@
     startObserver();
     scanTrades();
     startMountWatcher();
-    checkForUpdate();
     return true;
   }
 
@@ -2364,40 +2587,9 @@
     return 0;
   }
 
-  async function checkForUpdate() {
-    try {
-      const cacheRaw = localStorage.getItem('gcp_update_cache');
-      const cache = cacheRaw ? JSON.parse(cacheRaw) : null;
-      const now = Date.now();
-      let latest = null;
-      if (cache && cache.fetchedAt && (now - cache.fetchedAt) < 6 * 3600 * 1000) {
-        latest = cache.tag;
-      } else {
-        const r = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`);
-        if (!r.ok) return;
-        const j = await r.json();
-        latest = (j.tag_name || '').replace(/^v/, '');
-        localStorage.setItem('gcp_update_cache', JSON.stringify({ tag: latest, fetchedAt: now }));
-      }
-      const cur = chrome.runtime.getManifest().version;
-      if (latest && cmpVer(latest, cur) > 0) {
-        showUpdateBanner(latest);
-      }
-    } catch (e) {}
-  }
+  async function checkForUpdate() {}
 
-  function showUpdateBanner(latest) {
-    if (!panelEl) return;
-    if (panelEl.querySelector('.gcp-update-banner')) return;
-    const b = document.createElement('div');
-    b.className = 'gcp-update-banner';
-    b.innerHTML = `🎉 新版 v${escHtml(latest)} 可用 — <a href="https://github.com/${REPO}/releases/latest" target="_blank" rel="noopener">点击下载</a> <span class="gcp-update-close" title="忽略本次提醒">×</span>`;
-    panelEl.insertBefore(b, panelEl.firstChild);
-    b.querySelector('.gcp-update-close').addEventListener('click', (e) => {
-      e.stopPropagation();
-      b.remove();
-    });
-  }
+  function showUpdateBanner() {}
 
   // ===== 初始化 =====
   function init() {

@@ -222,6 +222,35 @@
   border-radius: 8px;
 }
 
+.gcp-alert-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.gcp-alert-hide-btn {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #8f8f8f;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.gcp-alert-hide-btn:hover {
+  background: rgba(255, 71, 87, 0.14);
+  color: #ff7a86;
+}
+
 .gcp-alert-time {
   font-size: 10px;
   color: #666;
