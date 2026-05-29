@@ -1,30 +1,16 @@
-## v1.9.4 - GMGN monitor and aggregation refinements
+## v1.9.5 - GMGN aggregate control and release cleanup
 
-This build focuses on making GMGN follow monitoring more stable, easier to read, and less noisy in day-to-day use.
+This build focuses on making the GMGN aggregate panel easier to control in live use and cleaning up stale release behavior.
 
-- Aggregate buy alerts are now easier to read and control
-  - Default sorting is by buyer count, with optional sorting by latest or market cap
-  - Added chain filtering for `All / BSC / ETH / BASE / SOL`
-  - Chain labels now use clearer color badges in both the status bar and alert cards
-  - Market cap is highlighted more clearly inside aggregate cards
+- GMGN aggregate alerts are easier to manage
+  - Added per-token hide buttons inside aggregate cards
+  - Hidden cards stay hidden until that token gets a fresh buy again
+  - Empty-state copy now distinguishes between chain filtering and manually hidden alerts
 
-- Aggregate signal handling is more accurate
-  - Added sell-pool tracking alongside buy and close tracking
-  - Fixed stale or incorrect market-cap display in aggregate cards
-  - Fixed repeated resort/re-render loops caused by unstable row timing
-  - Disabled multi-page shared aggregation so one GMGN follow page can aggregate directly across mixed chains shown in that page
+- Aggregate alert behavior is easier to diagnose
+  - Added debug logs around aggregate alert creation, replay, trimming, and sound playback
+  - Aggregate sounds now support chain-specific sound profiles when a qualifying alert fires
 
-- Wallet-focused workflows were refined
-  - Starred wallets can still surface low-count aggregate entries, but no longer trigger overly heavy visual emphasis
-  - Added blacklist wallet markers and quick blacklist toggles inside aggregate cards
-  - Watched-wallet speech now sounds more natural and includes chain-specific quote assets such as `BNB`, `ETH`, and `baseETH`
-
-- Twitter voice alerts were improved
-  - Speech now prefers `remark`, then GMGN `name`, before falling back further
-  - Added clearer action wording and natural pauses in TTS
-  - Tweet deletions now announce correctly
-  - Background GMGN tabs no longer duplicate Twitter voice playback
-
-- GMGN page cleanup was expanded
-  - Removes prediction navigation links
-  - Removes `CookingCoinButton` nodes and related `Cook / cooking` navigation entries
+- Release-check noise was removed
+  - Disabled GitHub release version detection in both GMGN and xxyy content scripts
+  - Removed the old “new version available” runtime behavior from daily usage
