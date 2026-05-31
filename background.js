@@ -319,6 +319,22 @@ async function openInMainWindow(url, monitorWindowId) {
   const selectedMainWindow = resolvedMainWindow.windowInfo;
 
   if (selectedMainWindow && selectedMainWindow.id !== monitorWindowId) {
+    const existingTab = findTabByUrl(selectedMainWindow, url);
+    if (existingTab && Number.isInteger(existingTab.id)) {
+      await activateExistingTab(existingTab);
+      await refreshStoredMainWindowSnapshot(selectedMainWindow.id);
+      await refreshActionBadges();
+
+      return {
+        ok: true,
+        targetWindowId: selectedMainWindow.id,
+        reusedExistingTab: true,
+        createdWindow: false,
+        usedSelectedWindow: true,
+        restoredSelection: resolvedMainWindow.resolvedFromSnapshot
+      };
+    }
+
     await chrome.tabs.create({
       windowId: selectedMainWindow.id,
       url,
@@ -338,6 +354,19 @@ async function openInMainWindow(url, monitorWindowId) {
   }
 
   const candidateWindows = windows.filter((windowInfo) => windowInfo.id !== monitorWindowId);
+  const existingCandidateTab = findTabByUrlInWindows(candidateWindows, url);
+  if (existingCandidateTab && Number.isInteger(existingCandidateTab.id)) {
+    await activateExistingTab(existingCandidateTab);
+    await refreshActionBadges();
+    return {
+      ok: true,
+      targetWindowId: existingCandidateTab.windowId,
+      reusedExistingTab: true,
+      createdWindow: false,
+      usedSelectedWindow: false,
+      restoredSelection: false
+    };
+  }
 
   if (candidateWindows.length === 0) {
     const createdWindow = await chrome.windows.create({ url, focused: true });
@@ -356,6 +385,39 @@ async function openInMainWindow(url, monitorWindowId) {
   await refreshActionBadges();
 
   return { ok: true, targetWindowId: targetWindow.id, createdWindow: false };
+}
+
+function findTabByUrl(windowInfo, url) {
+  if (!windowInfo || !Array.isArray(windowInfo.tabs)) {
+    return null;
+  }
+
+  const normalizedTargetUrl = normalizeUrl(url);
+  if (!normalizedTargetUrl) {
+    return null;
+  }
+
+  return windowInfo.tabs.find((tab) => urlsMatch(tab.pendingUrl || tab.url, normalizedTargetUrl)) || null;
+}
+
+function findTabByUrlInWindows(windows, url) {
+  for (const windowInfo of windows || []) {
+    const tab = findTabByUrl(windowInfo, url);
+    if (tab) {
+      return tab;
+    }
+  }
+
+  return null;
+}
+
+async function activateExistingTab(tab) {
+  if (!tab || !Number.isInteger(tab.id) || !Number.isInteger(tab.windowId)) {
+    return;
+  }
+
+  await chrome.tabs.update(tab.id, { active: true });
+  await chrome.windows.update(tab.windowId, { focused: true });
 }
 
 async function setMainWindow(windowId) {

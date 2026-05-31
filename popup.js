@@ -57,6 +57,7 @@ const DEFAULT_TWITTER_AUDIO_STATE = {
 };
 const DEFAULT_GMGN_SPEECH_WATCHLIST = {};
 const DEFAULT_GMGN_BLACKLIST_WALLETS = {};
+const MAX_AUDIO_VOLUME = 2;
 
 const els = {
   currentWindow: document.getElementById('current-window'),
@@ -128,6 +129,7 @@ let selectedMainWindowId = null;
 let twitterState = { ...DEFAULT_TWITTER_AUDIO_STATE };
 let gmgnSpeechWatchlist = { ...DEFAULT_GMGN_SPEECH_WATCHLIST };
 let gmgnBlacklistWallets = { ...DEFAULT_GMGN_BLACKLIST_WALLETS };
+let previewAudioCtx = null;
 
 initialize().catch((error) => {
   renderStatus(error.message || '初始化失败');
@@ -216,7 +218,7 @@ function bindEvents() {
     renderTwitterVolumeValue(Number(els.globalVolume.value));
   });
   els.globalVolume.addEventListener('change', () => {
-    void persistTwitterAudioState({ globalVolume: clampVolume(Number(els.globalVolume.value)) }, '已更新推特提示音量');
+    void persistUnifiedVolumeSetting(Number(els.globalVolume.value));
   });
 
   [els.filterTweet, els.filterRepost, els.filterReply, els.filterQuote, els.filterOther].forEach((input) => {
@@ -389,7 +391,21 @@ async function persistTwitterAudioState(partialState, message) {
     ttsPitch: twitterState.ttsPitch
   });
 
-  showToast(message);
+  if (message) {
+    showToast(message);
+  }
+}
+
+async function persistUnifiedVolumeSetting(rawVolume) {
+  const volume = clampVolume(rawVolume);
+  await persistTwitterAudioState({ globalVolume: volume }, '');
+  const stored = await chrome.storage.local.get(GMGN_AUDIO_SETTINGS_KEY);
+  const gmgnSettings = normalizeGmgnAudioSettings({
+    ...(stored[GMGN_AUDIO_SETTINGS_KEY] || {}),
+    volume
+  });
+  await chrome.storage.local.set({ [GMGN_AUDIO_SETTINGS_KEY]: gmgnSettings });
+  showToast('已更新提示音量');
 }
 
 function renderTwitterAudioSettings() {
@@ -985,15 +1001,21 @@ async function playConfiguredTts(text) {
     const blob = await response.blob();
     const objectUrl = URL.createObjectURL(blob);
     const audio = new Audio(objectUrl);
-    audio.volume = Math.min(twitterState.globalVolume * 1.25, 1);
+    const cleanupBoost = attachAudioBoost(audio, twitterState.globalVolume * 1.25);
     const cleanup = () => {
+      cleanupBoost();
       URL.revokeObjectURL(objectUrl);
       audio.removeAttribute('src');
       audio.load();
     };
     audio.addEventListener('ended', cleanup, { once: true });
     audio.addEventListener('error', cleanup, { once: true });
-    await audio.play();
+    try {
+      await audio.play();
+    } catch (_error) {
+      cleanup();
+      throw _error;
+    }
   } catch (_error) {
     speakPreviewText(text);
   }
@@ -1001,11 +1023,17 @@ async function playConfiguredTts(text) {
 
 async function playAudioSource(source, volume) {
   const audio = new Audio(source);
-  audio.volume = clampVolume(volume);
+  const cleanupBoost = attachAudioBoost(audio, volume);
   try {
     await audio.play();
+    await new Promise((resolve) => {
+      audio.addEventListener('ended', resolve, { once: true });
+      audio.addEventListener('error', resolve, { once: true });
+    });
   } catch (_error) {
     showToast('试听失败，请检查音源链接或文件是否可访问');
+  } finally {
+    cleanupBoost();
   }
 }
 
@@ -1274,7 +1302,49 @@ function normalizeGmgnBlacklistWallets(raw) {
 function clampVolume(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return 1;
-  return Math.min(1, Math.max(0, numeric));
+  return Math.min(MAX_AUDIO_VOLUME, Math.max(0, numeric));
+}
+
+function ensurePreviewAudioCtx() {
+  if (previewAudioCtx) return previewAudioCtx;
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return null;
+  try {
+    previewAudioCtx = new Ctx();
+    return previewAudioCtx;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function attachAudioBoost(audio, rawVolume) {
+  const volume = clampVolume(rawVolume);
+  audio.volume = Math.min(volume, 1);
+  if (volume <= 1) {
+    return () => {};
+  }
+
+  const ctx = ensurePreviewAudioCtx();
+  if (!ctx) {
+    return () => {};
+  }
+
+  try {
+    if (ctx.state === 'suspended') {
+      void ctx.resume().catch(() => {});
+    }
+    const sourceNode = ctx.createMediaElementSource(audio);
+    const gainNode = ctx.createGain();
+    sourceNode.connect(gainNode);
+    gainNode.connect(ctx.destination);
+    gainNode.gain.value = volume;
+    return () => {
+      try { sourceNode.disconnect(); } catch (_error) {}
+      try { gainNode.disconnect(); } catch (_error) {}
+    };
+  } catch (_error) {
+    return () => {};
+  }
 }
 
 function normalizeTtsVoice(value) {

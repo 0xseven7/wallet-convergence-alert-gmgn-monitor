@@ -36,6 +36,7 @@
   const AUDIO_PLAY_TIMEOUT_MS = 8000;
   const TTS_FETCH_TIMEOUT_MS = 10000;
   const NATIVE_TTS_TIMEOUT_MS = 10000;
+  const MAX_AUDIO_VOLUME = 2;
   const DEFAULT_STATE = {
     mappings: {
       elonmusk: { id: 'elonmusk.MP3', name: 'elonmusk.MP3', remark: '' },
@@ -69,6 +70,7 @@
   const preloadedAudios = new Map();
   const networkTtsCache = new Map();
   const audioSyncChannel = new BroadcastChannel(AUDIO_SYNC_CHANNEL_NAME);
+  let mediaPlaybackCtx = null;
   let playbackQueue = Promise.resolve();
   let lastSkipReason = '';
   let lastSkipAt = 0;
@@ -351,7 +353,7 @@
       player = new Audio(source);
     }
 
-    player.volume = clampVolume(volume);
+    const cleanupBoost = attachAudioBoost(player, volume);
     await new Promise(async (resolve) => {
       let settled = false;
       let timeoutId = null;
@@ -361,6 +363,7 @@
         if (timeoutId !== null) {
           clearTimeout(timeoutId);
         }
+        cleanupBoost();
         cleanupAudio(player);
         resolve();
       };
@@ -387,6 +390,48 @@
       player.load();
     } catch (_error) {
       return;
+    }
+  }
+
+  function ensureMediaPlaybackCtx() {
+    if (mediaPlaybackCtx) return mediaPlaybackCtx;
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+    try {
+      mediaPlaybackCtx = new Ctx();
+      return mediaPlaybackCtx;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function attachAudioBoost(player, rawVolume) {
+    const volume = clampVolume(rawVolume);
+    player.volume = Math.min(volume, 1);
+    if (volume <= 1) {
+      return () => {};
+    }
+
+    const ctx = ensureMediaPlaybackCtx();
+    if (!ctx) {
+      return () => {};
+    }
+
+    try {
+      if (ctx.state === 'suspended') {
+        void ctx.resume().catch(() => {});
+      }
+      const sourceNode = ctx.createMediaElementSource(player);
+      const gainNode = ctx.createGain();
+      sourceNode.connect(gainNode);
+      gainNode.connect(ctx.destination);
+      gainNode.gain.value = volume;
+      return () => {
+        try { sourceNode.disconnect(); } catch (_error) {}
+        try { gainNode.disconnect(); } catch (_error) {}
+      };
+    } catch (_error) {
+      return () => {};
     }
   }
 
@@ -591,13 +636,25 @@
     return chrome.runtime.getURL(`sounds/${normalizeAudioId(audioId)}`);
   }
 
+  function sanitizeSpeechName(value) {
+    if (value == null) return '';
+    return String(value)
+      .replace(/[\u200B-\u200D\uFE0E\uFE0F\u20E3]/g, '')
+      .replace(/[\uE000-\uF8FF]/g, ' ')
+      .replace(/\p{Extended_Pictographic}+/gu, ' ')
+      .replace(/[★☆◆◇●○■□▲△▼▽◉◎◌◍•·▪▫◦※]/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .replace(/^[\s,，.。:：;；\-—_~|/\\]+|[\s,，.。:：;；\-—_~|/\\]+$/g, '')
+      .trim();
+  }
+
   function getSpeakerName(trigger, rule) {
-    if (typeof trigger?.remark === 'string' && trigger.remark.trim()) return trigger.remark.trim();
-    if (typeof rule?.remark === 'string' && rule.remark.trim()) return rule.remark.trim();
-    if (typeof trigger?.name === 'string' && trigger.name.trim()) return trigger.name.trim();
-    if (typeof trigger?.username === 'string' && trigger.username.trim()) return trigger.username.trim();
-    if (typeof trigger?.id === 'string' && trigger.id.trim()) return trigger.id.trim();
-    return trigger.id;
+    const candidates = [trigger?.remark, rule?.remark, trigger?.name, trigger?.username, trigger?.id];
+    for (const candidate of candidates) {
+      const normalized = sanitizeSpeechName(candidate);
+      if (normalized) return normalized;
+    }
+    return sanitizeSpeechName(trigger?.id) || '';
   }
 
   function buildTwitterTtsText(name, actionType) {
@@ -727,7 +784,7 @@
   function clampVolume(value) {
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) return 1;
-    return Math.min(1, Math.max(0, numeric));
+    return Math.min(MAX_AUDIO_VOLUME, Math.max(0, numeric));
   }
 
   function normalizeTtsVoice(value) {

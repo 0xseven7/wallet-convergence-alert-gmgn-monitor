@@ -1,16 +1,15 @@
-## v1.9.5 - GMGN aggregate control and release cleanup
+## v1.9.6 - GMGN stability and routing refinement
 
-This build focuses on making the GMGN aggregate panel easier to control in live use and cleaning up stale release behavior.
+This build focuses on reducing false replays in GMGN aggregate alerts, making cross-window navigation cleaner, and improving live alert audibility.
 
-- GMGN aggregate alerts are easier to manage
-  - Added per-token hide buttons inside aggregate cards
-  - Hidden cards stay hidden until that token gets a fresh buy again
-  - Empty-state copy now distinguishes between chain filtering and manually hidden alerts
+- GMGN aggregate alerts are more stable under heavy pools
+  - Fixed a replay path where active tokens could be pushed out of the visible 30-card tray and retriggered as new alerts
+  - Kept full aggregate state internally while limiting only the rendered tray count
+  - Improved token-name parsing so inline SVG icon text no longer pollutes token names like `S STOCK`
 
-- Aggregate alert behavior is easier to diagnose
-  - Added debug logs around aggregate alert creation, replay, trimming, and sound playback
-  - Aggregate sounds now support chain-specific sound profiles when a qualifying alert fires
+- Main-window routing is less noisy
+  - When a monitor jump target already exists in the main browser window, the extension now reuses that tab instead of opening duplicates
 
-- Release-check noise was removed
-  - Disabled GitHub release version detection in both GMGN and xxyy content scripts
-  - Removed the old “new version available” runtime behavior from daily usage
+- Alert audio is easier to hear and tune
+  - Unified the settings-page volume slider for GMGN and Twitter alerts
+  - Raised supported playback gain to 200 percent for audio-file and remote-TTS playback paths

@@ -16,6 +16,7 @@
   const ALERT_SORT_OPTIONS = new Set(['walletCount', 'latest', 'mcap']);
   const ALERT_CHAIN_FILTER_OPTIONS = ['all', 'bsc', 'eth', 'base', 'sol'];
   const HIDDEN_ALERTS_KEY = 'gcp_hidden_alerts_v1';
+  const MAX_VISIBLE_ALERTS = 30;
 
   let config = { ...DEFAULT_CONFIG };
   let alerts = [];
@@ -90,6 +91,7 @@
     ttsEnabled: true,
     volume: 1
   };
+  const MAX_AUDIO_VOLUME = 2;
   let audioSettings = { ...DEFAULT_AUDIO_SETTINGS };
   let ttsSettings = { ...DEFAULT_TTS_SETTINGS };
   let preloadedAlertAudio = null;
@@ -397,7 +399,7 @@
     if (!PRESET_AUDIO_OPTIONS.has(settings.preset)) settings.preset = DEFAULT_AUDIO_SETTINGS.preset;
     const volume = Number(settings.volume);
     settings.volume = Number.isFinite(volume)
-      ? Math.min(1, Math.max(0, volume))
+      ? Math.min(MAX_AUDIO_VOLUME, Math.max(0, volume))
       : DEFAULT_AUDIO_SETTINGS.volume;
     return settings;
   }
@@ -825,6 +827,18 @@
     return String(value || '').trim();
   }
 
+  function sanitizeSpeechName(value) {
+    if (value == null) return '';
+    return String(value)
+      .replace(/[\u200B-\u200D\uFE0E\uFE0F\u20E3]/g, '')
+      .replace(/[\uE000-\uF8FF]/g, ' ')
+      .replace(/\p{Extended_Pictographic}+/gu, ' ')
+      .replace(/[★☆◆◇●○■□▲△▼▽◉◎◌◍•·▪▫◦※]/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .replace(/^[\s,，.。:：;；\-—_~|/\\]+|[\s,，.。:：;；\-—_~|/\\]+$/g, '')
+      .trim();
+  }
+
   function getSpeechWatchAlias(walletName) {
     const normalizedWallet = normalizeSpeechWatchWallet(walletName);
     return speechWatchlist[normalizedWallet]?.alias || '';
@@ -949,7 +963,9 @@
 
   function buildWatchedTradeSpeechText(trade) {
     const rawWalletName = (trade && trade.wallet) ? trade.wallet.trim() : '';
-    const walletName = getSpeechWatchAlias(rawWalletName) || rawWalletName || '关注钱包';
+    const walletName = sanitizeSpeechName(getSpeechWatchAlias(rawWalletName))
+      || sanitizeSpeechName(rawWalletName)
+      || '关注钱包';
     const verb = normalizeWatchedTradeVerb(trade);
     const amountText = trade && trade.amount ? String(trade.amount).trim() : '';
     const quoteAsset = getWatchedTradeQuoteAsset(trade && trade.chain);
@@ -1054,6 +1070,10 @@
       const walker = document.createTreeWalker(line2, NodeFilter.SHOW_TEXT);
       let textNode = walker.nextNode();
       while (textNode) {
+        if (textNode.parentElement && textNode.parentElement.closest('svg')) {
+          textNode = walker.nextNode();
+          continue;
+        }
         const rawText = textNode.textContent || '';
         const text = rawText.replace(/\s+/g, ' ').trim();
         if (!text) {
@@ -1085,7 +1105,7 @@
     }
 
     for (const child of Array.from(line2.children || [])) {
-      if (!child || child.tagName === 'IMG') continue;
+      if (!child || child.tagName === 'IMG' || child.tagName === 'SVG') continue;
       const text = child.textContent.replace(/\s+/g, ' ').trim();
       if (!text) continue;
       if (/^MC\b/i.test(text) || /^MC[:\s]*[\$￥]?[\d.]+[KMBkmb]?$/i.test(text)) break;
@@ -1099,6 +1119,21 @@
   }
 
   // ===== 解析单条 trade =====
+  function stripInlineSvgPrefixTokenText(tokenSymbol, line2) {
+    const text = String(tokenSymbol || '').trim();
+    if (!text || !line2 || !line2.querySelectorAll) return text;
+    const svgTexts = Array.from(line2.querySelectorAll('svg'))
+      .map((svg) => (svg.textContent || '').replace(/\s+/g, ' ').trim())
+      .filter(Boolean)
+      .sort((a, b) => b.length - a.length);
+    for (const svgText of svgTexts) {
+      if (!text.startsWith(svgText + ' ')) continue;
+      const stripped = text.slice(svgText.length).trim();
+      if (stripped) return stripped;
+    }
+    return text;
+  }
+
   function parseTradeRow(row) {
     if (!row || !row.querySelector) return null;
     const anchors = Array.from(row.querySelectorAll('a[href]'));
@@ -1196,6 +1231,7 @@
     }
 
     // 把时间 "2h" 转成稳定的事件毫秒时间，避免每次重扫轻微漂移
+    tokenSymbol = stripInlineSvgPrefixTokenText(tokenSymbol, line2);
     const timeMs = deriveStableTradeTimeMs(timeAgo);
 
     // 钱包头像 = line 1 里第一个 <img>
@@ -1460,6 +1496,7 @@
     let selectedSoundCue = null;
     let qualifyingGroupCount = 0;
     const debugEvents = [];
+    const activeQualifyingGroupKeys = new Set();
 
     for (const [groupKey, group] of Object.entries(groups)) {
       const becameVisibleAgain = releaseHiddenAlertIfNewBuy(groupKey, group.latestTradeTimeMs || 0);
@@ -1467,6 +1504,7 @@
       const hasPriorityWallet = hasStarredWallet(walletNames);
       const requiredWallets = hasPriorityWallet ? 1 : config.minWallets;
       if (walletNames.length < requiredWallets) continue;
+      activeQualifyingGroupKeys.add(groupKey);
       qualifyingGroupCount += 1;
       const qualifiesStandardThreshold = walletNames.length >= config.minWallets;
 
@@ -1574,14 +1612,9 @@
         };
         const alertsBeforePush = alerts.length;
         alerts.unshift(alert);
-        let trimmedGroupKeys = [];
-        if (alerts.length > 30) {
-          trimmedGroupKeys = alerts.slice(30).map(getAlertGroupKey).filter(Boolean);
-          alerts = alerts.slice(0, 30);
-        }
         pruneHiddenAlertsState();
         triggered = true;
-        if (alertsBeforePush >= 30 || trimmedGroupKeys.length) {
+        if (alertsBeforePush >= MAX_VISIBLE_ALERTS) {
           debugEvents.push({
             type: 'new-alert-while-full',
             groupKey,
@@ -1589,8 +1622,7 @@
             walletCount: walletNames.length,
             effectiveCount,
             latestTradeTimeMs: group.latestTradeTimeMs || 0,
-            alertsBeforePush,
-            trimmedGroupKeys
+            alertsBeforePush
           });
         } else {
           debugEvents.push({
@@ -1613,6 +1645,21 @@
         }
         setTimeout(() => { alert.isNew = false; renderAlerts(); }, 1500);
       }
+    }
+
+    const alertsBeforePrune = alerts.length;
+    alerts = alerts.filter((alert) => {
+      const key = getAlertGroupKey(alert);
+      if (key && activeQualifyingGroupKeys.has(key)) return true;
+      return !!(alert.dissolvedAt && (now - alert.dissolvedAt) < DISSOLVED_KEEP_MS);
+    });
+    if (alerts.length !== alertsBeforePrune) {
+      updated = true;
+      debugEvents.push({
+        type: 'pruned-inactive-alerts',
+        removedCount: alertsBeforePrune - alerts.length,
+        remainingCount: alerts.length
+      });
     }
 
     if (triggered || updated) {
@@ -1668,6 +1715,43 @@
     }
   }
 
+  function getConfiguredAudioVolume() {
+    const volume = Number(audioSettings && audioSettings.volume);
+    if (!Number.isFinite(volume)) return 1;
+    return Math.min(MAX_AUDIO_VOLUME, Math.max(0, volume));
+  }
+
+  function attachAudioBoost(audio, rawVolume) {
+    const volume = getConfiguredAudioVolume() * (Number.isFinite(Number(rawVolume)) ? Number(rawVolume) : 1);
+    const normalizedVolume = Math.min(MAX_AUDIO_VOLUME, Math.max(0, volume));
+    audio.volume = Math.min(normalizedVolume, 1);
+    if (normalizedVolume <= 1) {
+      return () => {};
+    }
+
+    const ctx = ensureAudioCtx();
+    if (!ctx) {
+      return () => {};
+    }
+
+    try {
+      if (ctx.state === 'suspended') {
+        void ctx.resume().catch(() => {});
+      }
+      const sourceNode = ctx.createMediaElementSource(audio);
+      const gainNode = ctx.createGain();
+      sourceNode.connect(gainNode);
+      gainNode.connect(ctx.destination);
+      gainNode.gain.value = normalizedVolume;
+      return () => {
+        try { sourceNode.disconnect(); } catch (e) {}
+        try { gainNode.disconnect(); } catch (e) {}
+      };
+    } catch (e) {
+      return () => {};
+    }
+  }
+
   function playSound(tier, chain) {
     if (!config.soundEnabled) return;
     if (document.visibilityState === 'hidden') return;
@@ -1675,10 +1759,12 @@
     if (!ctx || ctx.state === 'suspended') return;
     tier = tier || 1;
     const soundProfile = getAggregateChainSoundProfile(chain);
+    const volumeScale = getConfiguredAudioVolume();
     aggregateDebugLog('playSound invoked.', {
       tier,
       chain: chain || '',
       soundProfile,
+      volumeScale,
       alertCount: alerts.length,
       visibleAlertCount: filterAlertsByChain(sortAlertsForDisplay(alerts)).filter((alert) => !isAlertHidden(alert)).length,
       rowCount: lastScanInfo.rowCount || 0,
@@ -1687,20 +1773,20 @@
     });
     try {
       if (tier === 1) {
-        playBeepSeq(ctx, scaleBeepSeq([{ f: 880, t: 0, d: 0.1 }, { f: 880, t: 0.15, d: 0.1 }], soundProfile.scale), 0.25);
+        playBeepSeq(ctx, scaleBeepSeq([{ f: 880, t: 0, d: 0.1 }, { f: 880, t: 0.15, d: 0.1 }], soundProfile.scale), 0.25 * volumeScale);
       } else if (tier === 2) {
         playBeepSeq(ctx, scaleBeepSeq([
           { f: 1000, t: 0, d: 0.08 },
           { f: 1000, t: 0.10, d: 0.08 },
           { f: 1000, t: 0.20, d: 0.08 }
-        ], soundProfile.scale), 0.27);
+        ], soundProfile.scale), 0.27 * volumeScale);
       } else if (tier === 3) {
         const seq = [];
         for (let i = 0; i < 5; i++) {
           seq.push({ f: 1100, t: i * 0.07, d: 0.06 });
           seq.push({ f: 1320, t: i * 0.07, d: 0.06 });
         }
-        playBeepSeq(ctx, scaleBeepSeq(seq, soundProfile.scale), 0.20);
+        playBeepSeq(ctx, scaleBeepSeq(seq, soundProfile.scale), 0.20 * volumeScale);
       } else {
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
@@ -1708,7 +1794,7 @@
         osc.type = 'sawtooth';
         osc.frequency.setValueAtTime(880 * soundProfile.scale, ctx.currentTime);
         osc.frequency.exponentialRampToValueAtTime(1760 * soundProfile.scale, ctx.currentTime + 0.4);
-        gain.gain.setValueAtTime(0.30, ctx.currentTime);
+        gain.gain.setValueAtTime(0.30 * volumeScale, ctx.currentTime);
         gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
         osc.start(ctx.currentTime);
         osc.stop(ctx.currentTime + 0.4);
@@ -1718,7 +1804,7 @@
         osc2.type = 'square';
         osc2.frequency.setValueAtTime(440 * soundProfile.scale, ctx.currentTime);
         osc2.frequency.exponentialRampToValueAtTime(880 * soundProfile.scale, ctx.currentTime + 0.4);
-        gain2.gain.setValueAtTime(0.10, ctx.currentTime);
+        gain2.gain.setValueAtTime(0.10 * volumeScale, ctx.currentTime);
         gain2.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
         osc2.start(ctx.currentTime);
         osc2.stop(ctx.currentTime + 0.4);
@@ -1792,13 +1878,17 @@
       const objectUrl = URL.createObjectURL(blob);
       try {
         const audio = new Audio(objectUrl);
-        audio.volume = Math.min(Math.max(audioSettings.volume, 0), 1);
-        const playbackFinished = new Promise((resolve) => {
-          audio.addEventListener('ended', resolve, { once: true });
-          audio.addEventListener('error', resolve, { once: true });
-        });
-        await audio.play();
-        await playbackFinished;
+        const cleanupBoost = attachAudioBoost(audio, 1);
+        try {
+          const playbackFinished = new Promise((resolve) => {
+            audio.addEventListener('ended', resolve, { once: true });
+            audio.addEventListener('error', resolve, { once: true });
+          });
+          await audio.play();
+          await playbackFinished;
+        } finally {
+          cleanupBoost();
+        }
       } finally {
         URL.revokeObjectURL(objectUrl);
       }
@@ -1816,7 +1906,7 @@
         utterance.lang = 'zh-CN';
         utterance.rate = speechSynthesisRateFromConfig(ttsSettings.rate);
         utterance.pitch = speechSynthesisPitchFromConfig(ttsSettings.pitch);
-        utterance.volume = Math.min(Math.max(audioSettings.volume, 0), 1);
+        utterance.volume = Math.min(getConfiguredAudioVolume(), 1);
         utterance.addEventListener('end', resolve, { once: true });
         utterance.addEventListener('error', resolve, { once: true });
         window.speechSynthesis.speak(utterance);
@@ -1984,17 +2074,19 @@
     if (!container || !badge) return;
     const filteredAlerts = filterAlertsByChain(sortAlertsForDisplay(alerts));
     const visibleAlerts = filteredAlerts.filter((alert) => !isAlertHidden(alert));
-    badge.textContent = visibleAlerts.length !== alerts.length ? `${visibleAlerts.length}/${alerts.length}` : String(alerts.length);
+    const limitedVisibleAlerts = visibleAlerts.slice(0, MAX_VISIBLE_ALERTS);
+    const visibleTotal = visibleAlerts.length;
+    badge.textContent = limitedVisibleAlerts.length !== visibleTotal ? `${limitedVisibleAlerts.length}/${visibleTotal}` : String(visibleTotal);
 
     let html;
-    if (visibleAlerts.length === 0) {
+    if (limitedVisibleAlerts.length === 0) {
       html = alerts.length === 0
         ? '<div class="gcp-empty">监听中…等待信号</div>'
         : filteredAlerts.length === 0
           ? '<div class="gcp-empty">当前链筛选下暂无提醒</div>'
           : '<div class="gcp-empty">当前提醒已隐藏，等待新买入</div>';
     } else {
-      html = visibleAlerts.map(a => {
+      html = limitedVisibleAlerts.map(a => {
         const hasStar = isAlertStarred(a);
         const groupKey = getAlertGroupKey(a);
         const closedCount = a.closedCount || 0;
