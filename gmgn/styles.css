@@ -192,7 +192,8 @@
 .gcp-alert-token {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
+  gap: 4px;
   margin-bottom: 4px;
 }
 
@@ -200,6 +201,7 @@
   font-size: 13px;
   font-weight: 700;
   color: #e2b340;
+  min-width: 0;
 }
 
 .gcp-token-link {
@@ -211,6 +213,48 @@
   color: #ffd76a;
   text-shadow: 0 0 8px rgba(226, 179, 64, 0.5);
   text-decoration: underline;
+}
+
+.gcp-token-ext-links {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 2px;
+}
+
+.gcp-token-ext-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.05);
+  color: #d9e2ff;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 18px;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: transform 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.gcp-token-ext-link:hover {
+  transform: translateY(-1px);
+  text-decoration: none;
+}
+
+.gcp-token-ext-link-fomo {
+  border-color: rgba(132, 105, 255, 0.42);
+  color: #d8ceff;
+  background: rgba(132, 105, 255, 0.16);
+}
+
+.gcp-token-ext-link-debot {
+  border-color: rgba(68, 214, 149, 0.42);
+  color: #9cf2c8;
+  background: rgba(68, 214, 149, 0.14);
 }
 
 .gcp-alert-count {
@@ -226,6 +270,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  margin-left: auto;
 }
 
 .gcp-alert-hide-btn {

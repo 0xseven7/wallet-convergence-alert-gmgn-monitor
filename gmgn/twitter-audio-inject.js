@@ -64,16 +64,20 @@
               id: username,
               username,
               userId,
+              tweetId: extractTweetId(tweetData),
               name: tweetData.u.n || username,
               remark: typeof sourceRemark === 'string' && sourceRemark.trim()
                 ? sourceRemark.trim()
                 : cachedRemark,
-              tw: tweetData.tw || 'other'
+              tw: tweetData.tw || 'other',
+              text: extractTweetText(tweetData),
+              url: extractTweetUrl(tweetData),
+              ts: extractTweetTimestamp(tweetData)
             };
             const triggerKey = [
               trigger.id,
               trigger.tw,
-              tweetData.id || tweetData.tid || tweetData.twid || tweetData.time || ''
+              trigger.tweetId || trigger.ts || ''
             ].join('|');
             if (seenTriggerKeys.has(triggerKey)) continue;
             seenTriggerKeys.add(triggerKey);
@@ -91,7 +95,9 @@
               remark: trigger.remark || '',
               username: trigger.username || '',
               name: trigger.name || '',
-              action: trigger.tw || ''
+              action: trigger.tw || '',
+              tweetId: trigger.tweetId || '',
+              text: trigger.text || ''
             }))
           });
           window.dispatchEvent(new CustomEvent('TWITTER_WS_MSG_RECEIVED', {
@@ -211,5 +217,78 @@
 
   function normalizeRemark(value) {
     return typeof value === 'string' ? value.trim() : '';
+  }
+
+  function extractTweetId(tweetData) {
+    const candidates = [
+      tweetData && tweetData.id,
+      tweetData && tweetData.tid,
+      tweetData && tweetData.twid,
+      tweetData && tweetData.tweet_id,
+      tweetData && tweetData.status_id,
+      tweetData && tweetData.t && tweetData.t.id,
+      tweetData && tweetData.tweet && tweetData.tweet.id
+    ];
+
+    for (const candidate of candidates) {
+      const value = String(candidate || '').trim();
+      if (value) return value;
+    }
+    return '';
+  }
+
+  function extractTweetText(tweetData) {
+    const directCandidates = [
+      tweetData && tweetData.text,
+      tweetData && tweetData.txt,
+      tweetData && tweetData.content,
+      tweetData && tweetData.desc,
+      tweetData && tweetData.body,
+      tweetData && tweetData.message,
+      tweetData && tweetData.t && tweetData.t.text,
+      tweetData && tweetData.t && tweetData.t.full_text,
+      tweetData && tweetData.tweet && tweetData.tweet.text,
+      tweetData && tweetData.tweet && tweetData.tweet.full_text,
+      tweetData && tweetData.target_tweet && tweetData.target_tweet.text,
+      tweetData && tweetData.target_tweet && tweetData.target_tweet.full_text
+    ];
+
+    for (const candidate of directCandidates) {
+      const normalized = typeof candidate === 'string' ? candidate.trim() : '';
+      if (normalized) return normalized;
+    }
+
+    return '';
+  }
+
+  function extractTweetUrl(tweetData) {
+    const candidates = [
+      tweetData && tweetData.url,
+      tweetData && tweetData.link,
+      tweetData && tweetData.t && tweetData.t.url,
+      tweetData && tweetData.tweet && tweetData.tweet.url
+    ];
+
+    for (const candidate of candidates) {
+      const value = String(candidate || '').trim();
+      if (value) return value;
+    }
+    return '';
+  }
+
+  function extractTweetTimestamp(tweetData) {
+    const candidates = [
+      tweetData && tweetData.ts,
+      tweetData && tweetData.time,
+      tweetData && tweetData.created_at,
+      tweetData && tweetData.t && tweetData.t.ts,
+      tweetData && tweetData.tweet && tweetData.tweet.created_at
+    ];
+
+    for (const candidate of candidates) {
+      const timestamp = Number(candidate);
+      if (Number.isFinite(timestamp) && timestamp > 0) return timestamp;
+    }
+    return null;
   }
 })();

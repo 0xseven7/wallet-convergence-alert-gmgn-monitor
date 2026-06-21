@@ -1,0 +1,7 @@
+node_modules
+npm-debug.log
+data
+.env
+.DS_Store
+Thumbs.db
+.git

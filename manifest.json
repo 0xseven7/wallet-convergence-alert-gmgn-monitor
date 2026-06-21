@@ -5,6 +5,8 @@
   "description": "Monitor xxyy.io and gmgn.ai wallet tracking panels, alert on wallet convergence, and redirect GMGN monitor links to the main window.",
   "permissions": ["storage", "tabs", "windows", "unlimitedStorage"],
   "host_permissions": [
+    "http://*/*",
+    "https://*/*",
     "https://gmgn.ai/*",
     "https://www.gmgn.ai/*"
   ],
@@ -59,11 +61,45 @@
       "run_at": "document_start"
     },
     {
+      "matches": ["https://gmgn.ai/*", "https://www.gmgn.ai/*"],
+      "js": ["gmgn/twitter-trigger-hook.js"],
+      "run_at": "document_start"
+    },
+    {
       "matches": [
         "https://gmgn.ai/follow*",
         "https://www.gmgn.ai/follow*",
         "https://gmgn.ai/*/follow*",
         "https://www.gmgn.ai/*/follow*"
+      ],
+      "js": ["gmgn/content.js"],
+      "css": ["gmgn/styles.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://debot.ai/*",
+        "https://www.debot.ai/*",
+        "https://app.debot.ai/*"
+      ],
+      "js": ["debot/network-hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://debot.ai/*",
+        "https://www.debot.ai/*",
+        "https://app.debot.ai/*"
+      ],
+      "js": ["debot/redirector.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://debot.ai/*",
+        "https://www.debot.ai/*",
+        "https://app.debot.ai/*"
       ],
       "js": ["gmgn/content.js"],
       "css": ["gmgn/styles.css"],
@@ -80,6 +116,20 @@
         "sounds/heyi.MP3"
       ],
       "matches": ["https://gmgn.ai/*", "https://www.gmgn.ai/*"]
+    },
+    {
+      "resources": [
+        "sounds/default.MP3",
+        "sounds/preset1.MP3",
+        "sounds/elonmusk.MP3",
+        "sounds/CZ.MP3",
+        "sounds/heyi.MP3"
+      ],
+      "matches": [
+        "https://debot.ai/*",
+        "https://www.debot.ai/*",
+        "https://app.debot.ai/*"
+      ]
     }
   ],
   "icons": {

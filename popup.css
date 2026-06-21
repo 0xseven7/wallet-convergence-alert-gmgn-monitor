@@ -167,6 +167,10 @@ h3 {
   gap: 10px;
 }
 
+.single-button-row {
+  grid-template-columns: 1fr;
+}
+
 .primary,
 .secondary {
   min-height: 40px;
@@ -177,6 +181,17 @@ h3 {
 .primary {
   background: var(--accent);
   color: #fff;
+}
+
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 8px;
+  font-weight: 700;
+  text-decoration: none;
 }
 
 .secondary {
@@ -210,6 +225,50 @@ h3 {
   border: 1px solid rgba(255, 255, 255, 0.05);
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.02);
+}
+
+.direct-ca-panel {
+  display: grid;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 209, 102, 0.2);
+  border-radius: 12px;
+  background: rgba(255, 209, 102, 0.05);
+}
+
+.settings-page section.card:has(#gmgnHookEnabled),
+.settings-page section.card:has(#gmgnTriggerRulesList) {
+  display: none;
+}
+
+.twitter-trade-page section.card:has(#gmgnHookEnabled),
+.twitter-trade-page section.card:has(#gmgnTriggerRulesList) {
+  display: block;
+}
+
+.trade-form-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.trade-form-grid .toggle-row,
+.trade-form-grid label:has(textarea) {
+  grid-column: 1 / -1;
+}
+
+.trade-profile-list {
+  margin-top: 12px;
+}
+
+.trade-profile-item .item-title {
+  color: #f8d36a;
+}
+
+@media (max-width: 760px) {
+  .trade-form-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .tts-select-row,
@@ -260,6 +319,9 @@ h3 {
 
 input[type="text"],
 input[type="url"],
+input[type="password"],
+input[type="number"],
+textarea,
 input[type="file"],
 select {
   width: 100%;
@@ -267,6 +329,9 @@ select {
 
 input[type="text"],
 input[type="url"],
+input[type="password"],
+input[type="number"],
+textarea,
 select,
 .custom-select-trigger {
   min-height: 40px;
@@ -279,10 +344,18 @@ select,
 
 input[type="text"]:focus,
 input[type="url"]:focus,
+input[type="password"]:focus,
+input[type="number"]:focus,
+textarea:focus,
 select:focus,
 .custom-dropdown-search:focus {
   outline: 1px solid var(--accent);
   border-color: var(--accent);
+}
+
+textarea {
+  resize: vertical;
+  min-height: 84px;
 }
 
 input[readonly] {

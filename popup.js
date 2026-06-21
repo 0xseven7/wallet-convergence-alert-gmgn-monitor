@@ -5,8 +5,10 @@ const CLEAR_MAIN_WINDOW_MESSAGE = 'clear-main-window';
 const GMGN_AUDIO_SETTINGS_KEY = 'gmgnAudioSettings';
 const GMGN_SPEECH_WATCHLIST_KEY = 'gmgnSpeechWatchlist';
 const GMGN_BLACKLIST_WALLETS_KEY = 'gmgnBlacklistWallets';
+const GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY = 'gmgnTwitterTriggerHookSettings';
+const GMGN_TWITTER_TRIGGER_RULES_KEY = 'gmgnTwitterTriggerRules';
 const BUILTIN_AUDIO_FILES = ['default.MP3', 'preset1.MP3', 'elonmusk.MP3', 'CZ.MP3', 'heyi.MP3'];
-const TTS_API = 'https://cloudflare-edge-tts.tech-melon.workers.dev/tts';
+const DEFAULT_TTS_API = 'https://cloudflare-edge-tts.tech-melon.workers.dev/tts';
 const DEFAULT_TTS_VOICE = 'zh-CN-XiaoxiaoNeural';
 const DEFAULT_TTS_RATE = '+0%';
 const DEFAULT_TTS_PITCH = '+0%';
@@ -47,6 +49,7 @@ const DEFAULT_TWITTER_AUDIO_STATE = {
   ttsVoice: DEFAULT_TTS_VOICE,
   ttsRate: DEFAULT_TTS_RATE,
   ttsPitch: DEFAULT_TTS_PITCH,
+  ttsApiUrl: DEFAULT_TTS_API,
   eventFilters: {
     tweet: true,
     repost: true,
@@ -57,6 +60,42 @@ const DEFAULT_TWITTER_AUDIO_STATE = {
 };
 const DEFAULT_GMGN_SPEECH_WATCHLIST = {};
 const DEFAULT_GMGN_BLACKLIST_WALLETS = {};
+const GMGN_TWITTER_TRIGGER_EVENT_CHOICES = [
+  { value: 'any', label: '任意动作' },
+  { value: 'tweet', label: '发推' },
+  { value: 'reply', label: '回复' },
+  { value: 'repost', label: '转推' },
+  { value: 'quote', label: '引用' },
+  { value: 'delete', label: '删除推文' },
+  { value: 'follow', label: '关注' },
+  { value: 'unfollow', label: '取消关注' },
+  { value: 'like', label: '点赞' },
+  { value: 'pin', label: '置顶' },
+  { value: 'update', label: '资料更新' },
+  { value: 'other', label: '其他' }
+];
+const GMGN_TWITTER_TRIGGER_CHAIN_CHOICES = [
+  { value: 'bsc', label: 'BSC' },
+  { value: 'eth', label: 'ETH' },
+  { value: 'base', label: 'BASE' },
+  { value: 'sol', label: 'SOL' }
+];
+const DEFAULT_GMGN_TWITTER_TRIGGER_HOOK_SETTINGS = {
+  enabled: false,
+  webhookUrl: '',
+  secret: '',
+  timeoutMs: 3000,
+  eventApiEnabled: false,
+  eventApiUrl: '',
+  eventApiToken: '',
+  eventSendWalletTrades: true,
+  eventSendConvergenceAlerts: true,
+  directCaEnabled: false,
+  directCaChain: 'bsc',
+  directCaBuyAmount: '',
+  directCaTwitterIds: ''
+};
+const DEFAULT_GMGN_TWITTER_TRIGGER_RULES = [];
 const MAX_AUDIO_VOLUME = 2;
 
 const els = {
@@ -79,6 +118,7 @@ const els = {
   ttsVoiceSelect: document.getElementById('ttsVoiceSelect'),
   ttsRateSelect: document.getElementById('ttsRateSelect'),
   ttsPitchSelect: document.getElementById('ttsPitchSelect'),
+  ttsApiUrlInput: document.getElementById('ttsApiUrlInput'),
   ttsTestBtn: document.getElementById('ttsTestBtn'),
   fallbackPreset: document.getElementById('fallbackPreset'),
   globalVolume: document.getElementById('globalVolume'),
@@ -95,6 +135,31 @@ const els = {
   blacklistWalletInput: document.getElementById('blacklistWallet'),
   addBlacklistBtn: document.getElementById('addBlacklistBtn'),
   blacklistList: document.getElementById('blacklistList'),
+  gmgnHookEnabled: document.getElementById('gmgnHookEnabled'),
+  gmgnHookUrl: document.getElementById('gmgnHookUrl'),
+  gmgnHookSecret: document.getElementById('gmgnHookSecret'),
+  gmgnHookTimeout: document.getElementById('gmgnHookTimeout'),
+  gmgnEventApiEnabled: document.getElementById('gmgnEventApiEnabled'),
+  gmgnEventApiUrl: document.getElementById('gmgnEventApiUrl'),
+  gmgnEventApiToken: document.getElementById('gmgnEventApiToken'),
+  gmgnEventSendWalletTrades: document.getElementById('gmgnEventSendWalletTrades'),
+  gmgnEventSendConvergenceAlerts: document.getElementById('gmgnEventSendConvergenceAlerts'),
+  gmgnDirectCaEnabled: document.getElementById('gmgnDirectCaEnabled'),
+  gmgnDirectCaChain: document.getElementById('gmgnDirectCaChain'),
+  gmgnDirectCaBuyAmount: document.getElementById('gmgnDirectCaBuyAmount'),
+  gmgnDirectCaTwitterIds: document.getElementById('gmgnDirectCaTwitterIds'),
+  saveGmgnHookBtn: document.getElementById('saveGmgnHookBtn'),
+  gmgnTriggerTwitterId: document.getElementById('gmgnTriggerTwitterId'),
+  gmgnTriggerEventType: document.getElementById('gmgnTriggerEventType'),
+  gmgnTriggerKeywords: document.getElementById('gmgnTriggerKeywords'),
+  gmgnTriggerChain: document.getElementById('gmgnTriggerChain'),
+  gmgnTriggerCa: document.getElementById('gmgnTriggerCa'),
+  gmgnTriggerTokenSymbol: document.getElementById('gmgnTriggerTokenSymbol'),
+  gmgnTriggerBuyAmount: document.getElementById('gmgnTriggerBuyAmount'),
+  gmgnTriggerNote: document.getElementById('gmgnTriggerNote'),
+  saveGmgnTriggerRuleBtn: document.getElementById('saveGmgnTriggerRuleBtn'),
+  cancelGmgnTriggerRuleBtn: document.getElementById('cancelGmgnTriggerRuleBtn'),
+  gmgnTriggerRulesList: document.getElementById('gmgnTriggerRulesList'),
   twitterIdInput: document.getElementById('twitterId'),
   twitterRemarkInput: document.getElementById('twitterRemark'),
   addRuleBtn: document.getElementById('addRuleBtn'),
@@ -123,12 +188,42 @@ const hasGmgnAudioControls = Boolean(
   && els.gmgnAudioVolume
   && els.gmgnAudioVolumeValue
 );
+const hasGmgnTwitterTriggerHookControls = Boolean(
+  els.gmgnHookEnabled
+  && els.gmgnHookUrl
+  && els.gmgnHookSecret
+  && els.gmgnHookTimeout
+  && els.gmgnEventApiEnabled
+  && els.gmgnEventApiUrl
+  && els.gmgnEventApiToken
+  && els.gmgnEventSendWalletTrades
+  && els.gmgnEventSendConvergenceAlerts
+  && els.gmgnDirectCaEnabled
+  && els.gmgnDirectCaChain
+  && els.gmgnDirectCaBuyAmount
+  && els.gmgnDirectCaTwitterIds
+  && els.saveGmgnHookBtn
+  && els.gmgnTriggerTwitterId
+  && els.gmgnTriggerEventType
+  && els.gmgnTriggerKeywords
+  && els.gmgnTriggerChain
+  && els.gmgnTriggerCa
+  && els.gmgnTriggerTokenSymbol
+  && els.gmgnTriggerBuyAmount
+  && els.gmgnTriggerNote
+  && els.saveGmgnTriggerRuleBtn
+  && els.cancelGmgnTriggerRuleBtn
+  && els.gmgnTriggerRulesList
+);
 
 let currentWindowId = null;
 let selectedMainWindowId = null;
 let twitterState = { ...DEFAULT_TWITTER_AUDIO_STATE };
 let gmgnSpeechWatchlist = { ...DEFAULT_GMGN_SPEECH_WATCHLIST };
 let gmgnBlacklistWallets = { ...DEFAULT_GMGN_BLACKLIST_WALLETS };
+let gmgnTwitterTriggerHookSettings = { ...DEFAULT_GMGN_TWITTER_TRIGGER_HOOK_SETTINGS };
+let gmgnTwitterTriggerRules = [...DEFAULT_GMGN_TWITTER_TRIGGER_RULES];
+let editingGmgnTriggerRuleId = null;
 let previewAudioCtx = null;
 
 initialize().catch((error) => {
@@ -142,10 +237,18 @@ async function initialize() {
   populateChoiceSelect(els.ttsVoiceSelect, TTS_VOICE_CHOICES);
   populateChoiceSelect(els.ttsRateSelect, TTS_RATE_CHOICES);
   populateChoiceSelect(els.ttsPitchSelect, TTS_PITCH_CHOICES);
+  if (hasGmgnTwitterTriggerHookControls) {
+    populateChoiceSelect(els.gmgnTriggerEventType, GMGN_TWITTER_TRIGGER_EVENT_CHOICES);
+    populateChoiceSelect(els.gmgnTriggerChain, GMGN_TWITTER_TRIGGER_CHAIN_CHOICES);
+    populateChoiceSelect(els.gmgnDirectCaChain, GMGN_TWITTER_TRIGGER_CHAIN_CHOICES);
+  }
   populateBuiltInSelect(els.fallbackPreset);
   setupCustomDropdown('addSelectTrigger', 'addSelectMenu', 'addSelectSearch', 'addSelectList', 'addAudioValue', 'addAudioName');
   setupCustomDropdown('editSelectTrigger', 'editSelectMenu', 'editSelectSearch', 'editSelectList', 'editAudioValue', 'editAudioName');
   bindEvents();
+  if (hasGmgnTwitterTriggerHookControls) {
+    resetGmgnTwitterTriggerRuleForm();
+  }
 
   const currentWindow = await chrome.windows.getCurrent({ populate: true });
   currentWindowId = currentWindow.id || null;
@@ -157,6 +260,9 @@ async function initialize() {
     loadGmgnSpeechWatchlist(),
     loadGmgnBlacklistWallets()
   ];
+  if (hasGmgnTwitterTriggerHookControls) {
+    tasks.push(loadGmgnTwitterTriggerHookSettings(), loadGmgnTwitterTriggerRules());
+  }
   if (hasGmgnAudioControls) {
     tasks.push(loadGmgnAudioSettings());
   }
@@ -173,6 +279,14 @@ function handleStorageChanges(changes, areaName) {
   if (changes[GMGN_BLACKLIST_WALLETS_KEY]) {
     gmgnBlacklistWallets = normalizeGmgnBlacklistWallets(changes[GMGN_BLACKLIST_WALLETS_KEY].newValue);
     renderGmgnBlacklistWallets();
+  }
+  if (hasGmgnTwitterTriggerHookControls && changes[GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY]) {
+    gmgnTwitterTriggerHookSettings = normalizeGmgnTwitterTriggerHookSettings(changes[GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY].newValue);
+    renderGmgnTwitterTriggerHookSettings();
+  }
+  if (hasGmgnTwitterTriggerHookControls && changes[GMGN_TWITTER_TRIGGER_RULES_KEY]) {
+    gmgnTwitterTriggerRules = normalizeGmgnTwitterTriggerRules(changes[GMGN_TWITTER_TRIGGER_RULES_KEY].newValue);
+    renderGmgnTwitterTriggerRules();
   }
 }
 
@@ -208,6 +322,9 @@ function bindEvents() {
   els.ttsPitchSelect.addEventListener('change', () => {
     void persistTwitterAudioState({ ttsPitch: normalizeTtsPitch(els.ttsPitchSelect.value) }, '已更新 TTS 音调');
   });
+  els.ttsApiUrlInput.addEventListener('change', () => {
+    void persistTwitterAudioState({ ttsApiUrl: normalizeTtsApiUrl(els.ttsApiUrlInput.value) }, '已更新 TTS 代理地址');
+  });
   els.ttsTestBtn.addEventListener('click', () => {
     void playConfiguredTts('技术瓜发推啦');
   });
@@ -237,6 +354,11 @@ function bindEvents() {
 
   els.addSpeechWatchBtn.addEventListener('click', addSpeechWatchWallet);
   els.addBlacklistBtn.addEventListener('click', addBlacklistWallet);
+  if (hasGmgnTwitterTriggerHookControls) {
+    els.saveGmgnHookBtn.addEventListener('click', saveGmgnTwitterTriggerHookSettings);
+    els.saveGmgnTriggerRuleBtn.addEventListener('click', saveGmgnTwitterTriggerRule);
+    els.cancelGmgnTriggerRuleBtn.addEventListener('click', resetGmgnTwitterTriggerRuleForm);
+  }
   els.addRuleBtn.addEventListener('click', addMappingRule);
   els.uploadBtn.addEventListener('click', importCustomAudioFiles);
   els.addAudioUrlBtn.addEventListener('click', addCustomAudioUrl);
@@ -353,7 +475,8 @@ async function loadTwitterAudioSettings() {
     'enableTTS',
     'ttsVoice',
     'ttsRate',
-    'ttsPitch'
+    'ttsPitch',
+    'ttsApiUrl'
   ]);
 
   twitterState = normalizeTwitterAudioState(stored);
@@ -372,7 +495,8 @@ async function persistTwitterAudioState(partialState, message) {
     enableTTS: partialState.enableTTS ?? twitterState.enableTTS,
     ttsVoice: partialState.ttsVoice ?? twitterState.ttsVoice,
     ttsRate: partialState.ttsRate ?? twitterState.ttsRate,
-    ttsPitch: partialState.ttsPitch ?? twitterState.ttsPitch
+    ttsPitch: partialState.ttsPitch ?? twitterState.ttsPitch,
+    ttsApiUrl: partialState.ttsApiUrl ?? twitterState.ttsApiUrl
   });
 
   renderTwitterAudioSettings();
@@ -388,7 +512,8 @@ async function persistTwitterAudioState(partialState, message) {
     enableTTS: twitterState.enableTTS,
     ttsVoice: twitterState.ttsVoice,
     ttsRate: twitterState.ttsRate,
-    ttsPitch: twitterState.ttsPitch
+    ttsPitch: twitterState.ttsPitch,
+    ttsApiUrl: twitterState.ttsApiUrl
   });
 
   if (message) {
@@ -415,6 +540,7 @@ function renderTwitterAudioSettings() {
   els.ttsVoiceSelect.value = twitterState.ttsVoice;
   els.ttsRateSelect.value = twitterState.ttsRate;
   els.ttsPitchSelect.value = twitterState.ttsPitch;
+  els.ttsApiUrlInput.value = twitterState.ttsApiUrl;
   els.fallbackPreset.value = twitterState.defaultAudio;
   els.globalVolume.value = String(twitterState.globalVolume);
   renderTwitterVolumeValue(twitterState.globalVolume);
@@ -443,6 +569,20 @@ async function loadGmgnBlacklistWallets() {
   renderGmgnBlacklistWallets();
 }
 
+async function loadGmgnTwitterTriggerHookSettings() {
+  if (!hasGmgnTwitterTriggerHookControls) return;
+  const stored = await chrome.storage.local.get(GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY);
+  gmgnTwitterTriggerHookSettings = normalizeGmgnTwitterTriggerHookSettings(stored[GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY]);
+  renderGmgnTwitterTriggerHookSettings();
+}
+
+async function loadGmgnTwitterTriggerRules() {
+  if (!hasGmgnTwitterTriggerHookControls) return;
+  const stored = await chrome.storage.local.get(GMGN_TWITTER_TRIGGER_RULES_KEY);
+  gmgnTwitterTriggerRules = normalizeGmgnTwitterTriggerRules(stored[GMGN_TWITTER_TRIGGER_RULES_KEY]);
+  renderGmgnTwitterTriggerRules();
+}
+
 async function persistGmgnSpeechWatchlist(nextWatchlist, message) {
   gmgnSpeechWatchlist = normalizeGmgnSpeechWatchlist(nextWatchlist);
   renderGmgnSpeechWatchlist();
@@ -455,6 +595,99 @@ async function persistGmgnBlacklistWallets(nextBlacklistWallets, message) {
   renderGmgnBlacklistWallets();
   await chrome.storage.local.set({ [GMGN_BLACKLIST_WALLETS_KEY]: gmgnBlacklistWallets });
   showToast(message);
+}
+
+async function persistGmgnTwitterTriggerHookSettings(nextSettings, message) {
+  if (!hasGmgnTwitterTriggerHookControls) return;
+  gmgnTwitterTriggerHookSettings = normalizeGmgnTwitterTriggerHookSettings(nextSettings);
+  renderGmgnTwitterTriggerHookSettings();
+  await chrome.storage.local.set({
+    [GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY]: gmgnTwitterTriggerHookSettings
+  });
+  if (message) {
+    showToast(message);
+  }
+}
+
+async function persistGmgnTwitterTriggerRules(nextRules, message) {
+  if (!hasGmgnTwitterTriggerHookControls) return;
+  gmgnTwitterTriggerRules = normalizeGmgnTwitterTriggerRules(nextRules);
+  renderGmgnTwitterTriggerRules();
+  await chrome.storage.local.set({
+    [GMGN_TWITTER_TRIGGER_RULES_KEY]: gmgnTwitterTriggerRules
+  });
+  if (message) {
+    showToast(message);
+  }
+}
+
+function renderGmgnTwitterTriggerHookSettings() {
+  if (!hasGmgnTwitterTriggerHookControls) return;
+  els.gmgnHookEnabled.checked = gmgnTwitterTriggerHookSettings.enabled;
+  els.gmgnHookUrl.value = gmgnTwitterTriggerHookSettings.webhookUrl;
+  els.gmgnHookSecret.value = gmgnTwitterTriggerHookSettings.secret;
+  els.gmgnHookTimeout.value = String(gmgnTwitterTriggerHookSettings.timeoutMs);
+  els.gmgnEventApiEnabled.checked = gmgnTwitterTriggerHookSettings.eventApiEnabled;
+  els.gmgnEventApiUrl.value = gmgnTwitterTriggerHookSettings.eventApiUrl;
+  els.gmgnEventApiToken.value = gmgnTwitterTriggerHookSettings.eventApiToken;
+  els.gmgnEventSendWalletTrades.checked = gmgnTwitterTriggerHookSettings.eventSendWalletTrades;
+  els.gmgnEventSendConvergenceAlerts.checked = gmgnTwitterTriggerHookSettings.eventSendConvergenceAlerts;
+  els.gmgnDirectCaEnabled.checked = gmgnTwitterTriggerHookSettings.directCaEnabled;
+  els.gmgnDirectCaChain.value = gmgnTwitterTriggerHookSettings.directCaChain;
+  els.gmgnDirectCaBuyAmount.value = gmgnTwitterTriggerHookSettings.directCaBuyAmount;
+  els.gmgnDirectCaTwitterIds.value = gmgnTwitterTriggerHookSettings.directCaTwitterIds;
+}
+
+function renderGmgnTwitterTriggerRules() {
+  if (!hasGmgnTwitterTriggerHookControls) return;
+  els.gmgnTriggerRulesList.innerHTML = '';
+
+  if (gmgnTwitterTriggerRules.length === 0) {
+    els.gmgnTriggerRulesList.innerHTML = '<div class="empty-state">暂无 GMGN 买入触发规则</div>';
+    return;
+  }
+
+  const sortedRules = [...gmgnTwitterTriggerRules].sort((left, right) => {
+    return left.twitterId.localeCompare(right.twitterId) || left.id.localeCompare(right.id);
+  });
+
+  for (const rule of sortedRules) {
+    const keywordsLabel = rule.keywords.length > 0 ? rule.keywords.join(' / ') : '无关键词限制';
+    const row = document.createElement('div');
+    row.className = 'list-item';
+    row.innerHTML = `
+      <div class="item-info">
+        <span class="item-title">@${escapeHtml(rule.twitterId)} · ${escapeHtml(getTriggerEventLabel(rule.eventType))} · ${escapeHtml(rule.chain.toUpperCase())}</span>
+        <span class="item-sub">${escapeHtml(rule.ca)}${rule.tokenSymbol ? ` · ${escapeHtml(rule.tokenSymbol)}` : ''}${rule.buyAmount ? ` · 买入 ${escapeHtml(rule.buyAmount)}` : ''}</span>
+        <span class="item-sub">${escapeHtml(keywordsLabel)}${rule.note ? ` · ${escapeHtml(rule.note)}` : ''}</span>
+      </div>
+      <div class="action-btns">
+        <button class="btn-icon toggle" type="button">${rule.enabled ? '停用' : '启用'}</button>
+        <button class="btn-icon" type="button">编辑</button>
+        <button class="btn-icon del" type="button">删除</button>
+      </div>
+    `;
+
+    const buttons = row.querySelectorAll('button');
+    buttons[0].addEventListener('click', async () => {
+      const nextRules = gmgnTwitterTriggerRules.map((item) => (
+        item.id === rule.id ? { ...item, enabled: !item.enabled } : item
+      ));
+      await persistGmgnTwitterTriggerRules(nextRules, `${rule.enabled ? '已停用' : '已启用'}规则：@${rule.twitterId}`);
+    });
+    buttons[1].addEventListener('click', () => {
+      openGmgnTwitterTriggerRuleEditor(rule.id);
+    });
+    buttons[2].addEventListener('click', async () => {
+      const nextRules = gmgnTwitterTriggerRules.filter((item) => item.id !== rule.id);
+      if (editingGmgnTriggerRuleId === rule.id) {
+        resetGmgnTwitterTriggerRuleForm();
+      }
+      await persistGmgnTwitterTriggerRules(nextRules, `已删除规则：@${rule.twitterId}`);
+    });
+
+    els.gmgnTriggerRulesList.appendChild(row);
+  }
 }
 
 function renderGmgnSpeechWatchlist() {
@@ -672,6 +905,105 @@ async function addBlacklistWallet() {
     existed ? `已更新黑名单钱包：${walletName}` : `已添加黑名单钱包：${walletName}`
   );
   els.blacklistWalletInput.value = '';
+}
+
+async function saveGmgnTwitterTriggerHookSettings() {
+  await persistGmgnTwitterTriggerHookSettings({
+    enabled: els.gmgnHookEnabled.checked,
+    webhookUrl: els.gmgnHookUrl.value,
+    secret: els.gmgnHookSecret.value,
+    timeoutMs: els.gmgnHookTimeout.value,
+    eventApiEnabled: els.gmgnEventApiEnabled.checked,
+    eventApiUrl: els.gmgnEventApiUrl.value,
+    eventApiToken: els.gmgnEventApiToken.value,
+    eventSendWalletTrades: els.gmgnEventSendWalletTrades.checked,
+    eventSendConvergenceAlerts: els.gmgnEventSendConvergenceAlerts.checked,
+    directCaEnabled: els.gmgnDirectCaEnabled.checked,
+    directCaChain: els.gmgnDirectCaChain.value,
+    directCaBuyAmount: els.gmgnDirectCaBuyAmount.value,
+    directCaTwitterIds: els.gmgnDirectCaTwitterIds.value
+  }, '已保存 GMGN 外部 Hook 设置');
+}
+
+async function saveGmgnTwitterTriggerRule() {
+  const nextRule = collectGmgnTwitterTriggerRuleFromForm();
+  if (!nextRule) return;
+
+  const nextRules = [...gmgnTwitterTriggerRules];
+  const existingIndex = nextRules.findIndex((rule) => rule.id === nextRule.id);
+
+  if (existingIndex >= 0) {
+    nextRules[existingIndex] = nextRule;
+  } else {
+    nextRules.push(nextRule);
+  }
+
+  await persistGmgnTwitterTriggerRules(
+    nextRules,
+    `${existingIndex >= 0 ? '已更新' : '已添加'}规则：@${nextRule.twitterId}`
+  );
+  resetGmgnTwitterTriggerRuleForm();
+}
+
+function collectGmgnTwitterTriggerRuleFromForm() {
+  const twitterId = normalizeTwitterId(els.gmgnTriggerTwitterId.value);
+  const ca = String(els.gmgnTriggerCa.value || '').trim();
+  const existingRule = editingGmgnTriggerRuleId
+    ? gmgnTwitterTriggerRules.find((rule) => rule.id === editingGmgnTriggerRuleId)
+    : null;
+
+  if (!twitterId) {
+    showToast('请先输入推特 ID');
+    return null;
+  }
+
+  if (!ca) {
+    showToast('请先输入固定 CA');
+    return null;
+  }
+
+  return normalizeGmgnTwitterTriggerRule({
+    id: editingGmgnTriggerRuleId || buildGmgnTwitterTriggerRuleId(),
+    enabled: existingRule ? existingRule.enabled : true,
+    twitterId,
+    eventType: els.gmgnTriggerEventType.value,
+    keywords: els.gmgnTriggerKeywords.value,
+    chain: els.gmgnTriggerChain.value,
+    ca,
+    tokenSymbol: els.gmgnTriggerTokenSymbol.value,
+    buyAmount: els.gmgnTriggerBuyAmount.value,
+    note: els.gmgnTriggerNote.value
+  }, gmgnTwitterTriggerRules.length);
+}
+
+function openGmgnTwitterTriggerRuleEditor(ruleId) {
+  const rule = gmgnTwitterTriggerRules.find((item) => item.id === ruleId);
+  if (!rule) return;
+
+  editingGmgnTriggerRuleId = rule.id;
+  els.gmgnTriggerTwitterId.value = rule.twitterId;
+  els.gmgnTriggerEventType.value = rule.eventType;
+  els.gmgnTriggerKeywords.value = rule.keywords.join('\n');
+  els.gmgnTriggerChain.value = rule.chain;
+  els.gmgnTriggerCa.value = rule.ca;
+  els.gmgnTriggerTokenSymbol.value = rule.tokenSymbol;
+  els.gmgnTriggerBuyAmount.value = rule.buyAmount;
+  els.gmgnTriggerNote.value = rule.note;
+  els.saveGmgnTriggerRuleBtn.textContent = '保存修改';
+}
+
+function resetGmgnTwitterTriggerRuleForm() {
+  if (!hasGmgnTwitterTriggerHookControls) return;
+  editingGmgnTriggerRuleId = null;
+  els.gmgnTriggerTwitterId.value = '';
+  els.gmgnTriggerEventType.value = 'any';
+  els.gmgnTriggerKeywords.value = '';
+  els.gmgnTriggerChain.value = 'bsc';
+  els.gmgnTriggerCa.value = '';
+  els.gmgnTriggerTokenSymbol.value = '';
+  els.gmgnTriggerBuyAmount.value = '';
+  els.gmgnTriggerNote.value = '';
+  els.saveGmgnTriggerRuleBtn.textContent = '保存触发规则';
 }
 
 async function addMappingRule() {
@@ -981,7 +1313,7 @@ async function playConfiguredTts(text) {
   if (!text) return;
 
   try {
-    const response = await fetch(TTS_API, {
+    const response = await fetch(twitterState.ttsApiUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -1073,6 +1405,7 @@ function normalizeTwitterAudioState(raw) {
     ttsVoice: normalizeTtsVoice(raw.ttsVoice),
     ttsRate: normalizeTtsRate(raw.ttsRate),
     ttsPitch: normalizeTtsPitch(raw.ttsPitch),
+    ttsApiUrl: normalizeTtsApiUrl(raw.ttsApiUrl),
     eventFilters
   };
 }
@@ -1299,6 +1632,104 @@ function normalizeGmgnBlacklistWallets(raw) {
   return next;
 }
 
+function normalizeGmgnTwitterTriggerHookSettings(raw) {
+  const settings = {
+    ...DEFAULT_GMGN_TWITTER_TRIGGER_HOOK_SETTINGS,
+    ...(raw || {})
+  };
+
+  settings.enabled = settings.enabled === true;
+  settings.webhookUrl = typeof settings.webhookUrl === 'string' ? settings.webhookUrl.trim() : '';
+  settings.secret = typeof settings.secret === 'string' ? settings.secret.trim() : '';
+  settings.timeoutMs = clampHookTimeout(settings.timeoutMs);
+  settings.eventApiEnabled = settings.eventApiEnabled === true;
+  settings.eventApiUrl = typeof settings.eventApiUrl === 'string' ? settings.eventApiUrl.trim() : '';
+  settings.eventApiToken = typeof settings.eventApiToken === 'string' ? settings.eventApiToken.trim() : '';
+  settings.eventSendWalletTrades = settings.eventSendWalletTrades !== false;
+  settings.eventSendConvergenceAlerts = settings.eventSendConvergenceAlerts !== false;
+  settings.directCaEnabled = settings.directCaEnabled === true;
+  settings.directCaChain = normalizeGmgnTriggerChain(settings.directCaChain);
+  settings.directCaBuyAmount = typeof settings.directCaBuyAmount === 'string'
+    ? settings.directCaBuyAmount.trim()
+    : String(settings.directCaBuyAmount || '').trim();
+  settings.directCaTwitterIds = normalizeGmgnTriggerTwitterIds(settings.directCaTwitterIds).join('\n');
+  return settings;
+}
+
+function normalizeGmgnTwitterTriggerRules(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((rule, index) => normalizeGmgnTwitterTriggerRule(rule, index))
+    .filter((rule) => rule && rule.twitterId && rule.ca);
+}
+
+function normalizeGmgnTwitterTriggerRule(rule, index) {
+  if (!rule || typeof rule !== 'object') return null;
+
+  return {
+    id: typeof rule.id === 'string' && rule.id.trim() ? rule.id.trim() : `gmgn-trigger-${index + 1}`,
+    enabled: rule.enabled !== false,
+    twitterId: normalizeTwitterId(rule.twitterId),
+    eventType: normalizeGmgnTriggerEventType(rule.eventType),
+    keywords: normalizeGmgnTriggerKeywords(rule.keywords),
+    chain: normalizeGmgnTriggerChain(rule.chain),
+    ca: typeof rule.ca === 'string' ? rule.ca.trim() : '',
+    tokenSymbol: typeof rule.tokenSymbol === 'string' ? rule.tokenSymbol.trim() : '',
+    buyAmount: typeof rule.buyAmount === 'string' ? rule.buyAmount.trim() : String(rule.buyAmount || '').trim(),
+    note: typeof rule.note === 'string' ? rule.note.trim() : ''
+  };
+}
+
+function normalizeGmgnTriggerKeywords(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || '').trim()).filter(Boolean);
+  }
+  return String(value || '')
+    .split(/[\r\n,，]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function normalizeGmgnTriggerTwitterIds(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeTwitterId(item)).filter(Boolean);
+  }
+  return String(value || '')
+    .split(/[\s,，]+/)
+    .map((item) => normalizeTwitterId(item))
+    .filter(Boolean);
+}
+
+function normalizeGmgnTriggerEventType(value) {
+  const eventType = String(value || '').trim().toLowerCase();
+  if (GMGN_TWITTER_TRIGGER_EVENT_CHOICES.some((option) => option.value === eventType)) {
+    return eventType;
+  }
+  return 'any';
+}
+
+function normalizeGmgnTriggerChain(value) {
+  const chain = String(value || '').trim().toLowerCase();
+  if (GMGN_TWITTER_TRIGGER_CHAIN_CHOICES.some((option) => option.value === chain)) {
+    return chain;
+  }
+  return 'bsc';
+}
+
+function buildGmgnTwitterTriggerRuleId() {
+  return `gmgn-trigger-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function clampHookTimeout(value) {
+  const timeout = Number(value);
+  if (!Number.isFinite(timeout)) return DEFAULT_GMGN_TWITTER_TRIGGER_HOOK_SETTINGS.timeoutMs;
+  return Math.max(500, Math.min(15000, Math.round(timeout)));
+}
+
+function getTriggerEventLabel(value) {
+  return (GMGN_TWITTER_TRIGGER_EVENT_CHOICES.find((option) => option.value === value) || { label: value }).label;
+}
+
 function clampVolume(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return 1;
@@ -1359,6 +1790,19 @@ function normalizeTtsPitch(value) {
   return TTS_PITCH_OPTIONS.has(value) ? value : DEFAULT_TTS_PITCH;
 }
 
+function normalizeTtsApiUrl(value) {
+  const rawUrl = String(value || '').trim();
+  if (!rawUrl) return DEFAULT_TTS_API;
+  const url = /^[a-z][a-z0-9+.-]*:\/\//i.test(rawUrl) ? rawUrl : `http://${rawUrl}`;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return parsed.toString();
+    }
+  } catch (_error) {}
+  return DEFAULT_TTS_API;
+}
+
 function parsePercentString(value) {
   const match = /^([+-]?\d+(?:\.\d+)?)%$/.exec(String(value || '').trim());
   return match ? Number(match[1]) : 0;
@@ -1403,7 +1847,7 @@ function renderTwitterVolumeValue(volume) {
 
 function renderTwitterTtsControls() {
   const enabled = els.enableTTSToggle.checked;
-  [els.ttsVoiceSelect, els.ttsRateSelect, els.ttsPitchSelect, els.ttsTestBtn].forEach((element) => {
+  [els.ttsVoiceSelect, els.ttsRateSelect, els.ttsPitchSelect, els.ttsApiUrlInput, els.ttsTestBtn].forEach((element) => {
     element.disabled = !enabled;
   });
 }

@@ -58,7 +58,8 @@
   let routeWatcherInstalled = false;
   const GMGN_AUDIO_SETTINGS_KEY = 'gmgnAudioSettings';
   const AUDIO_SYNC_CHANNEL_NAME = 'gmgn_convergence_audio_sync_channel';
-  const TTS_STORAGE_KEYS = ['ttsVoice', 'ttsRate', 'ttsPitch'];
+  const DISPATCH_GMGN_SIGNAL_EVENT_MESSAGE = 'dispatch-gmgn-signal-event';
+  const TTS_STORAGE_KEYS = ['ttsVoice', 'ttsRate', 'ttsPitch', 'ttsApiUrl'];
   const AUDIO_LOCK_MS = 4500;
   const PRESET_AUDIO_OPTIONS = new Set(['default.MP3', 'preset1.MP3', 'elonmusk.MP3', 'CZ.MP3', 'heyi.MP3']);
   const CHAIN_DISPLAY = {
@@ -71,12 +72,13 @@
     unknown: { label: 'UNKNOWN', cls: 'gcp-chain-unknown' }
   };
   const AGGREGATE_DEBUG_PREFIX = '[GMGN Aggregate Debug]';
+  const TRADE_ACTION_RE = /(清仓|加仓|建仓|减仓|买入|卖出)/;
   const DEFAULT_TTS_SETTINGS = {
     voice: 'zh-CN-XiaoxiaoNeural',
     rate: '+0%',
-    pitch: '+0%'
+    pitch: '+0%',
+    apiUrl: 'https://cloudflare-edge-tts.tech-melon.workers.dev/tts'
   };
-  const TTS_API = 'https://cloudflare-edge-tts.tech-melon.workers.dev/tts';
   const TTS_VOICE_OPTIONS = new Set([
     'zh-CN-XiaoxiaoNeural',
     'zh-CN-YunjianNeural',
@@ -101,8 +103,21 @@
   let watchedTradeSpeechQueue = Promise.resolve();
   const spokenWatchedTradeKeys = new Map();
   const WATCHED_TRADE_TTS_MAX_AGE_MS = 10 * 1000;
+  const INFERRED_TRADE_TIME_TTL_MS = 2 * 60 * 60 * 1000;
+  const inferredTradeTimeByKey = new Map();
   const SUPPORTED_GMGN_CHAINS = new Set(['sol', 'eth', 'bsc', 'bnb', 'base', 'tron', 'blast']);
   const FOLLOW_PATH_RE = /^\/(?:follow(?:\/|$)|(?:sol|eth|bsc|base|tron|blast)\/follow(?:\/|$))/i;
+  const DEBOT_TRACK_MESSAGE_FLAG = '__gcpDebot';
+  const DEBOT_TRACK_CHANNEL = 'wallet-track-transactions';
+  const DEBOT_TRACK_API_PATH = '/api/wallet/track/transactions';
+  const DEBOT_TRACK_CHAINS = ['solana', 'bsc', 'base', 'eth'];
+  const DEBOT_API_FETCH_MIN_INTERVAL_MS = 5000;
+  let debotApiFetchInFlight = false;
+  let debotLastApiFetchAt = 0;
+  let debotNetworkBridgeInstalled = false;
+  let debotScanScheduled = false;
+  const debotWalletNameByAddress = new Map();
+  const debotTokenDomMetaByMint = new Map();
 
   function getSourceId() {
     try {
@@ -132,6 +147,7 @@
       timeAgo: r.timeAgo || '',
       tradeAge: r.tradeAge || '',
       timeMs: r.timeMs || 0,
+      inferredTime: !!r.inferredTime,
       tokenLogo: r.tokenLogo || '',
       href: r.href || '',
       platform: r.platform || null,
@@ -153,8 +169,56 @@
     ].join('|');
   }
 
+  function buildObservedTradeKey(parts) {
+    return [
+      normalizeTradeKeyPart(parts.chain),
+      normalizeTradeKeyPart(parts.mint || parts.token),
+      normalizeTradeKeyPart(parts.wallet),
+      normalizeTradeKeyPart(parts.action),
+      normalizeTradeKeyPart(parts.amount),
+      normalizeTradeKeyPart(parts.fingerprint)
+    ].join('|');
+  }
+
+  function normalizeTradeAgeText(value) {
+    const text = String(value || '').replace(/\s+/g, '').trim();
+    if (!text) return '';
+
+    let match = text.match(/^(\d+)([smhd])$/i);
+    if (match) {
+      return `${match[1]}${match[2].toLowerCase()}`;
+    }
+
+    match = text.match(/^(\d+)(\u79d2|\u79d2\u949f)$/);
+    if (match) return `${match[1]}s`;
+
+    match = text.match(/^(\d+)(\u5206|\u5206\u949f)$/);
+    if (match) return `${match[1]}m`;
+
+    match = text.match(/^(\d+)(\u65f6|\u5c0f\u65f6)$/);
+    if (match) return `${match[1]}h`;
+
+    match = text.match(/^(\d+)(\u5929|\u65e5)$/);
+    if (match) return `${match[1]}d`;
+
+    return '';
+  }
+
+  function stripTrailingTradeAgeText(value) {
+    const text = String(value || '').trim();
+    const match = text.match(/(\d+\s*(?:[smhdSMHD]|\u79d2|\u79d2\u949f|\u5206|\u5206\u949f|\u65f6|\u5c0f\u65f6|\u5929|\u65e5))\s*$/);
+    if (!match) {
+      return { text, age: '' };
+    }
+    return {
+      text: text.slice(0, match.index).trim(),
+      age: normalizeTradeAgeText(match[1])
+    };
+  }
+
   function deriveStableTradeTimeMs(timeAgo, now = Date.now()) {
-    const tm = String(timeAgo || '').trim().match(/^(\d+)([smhd])$/);
+    const normalizedAge = normalizeTradeAgeText(timeAgo);
+    const tm = normalizedAge.match(/^(\d+)([smhd])$/);
     if (!tm) return Math.round(now / 1000) * 1000;
     const value = parseInt(tm[1], 10);
     const unit = tm[2];
@@ -171,10 +235,46 @@
     return Math.round((now - (value * unitMs)) / unitMs) * unitMs;
   }
 
+  function resolveTradeTimeInfo(timeAgo, observedKey, now = Date.now()) {
+    const normalizedAge = normalizeTradeAgeText(timeAgo);
+    if (normalizedAge) {
+      return {
+        timeAgo: normalizedAge,
+        timeMs: deriveStableTradeTimeMs(normalizedAge, now),
+        inferredTime: false
+      };
+    }
+
+    const key = normalizeTradeKeyPart(observedKey);
+    const roundedNow = Math.round(now / 1000) * 1000;
+    if (!key) {
+      return { timeAgo: '', timeMs: roundedNow, inferredTime: true };
+    }
+
+    const existing = inferredTradeTimeByKey.get(key);
+    if (existing) {
+      return { timeAgo: '', timeMs: existing, inferredTime: true };
+    }
+
+    inferredTradeTimeByKey.set(key, roundedNow);
+    return { timeAgo: '', timeMs: roundedNow, inferredTime: true };
+  }
+
+  function pruneInferredTradeTimes(now = Date.now()) {
+    for (const [key, timeMs] of inferredTradeTimeByKey.entries()) {
+      if (!timeMs || (now - timeMs) > INFERRED_TRADE_TIME_TTL_MS) {
+        inferredTradeTimeByKey.delete(key);
+      }
+    }
+  }
+
   function normalizeChainName(value) {
-    const normalized = String(value || '').trim().toLowerCase();
+    let normalized = String(value || '').trim().toLowerCase();
+    if (normalized === 'solana') normalized = 'sol';
+    if (normalized === 'ethereum') normalized = 'eth';
+    if (normalized === 'bnb' || normalized === 'binance' || normalized === 'binance-smart-chain') normalized = 'bsc';
     if (!SUPPORTED_GMGN_CHAINS.has(normalized)) return '';
-    return normalized === 'bnb' ? 'bsc' : normalized;
+    return normalized;
   }
 
   function getLocationChainHint() {
@@ -203,28 +303,117 @@
     const href = String(rawHref || '').trim();
     if (!href) return { href: '', chain: '', mint: '' };
 
-    const pathMatch = href.match(/\/(sol|eth|bsc|bnb|base|tron|blast)\/token\/([1-9A-HJ-NP-Za-km-z]{32,}|0x[a-fA-F0-9]{40})/i);
+    const pathMatch = href.match(/\/(sol|eth|bsc|bnb|base|tron|blast)\/(token|profile)\/([1-9A-HJ-NP-Za-km-z]{32,}|0x[a-fA-F0-9]{40})/i);
     if (pathMatch) {
+      const chain = normalizeChainName(pathMatch[1]);
+      const routeType = String(pathMatch[2] || '').toLowerCase();
+      if (routeType === 'profile' && chain !== 'sol') return { href, chain: '', mint: '' };
       return {
         href,
-        chain: normalizeChainName(pathMatch[1]),
-        mint: pathMatch[2]
+        chain,
+        mint: pathMatch[3]
       };
     }
 
     try {
       const parsed = new URL(href, location.href);
-      const queryMatch = parsed.pathname.match(/\/token\/([1-9A-HJ-NP-Za-km-z]{32,}|0x[a-fA-F0-9]{40})/i);
+      const queryMatch = parsed.pathname.match(/\/(token|profile)\/([1-9A-HJ-NP-Za-km-z]{32,}|0x[a-fA-F0-9]{40})/i);
       if (queryMatch) {
+        const chain = normalizeChainName(parsed.searchParams.get('chain') || parsed.searchParams.get('network') || getLocationChainHint());
+        const routeType = String(queryMatch[1] || '').toLowerCase();
+        if (routeType === 'profile' && chain !== 'sol') return { href, chain: '', mint: '' };
         return {
           href,
-          chain: normalizeChainName(parsed.searchParams.get('chain') || parsed.searchParams.get('network')),
-          mint: queryMatch[1]
+          chain,
+          mint: queryMatch[2]
         };
       }
     } catch (e) {}
 
     return { href, chain: '', mint: '' };
+  }
+
+  function normalizeDebotTokenAddress(value) {
+    const token = String(value || '').trim();
+    const prefixed = token.match(/^\d+_(.+)$/);
+    return prefixed ? prefixed[1] : token;
+  }
+
+  function parseDebotTokenHref(rawHref) {
+    const href = String(rawHref || '').trim();
+    if (!href) return { href: '', chain: '', mint: '' };
+
+    try {
+      const parsed = new URL(href, location.href);
+      const tokenMatch = parsed.pathname.match(/\/token\/([^/]+)\/([^/?#]+)/i);
+      if (!tokenMatch) return { href, chain: '', mint: '' };
+      return {
+        href,
+        chain: normalizeChainName(tokenMatch[1]),
+        mint: normalizeDebotTokenAddress(decodeURIComponent(tokenMatch[2] || ''))
+      };
+    } catch (e) {
+      return { href, chain: '', mint: '' };
+    }
+  }
+
+  function buildGmgnTokenPath(chain, mint) {
+    const normalizedChain = normalizeChainName(chain);
+    const tokenMint = String(mint || '').trim();
+    if (!normalizedChain || !tokenMint) return '';
+    return `/${normalizedChain}/token/${tokenMint}`;
+  }
+
+  function getExternalTokenChainSlug(chain, provider) {
+    const normalizedChain = normalizeChainName(chain);
+    if (!normalizedChain) return '';
+
+    if (provider === 'fomo') {
+      if (normalizedChain === 'sol') return 'solana';
+      if (normalizedChain === 'bsc') return 'bnb';
+      if (normalizedChain === 'eth') return 'ethereum';
+      if (normalizedChain === 'base') return 'base';
+      return '';
+    }
+
+    if (provider === 'debot') {
+      if (normalizedChain === 'sol') return 'solana';
+      if (normalizedChain === 'bsc') return 'bsc';
+      if (normalizedChain === 'eth') return 'ethereum';
+      if (normalizedChain === 'base') return 'base';
+      return '';
+    }
+
+    return '';
+  }
+
+  function buildFomoTokenUrl(chain, mint) {
+    const chainSlug = getExternalTokenChainSlug(chain, 'fomo');
+    const tokenMint = String(mint || '').trim();
+    if (!chainSlug || !tokenMint) return '';
+    return `https://fomo.family/tokens/${chainSlug}/${encodeURIComponent(tokenMint)}`;
+  }
+
+  function buildDebotTokenUrl(chain, mint) {
+    const chainSlug = getExternalTokenChainSlug(chain, 'debot');
+    const tokenMint = String(mint || '').trim();
+    if (!chainSlug || !tokenMint) return '';
+    return `https://debot.ai/token/${chainSlug}/${encodeURIComponent(tokenMint)}`;
+  }
+
+  function renderTokenExternalLinks(alert) {
+    const fomoUrl = buildFomoTokenUrl(alert?.chain, alert?.mint);
+    const debotUrl = buildDebotTokenUrl(alert?.chain, alert?.mint);
+    const links = [];
+
+    if (fomoUrl) {
+      links.push(`<a class="gcp-token-ext-link gcp-token-ext-link-fomo" href="${escHtml(fomoUrl)}" target="_blank" rel="noopener noreferrer" title="在 fomo.family 打开">Fomo</a>`);
+    }
+    if (debotUrl) {
+      links.push(`<a class="gcp-token-ext-link gcp-token-ext-link-debot" href="${escHtml(debotUrl)}" target="_blank" rel="noopener noreferrer" title="在 Debot 打开">Debot</a>`);
+    }
+
+    return links.length ? `<span class="gcp-token-ext-links">${links.join('')}</span>` : '';
   }
 
   function getTradeRowTokenLinkInfo(row) {
@@ -353,11 +542,12 @@
       renderAlerts();
       injectOrigStars();
     }
-    if (changes.ttsVoice || changes.ttsRate || changes.ttsPitch) {
+    if (changes.ttsVoice || changes.ttsRate || changes.ttsPitch || changes.ttsApiUrl) {
       ttsSettings = normalizeTtsSettings({
         ttsVoice: changes.ttsVoice ? changes.ttsVoice.newValue : ttsSettings.voice,
         ttsRate: changes.ttsRate ? changes.ttsRate.newValue : ttsSettings.rate,
-        ttsPitch: changes.ttsPitch ? changes.ttsPitch.newValue : ttsSettings.pitch
+        ttsPitch: changes.ttsPitch ? changes.ttsPitch.newValue : ttsSettings.pitch,
+        ttsApiUrl: changes.ttsApiUrl ? changes.ttsApiUrl.newValue : ttsSettings.apiUrl
       });
     }
   }
@@ -408,7 +598,8 @@
     return {
       voice: normalizeTtsVoice(raw && raw.ttsVoice),
       rate: normalizeTtsRate(raw && raw.ttsRate),
-      pitch: normalizeTtsPitch(raw && raw.ttsPitch)
+      pitch: normalizeTtsPitch(raw && raw.ttsPitch),
+      apiUrl: normalizeTtsApiUrl(raw && raw.ttsApiUrl)
     };
   }
 
@@ -422,6 +613,19 @@
 
   function normalizeTtsPitch(value) {
     return TTS_PITCH_OPTIONS.has(value) ? value : DEFAULT_TTS_SETTINGS.pitch;
+  }
+
+  function normalizeTtsApiUrl(value) {
+    const rawUrl = String(value || '').trim();
+    if (!rawUrl) return DEFAULT_TTS_SETTINGS.apiUrl;
+    const url = /^[a-z][a-z0-9+.-]*:\/\//i.test(rawUrl) ? rawUrl : `http://${rawUrl}`;
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        return parsed.toString();
+      }
+    } catch (e) {}
+    return DEFAULT_TTS_SETTINGS.apiUrl;
   }
 
   function parsePercentString(value) {
@@ -618,6 +822,363 @@
       return;
     }
     console.warn(`${AGGREGATE_DEBUG_PREFIX} ${getDebugTimestamp()} ${message}`);
+  }
+
+  const SCAN_DEBUG_LOG_INTERVAL_MS = 3000;
+  let lastScanDebugLogAt = 0;
+
+  function shouldLogScanDebug(force = false) {
+    const now = Date.now();
+    if (!force && (now - lastScanDebugLogAt) < SCAN_DEBUG_LOG_INTERVAL_MS) return false;
+    lastScanDebugLogAt = now;
+    return true;
+  }
+
+  function compactDebugText(node, maxLen = 220) {
+    const text = String(node && node.textContent ? node.textContent : node || '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (text.length <= maxLen) return text;
+    return `${text.slice(0, maxLen)}...`;
+  }
+
+  function getTrackingTabDebugTexts() {
+    return Array.from(document.querySelectorAll('.pi-tabs-tab-btn'))
+      .slice(0, 24)
+      .map((tab, index) => ({
+        index,
+        text: compactDebugText(tab, 80),
+        active: tab.classList.contains('pi-tabs-tab-btn-active')
+          || tab.parentElement?.classList.contains('pi-tabs-tab-active')
+      }));
+  }
+
+  function describeTrackingListsForDebug(lists) {
+    return Array.from(lists || []).map((item, index) => {
+      const list = item && item.list ? item.list : item;
+      const rowsRoot = list?.children?.[0]?.children?.[0] || null;
+      return {
+        index,
+        isOnTracking: !!(item && item.isOnTracking),
+        listChildren: list?.children?.length || 0,
+        firstChildChildren: list?.children?.[0]?.children?.length || 0,
+        rowCount: rowsRoot?.children?.length || 0,
+        text: compactDebugText(list, 180)
+      };
+    });
+  }
+
+  function describeTradeForDebug(trade) {
+    return {
+      wallet: trade?.wallet || '',
+      action: trade?.action || '',
+      isBuy: !!trade?.isBuy,
+      token: trade?.token || '',
+      amount: trade?.amount || '',
+      chain: trade?.chain || '',
+      mint: trade?.mint || '',
+      timeAgo: trade?.timeAgo || '',
+      inferredTime: !!trade?.inferredTime,
+      mcap: trade?.mcap || ''
+    };
+  }
+
+  function getTradeRowParseIssue(row) {
+    if (!row || !row.querySelector) return 'row-not-element';
+    const anchors = Array.from(row.querySelectorAll('a[href]'));
+    if (!anchors.length) return 'missing-anchor';
+    const a = anchors.find((anchor) => anchor.querySelector('.text-yellow-100[data-sentry-component="AutoTruncateText"]'))
+      || anchors.find((anchor) => anchor.querySelector('[data-sentry-component="AutoTruncateText"]'))
+      || anchors[0];
+    if (!a) return 'missing-trade-anchor';
+    const walletEl = a.querySelector('.text-yellow-100[data-sentry-component="AutoTruncateText"]')
+      || a.querySelector('[data-sentry-component="AutoTruncateText"]');
+    if (!walletEl || !walletEl.textContent.trim()) {
+      return extractFallbackWalletNameFromText(row.textContent || a.textContent || '')
+        ? 'missing-wallet-selector'
+        : 'missing-wallet';
+    }
+    if (!a.children[0] || !a.children[1]) return 'missing-line1-or-line2';
+    if (!TRADE_ACTION_RE.test(a.children[0].textContent || '')) return 'missing-action';
+    if (!compactDebugText(a.children[1], 80)) return 'missing-line2-text';
+    return 'unknown';
+  }
+
+  function buildScanDebugSnapshot(extra = {}) {
+    return {
+      url: location.href,
+      pathname: location.pathname,
+      followModeActive,
+      isMonitorWindowPage: isMonitorWindowPage(),
+      virtualListCount: document.querySelectorAll('.virtual-list-container').length,
+      tabTexts: getTrackingTabDebugTexts(),
+      lastScanInfo: { ...lastScanInfo },
+      records: {
+        buys: buyRecords.length,
+        sells: sellRecords.length,
+        closes: closedRecords.length,
+        alerts: alerts.length
+      },
+      ...extra
+    };
+  }
+
+  const PAGE_DEBUG_REQUEST_TYPE = 'GCP_DEBUG_REQUEST';
+  const PAGE_DEBUG_RESPONSE_TYPE = 'GCP_DEBUG_RESPONSE';
+  let pageDebugBridgeInstalled = false;
+
+  function getDebugRecordsSnapshot() {
+    return {
+      buys: getCombinedBuyRecords().slice(-20).map(describeTradeForDebug),
+      sells: getCombinedSellRecords().slice(-20).map(describeTradeForDebug),
+      closes: getCombinedClosedRecords().slice(-20).map(describeTradeForDebug),
+      alerts: alerts.slice(0, 20).map((alert) => ({
+        token: alert?.token || '',
+        chain: alert?.chain || '',
+        mint: alert?.mint || '',
+        walletCount: alert?.walletCount || 0,
+        effectiveCount: alert?.effectiveCount || 0,
+        closedCount: alert?.closedCount || 0,
+        mcap: alert?.mcap || '',
+        latestTradeTimeMs: alert?.latestTradeTimeMs || 0
+      }))
+    };
+  }
+
+  function buildConvergenceDebugSnapshot() {
+    const now = Date.now();
+    const windowMs = config.timeWindowMin * 60 * 1000;
+    const combinedBuyRecords = getCombinedBuyRecords();
+    const combinedClosedRecords = getCombinedClosedRecords();
+    const groups = {};
+    let missingMint = 0;
+    let missingGroupKey = 0;
+
+    for (const r of combinedBuyRecords) {
+      if (!r || !r.timeMs || (now - r.timeMs) > windowMs) continue;
+      if (!r.mint) missingMint++;
+      const key = buildAlertGroupKey(r);
+      if (!key) {
+        missingGroupKey++;
+        continue;
+      }
+      if (!groups[key]) {
+        groups[key] = {
+          key,
+          chain: r.chain || '',
+          mint: r.mint || '',
+          token: r.token || '',
+          mcap: r.mcap || '',
+          wallets: new Set(),
+          latestTradeTimeMs: r.timeMs || 0
+        };
+      }
+      const group = groups[key];
+      if (r.wallet) group.wallets.add(r.wallet);
+      if ((r.timeMs || 0) >= (group.latestTradeTimeMs || 0)) {
+        group.latestTradeTimeMs = r.timeMs || group.latestTradeTimeMs || 0;
+        if (r.token) group.token = r.token;
+        if (r.mcap) group.mcap = r.mcap;
+      }
+    }
+
+    const groupList = Object.values(groups)
+      .map((group) => {
+        const walletNames = Array.from(group.wallets);
+        const closedCount = walletNames.filter((wallet) => combinedClosedRecords.some((closeRecord) =>
+          closeRecord.wallet === wallet
+          && (closeRecord.chain || '') === (group.chain || '')
+          && ((group.mint && closeRecord.mint === group.mint)
+            || (!group.mint && !closeRecord.mint && closeRecord.token === group.token))
+        )).length;
+        const effectiveCount = walletNames.length - closedCount;
+        return {
+          key: group.key,
+          token: group.token,
+          chain: group.chain,
+          mint: group.mint,
+          mcap: group.mcap,
+          walletCount: walletNames.length,
+          closedCount,
+          effectiveCount,
+          qualifies: walletNames.length >= config.minWallets || hasStarredWallet(walletNames),
+          wallets: walletNames.slice(0, 8)
+        };
+      })
+      .sort((a, b) => (b.effectiveCount - a.effectiveCount) || (b.walletCount - a.walletCount));
+
+    return {
+      config: {
+        minWallets: config.minWallets,
+        timeWindowMin: config.timeWindowMin,
+        chainFilter: config.chainFilter,
+        sortBy: config.sortBy
+      },
+      buyPool: combinedBuyRecords.length,
+      closePool: combinedClosedRecords.length,
+      missingMint,
+      missingGroupKey,
+      groupCount: groupList.length,
+      qualifyingGroupCount: groupList.filter((group) => group.qualifies).length,
+      alertCount: alerts.length,
+      topGroups: groupList.slice(0, 20)
+    };
+  }
+
+  function handlePageDebugCommand(command) {
+    if (command === 'rescan') {
+      scanTrades();
+      const snapshot = buildScanDebugSnapshot({
+        lists: describeTrackingListsForDebug(findAllTrackingLists())
+      });
+      aggregateDebugLog('page bridge rescan result.', snapshot);
+      return snapshot;
+    }
+    if (command === 'dumpScanDebug') {
+      const snapshot = buildScanDebugSnapshot({
+        lists: describeTrackingListsForDebug(findAllTrackingLists())
+      });
+      aggregateDebugLog('manual scan debug snapshot.', snapshot);
+      return snapshot;
+    }
+    if (command === 'lastScanInfo') {
+      return { ...lastScanInfo };
+    }
+    if (command === 'records') {
+      return getDebugRecordsSnapshot();
+    }
+    if (command === 'convergence') {
+      return buildConvergenceDebugSnapshot();
+    }
+    throw new Error(`Unknown GMGN debug command: ${command}`);
+  }
+
+  function installPageDebugMessageBridge() {
+    if (pageDebugBridgeInstalled) return;
+    pageDebugBridgeInstalled = true;
+
+    window.addEventListener('message', (event) => {
+      if (event.source !== window) return;
+      const data = event.data || {};
+      if (!data || data.type !== PAGE_DEBUG_REQUEST_TYPE) return;
+      let result = null;
+      let error = '';
+      try {
+        result = handlePageDebugCommand(data.command);
+      } catch (e) {
+        error = e && e.message ? e.message : String(e);
+        aggregateDebugLog('page bridge command failed.', {
+          command: data.command,
+          error
+        });
+      }
+      window.postMessage({
+        type: PAGE_DEBUG_RESPONSE_TYPE,
+        id: data.id || '',
+        command: data.command || '',
+        result,
+        error
+      }, '*');
+    });
+
+    injectPageDebugConsoleHelper();
+  }
+
+  function installDebotNetworkMessageBridge() {
+    if (debotNetworkBridgeInstalled) return;
+    debotNetworkBridgeInstalled = true;
+    window.addEventListener('message', (event) => {
+      if (event.source !== window) return;
+      const data = event.data || {};
+      if (!data || data[DEBOT_TRACK_MESSAGE_FLAG] !== true) return;
+      if (data.channel !== DEBOT_TRACK_CHANNEL) return;
+      handleDebotTrackPayload(data.payload, data.payload?.source || 'network-hook');
+    });
+  }
+
+  function injectPageDebugConsoleHelper() {
+    if (!document.documentElement) return;
+    const script = document.createElement('script');
+    script.textContent = `
+      (() => {
+        const REQ = '${PAGE_DEBUG_REQUEST_TYPE}';
+        const RES = '${PAGE_DEBUG_RESPONSE_TYPE}';
+        if (window.__gcp && window.__gcp.__pageBridge) return;
+        let seq = 1;
+        const pending = new Map();
+        function send(command, args) {
+          const id = 'gcp-debug-' + Date.now() + '-' + (seq++);
+          const promise = new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+              pending.delete(id);
+              reject(new Error('GMGN debug command timed out'));
+            }, 5000);
+            pending.set(id, { resolve, reject, timer });
+          });
+          window.postMessage({ type: REQ, id, command, args }, '*');
+          return promise;
+        }
+        window.addEventListener('message', (event) => {
+          if (event.source !== window) return;
+          const data = event.data || {};
+          if (data.type !== RES) return;
+          const item = pending.get(data.id);
+          if (!item) return;
+          clearTimeout(item.timer);
+          pending.delete(data.id);
+          if (data.error) {
+            item.reject(new Error(data.error));
+            return;
+          }
+          item.resolve(data.result);
+        });
+        const api = {
+          __pageBridge: true,
+          lastScanInfo: null,
+          rescan: async () => {
+            const result = await send('rescan');
+            api.lastScanInfo = result && result.lastScanInfo ? result.lastScanInfo : api.lastScanInfo;
+            console.warn('[GMGN Aggregate Debug] page rescan result', result);
+            return result;
+          },
+          dumpScanDebug: async () => {
+            const result = await send('dumpScanDebug');
+            api.lastScanInfo = result && result.lastScanInfo ? result.lastScanInfo : api.lastScanInfo;
+            console.warn('[GMGN Aggregate Debug] page debug snapshot', result);
+            return result;
+          },
+          getLastScanInfo: async () => {
+            const result = await send('lastScanInfo');
+            api.lastScanInfo = result;
+            console.warn('[GMGN Aggregate Debug] page lastScanInfo', result);
+            return result;
+          },
+          getRecords: async () => {
+            const result = await send('records');
+            console.warn('[GMGN Aggregate Debug] page records', result);
+            return result;
+          },
+          getConvergence: async () => {
+            const result = await send('convergence');
+            console.warn('[GMGN Aggregate Debug] page convergence', result);
+            return result;
+          },
+          help: () => {
+            console.info('GMGN debug ready. Use: await window.__gcp.rescan(), await window.__gcp.dumpScanDebug(), await window.__gcp.getLastScanInfo(), await window.__gcp.getRecords(), await window.__gcp.getConvergence()');
+          }
+        };
+        window.__gcp = api;
+        api.help();
+      })();
+    `;
+    try {
+      (document.head || document.documentElement).appendChild(script);
+      script.remove();
+    } catch (e) {
+      aggregateDebugLog('failed to inject page debug helper.', {
+        error: e && e.message ? e.message : String(e)
+      });
+    }
   }
 
   function normalizeHiddenAlertsState(raw) {
@@ -839,9 +1400,25 @@
       .trim();
   }
 
+  function normalizeWalletMatchName(value) {
+    return sanitizeSpeechName(value).toLowerCase();
+  }
+
+  function findSpeechWatchWalletKey(walletName) {
+    const exact = normalizeSpeechWatchWallet(walletName);
+    if (exact && starred.has(exact)) return exact;
+
+    const normalized = normalizeWalletMatchName(walletName);
+    if (!normalized) return '';
+    for (const key of starred) {
+      if (normalizeWalletMatchName(key) === normalized) return key;
+    }
+    return '';
+  }
+
   function getSpeechWatchAlias(walletName) {
-    const normalizedWallet = normalizeSpeechWatchWallet(walletName);
-    return speechWatchlist[normalizedWallet]?.alias || '';
+    const matchedWallet = findSpeechWatchWalletKey(walletName) || normalizeSpeechWatchWallet(walletName);
+    return speechWatchlist[matchedWallet]?.alias || '';
   }
 
   function normalizeBlacklistWallets(raw) {
@@ -891,8 +1468,9 @@
   function toggleStar(walletName) {
     const normalizedWallet = normalizeSpeechWatchWallet(walletName);
     if (!normalizedWallet) return;
-    if (starred.has(normalizedWallet)) {
-      delete speechWatchlist[normalizedWallet];
+    const existingWallet = findSpeechWatchWalletKey(normalizedWallet);
+    if (existingWallet) {
+      delete speechWatchlist[existingWallet];
     } else {
       speechWatchlist[normalizedWallet] = speechWatchlist[normalizedWallet] || { alias: '' };
     }
@@ -918,11 +1496,11 @@
   }
 
   function isAlertStarred(a) {
-    return a.wallets && a.wallets.some(w => starred.has(w.name));
+    return a.wallets && a.wallets.some(w => !!findSpeechWatchWalletKey(w.name));
   }
 
   function isTradeStarred(trade) {
-    return !!(trade && trade.wallet && starred.has(trade.wallet));
+    return !!(trade && trade.wallet && findSpeechWatchWalletKey(trade.wallet));
   }
 
   function isWalletBlacklisted(walletName) {
@@ -930,15 +1508,19 @@
   }
 
   function hasStarredWallet(walletNames) {
-    return Array.isArray(walletNames) && walletNames.some((walletName) => starred.has(walletName));
+    return Array.isArray(walletNames) && walletNames.some((walletName) => !!findSpeechWatchWalletKey(walletName));
   }
 
   function isBuyAction(action) {
-    return /(加仓|建仓|买入)/.test(action || '');
+    return /(\u52a0\u4ed3|\u5efa\u4ed3|\u4e70\u5165|\bbuy\b|\bopen\b|\badd\b)/i.test(action || '');
+  }
+
+  function isCloseAction(action) {
+    return /(\u6e05\u4ed3|\bclose\b)/i.test(action || '');
   }
 
   function isSellAction(action) {
-    return /(减仓|卖出|清仓)/.test(action || '');
+    return /(\u51cf\u4ed3|\u5356\u51fa|\u6e05\u4ed3|\bsell\b|\breduce\b|\bclose\b)/i.test(action || '');
   }
 
   function normalizeWatchedTradeVerb(trade) {
@@ -961,6 +1543,174 @@
     return '';
   }
 
+  function normalizeTradeEventAction(value) {
+    const action = String(value || '').trim();
+    if (/\bopen\b|建仓/i.test(action)) return 'open';
+    if (/\badd\b|加仓/i.test(action)) return 'add';
+    if (/\bbuy\b|买入/i.test(action)) return 'buy';
+    if (/\breduce\b|减仓/i.test(action)) return 'reduce';
+    if (/\bsell\b|卖出/i.test(action)) return 'sell';
+    if (/\bclose\b|清仓/i.test(action)) return 'close';
+    return '';
+  }
+
+  function getTradeEventActionLabel(action) {
+    if (action === 'open') return '建仓';
+    if (action === 'add') return '加仓';
+    if (action === 'buy') return '买入';
+    if (action === 'reduce') return '减仓';
+    if (action === 'sell') return '卖出';
+    if (action === 'close') return '清仓';
+    return '';
+  }
+
+  function getSignalEventSource() {
+    return isDebotMonitorWindowPage() ? 'debot' : 'gmgn';
+  }
+
+  function normalizeSignalEventMcap(value) {
+    return String(value || '').trim().replace(/^[\$￥]\s*/, '');
+  }
+
+  function buildSignalEventUrl(rawUrl, chain, mint) {
+    const href = String(rawUrl || '').trim();
+    if (href) {
+      try {
+        return new URL(href, location.origin).href;
+      } catch (e) {}
+    }
+
+    const debotUrl = isDebotMonitorWindowPage() ? buildDebotTokenUrl(chain, mint) : '';
+    if (debotUrl) {
+      return debotUrl;
+    }
+
+    const path = buildGmgnTokenPath(chain, mint);
+    if (path) {
+      try {
+        return new URL(path, location.origin).href;
+      } catch (e) {}
+    }
+
+    return location.href;
+  }
+
+  function buildSignalWalletPayload(walletName) {
+    const name = String(walletName || '').trim();
+    return {
+      name,
+      address: '',
+      remark: getSpeechWatchAlias(name) || ''
+    };
+  }
+
+  function buildWalletTradeEventText(trade, action, walletPayload, amountUnit) {
+    const walletName = walletPayload.remark || walletPayload.name || '关注钱包';
+    const actionLabel = getTradeEventActionLabel(action) || String(trade?.action || '').trim() || '操作';
+    const amount = String(trade?.amount || '').trim();
+    const token = String(trade?.token || '').trim() || shortAddress(trade?.mint || '') || '这个代币';
+    const assetText = [amount, amountUnit, token].filter(Boolean).join(' ') || token;
+    return `${walletName} ${actionLabel} ${assetText}`.trim();
+  }
+
+  function buildWalletTradeSignalEvent(trade) {
+    if (!trade) return null;
+    const action = normalizeTradeEventAction(trade.action || '');
+    const chain = normalizeChainName(trade.chain);
+    const ca = String(trade.mint || '').trim();
+    const symbol = String(trade.token || '').trim();
+    if (!action || !chain || !ca || !symbol) return null;
+
+    const wallet = buildSignalWalletPayload(trade.wallet);
+    const amount = String(trade.amount || '').trim();
+    const amountUnit = amount ? getWatchedTradeQuoteAsset(chain) : '';
+    return {
+      source: getSignalEventSource(),
+      type: 'wallet_trade',
+      ts: trade.timeMs || Date.now(),
+      chain,
+      ca,
+      symbol,
+      token_name: symbol,
+      wallet,
+      action,
+      amount,
+      amount_unit: amountUnit,
+      mcap: normalizeSignalEventMcap(trade.mcap),
+      text: buildWalletTradeEventText(trade, action, wallet, amountUnit),
+      url: buildSignalEventUrl(trade.href, chain, ca),
+      raw: {
+        from: `${getSignalEventSource()}-extension`,
+        stable_key: trade.stableKey || '',
+        inferred_time: !!trade.inferredTime,
+        original_action: String(trade.action || '').trim()
+      }
+    };
+  }
+
+  function buildConvergenceAlertSignalEvent(alert, extra = {}) {
+    if (!alert) return null;
+    const chain = normalizeChainName(alert.chain);
+    const ca = String(alert.mint || '').trim();
+    const symbol = String(alert.token || '').trim();
+    if (!chain || !ca || !symbol) return null;
+
+    const effectiveCount = Number(alert.effectiveCount || alert.walletCount || 0);
+    const closedCount = Number(alert.closedCount || 0);
+    return {
+      source: getSignalEventSource(),
+      type: 'convergence_alert',
+      ts: alert.latestTradeTimeMs || alert.updatedAt || Date.now(),
+      chain,
+      ca,
+      symbol,
+      action: 'alert',
+      mcap: normalizeSignalEventMcap(alert.mcap),
+      text: `${symbol} ${effectiveCount} 个关注钱包聚合买入`,
+      url: buildSignalEventUrl('', chain, ca),
+      raw: {
+        buy_wallet_count: effectiveCount,
+        sell_wallet_count: closedCount,
+        closed_wallet_count: closedCount,
+        wallet_count: Number(alert.walletCount || effectiveCount),
+        threshold: Number.isFinite(Number(extra.requiredWallets)) ? Number(extra.requiredWallets) : config.minWallets,
+        priority_wallet_hit: extra.hasPriorityWallet === true,
+        group_key: getAlertGroupKey(alert),
+        wallets: Array.isArray(alert.wallets) ? alert.wallets.map((wallet) => wallet && wallet.name).filter(Boolean) : []
+      }
+    };
+  }
+
+  async function dispatchSignalEvent(payload) {
+    if (!payload) return;
+    if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) return;
+    try {
+      const result = await chrome.runtime.sendMessage({
+        type: DISPATCH_GMGN_SIGNAL_EVENT_MESSAGE,
+        payload
+      });
+      if (!result || result.ok || result.skipped) return;
+      if (shouldLogScanDebug()) {
+        aggregateDebugLog('signal event dispatch failed.', {
+          eventType: payload.type,
+          status: result.status,
+          error: result.error || result.statusText || ''
+        });
+      }
+    } catch (error) {
+      if (shouldLogScanDebug()) {
+        aggregateDebugLog('signal event dispatch exception.', {
+          eventType: payload.type,
+          error: error && error.message ? error.message : String(error)
+        });
+      }
+    }
+  }
+
+  function isCurrencyAmountText(value) {
+    return /^[\$￥]\s*[\d.,]+(?:[KMBkmb])?$/i.test(String(value || '').trim());
+  }
+
   function buildWatchedTradeSpeechText(trade) {
     const rawWalletName = (trade && trade.wallet) ? trade.wallet.trim() : '';
     const walletName = sanitizeSpeechName(getSpeechWatchAlias(rawWalletName))
@@ -968,10 +1718,12 @@
       || '关注钱包';
     const verb = normalizeWatchedTradeVerb(trade);
     const amountText = trade && trade.amount ? String(trade.amount).trim() : '';
-    const quoteAsset = getWatchedTradeQuoteAsset(trade && trade.chain);
+    const quoteAsset = isCurrencyAmountText(amountText) ? '' : getWatchedTradeQuoteAsset(trade && trade.chain);
     const tokenText = trade && trade.token ? String(trade.token).trim() : '';
     const assetText = [amountText, quoteAsset, tokenText].filter(Boolean).join(' ') || tokenText || '这个代币';
-    return `${walletName}，${verb} ${assetText}`;
+    const mcapText = normalizeSignalEventMcap(trade && trade.mcap);
+    const mcapSpeech = mcapText ? `，市值 ${mcapText}` : '';
+    return `${walletName}，${verb} ${assetText}${mcapSpeech}`;
   }
 
   function buildWatchedTradeSpeechKey(trade) {
@@ -989,23 +1741,48 @@
   function isRecentEnoughForWatchedTradeSpeech(trade, now = Date.now()) {
     if (!trade) return false;
     const secondsMatch = /^(\d+)s$/.exec(String(trade.timeAgo || '').trim());
-    if (!secondsMatch) return false;
-    const ageSeconds = Number(secondsMatch[1]);
-    if (!Number.isFinite(ageSeconds) || ageSeconds < 0 || ageSeconds > 10) return false;
     if (!trade.timeMs) return false;
     const ageMs = now - trade.timeMs;
-    return ageMs >= 0 && ageMs <= WATCHED_TRADE_TTS_MAX_AGE_MS;
+    if (secondsMatch) {
+      const ageSeconds = Number(secondsMatch[1]);
+      if (!Number.isFinite(ageSeconds) || ageSeconds < 0 || ageSeconds > 10) return false;
+      return ageMs >= 0 && ageMs <= WATCHED_TRADE_TTS_MAX_AGE_MS;
+    }
+    if (trade.inferredTime && !trade.timeAgo) {
+      return ageMs >= 0 && ageMs <= WATCHED_TRADE_TTS_MAX_AGE_MS;
+    }
+    return false;
   }
 
   function flushWatchedTradeAnnouncements(trades) {
     if (!Array.isArray(trades) || trades.length === 0) return;
     const now = Date.now();
+    const skippedSamples = [];
     for (const trade of trades) {
-      if (!isRecentEnoughForWatchedTradeSpeech(trade, now)) continue;
+      if (!isRecentEnoughForWatchedTradeSpeech(trade, now)) {
+        if (skippedSamples.length < 5) {
+          skippedSamples.push({
+            ...describeTradeForDebug(trade),
+            ageMs: trade && trade.timeMs ? now - trade.timeMs : null
+          });
+        }
+        continue;
+      }
       const speechKey = buildWatchedTradeSpeechKey(trade);
       if (hasSpokenWatchedTradeRecently(speechKey, now)) continue;
       markWatchedTradeSpoken(speechKey, now);
+      aggregateDebugLog('watched trade queued for TTS.', {
+        ...describeTradeForDebug(trade),
+        speechKey,
+        ageMs: now - trade.timeMs
+      });
       queueWatchedTradeSpeech(trade);
+    }
+    if (skippedSamples.length && shouldLogScanDebug()) {
+      aggregateDebugLog('watched trade skipped by recency gate.', {
+        maxAgeMs: WATCHED_TRADE_TTS_MAX_AGE_MS,
+        samples: skippedSamples
+      });
     }
   }
 
@@ -1062,7 +1839,7 @@
   }
 
   function extractLine2Segments(line2, tradeAge) {
-    const normalizedTradeAge = String(tradeAge || '').trim();
+    const normalizedTradeAge = normalizeTradeAgeText(tradeAge);
     const segments = [];
     let sawMarketCap = false;
 
@@ -1085,11 +1862,8 @@
           break;
         }
         if (sawMarketCap) break;
-        if (normalizedTradeAge && text === normalizedTradeAge) {
-          textNode = walker.nextNode();
-          continue;
-        }
-        if (/^\d+[smhd]$/.test(text)) {
+        const normalizedSegmentAge = normalizeTradeAgeText(text);
+        if ((normalizedTradeAge && normalizedSegmentAge === normalizedTradeAge) || normalizedSegmentAge) {
           textNode = walker.nextNode();
           continue;
         }
@@ -1109,8 +1883,8 @@
       const text = child.textContent.replace(/\s+/g, ' ').trim();
       if (!text) continue;
       if (/^MC\b/i.test(text) || /^MC[:\s]*[\$￥]?[\d.]+[KMBkmb]?$/i.test(text)) break;
-      if (normalizedTradeAge && text === normalizedTradeAge) continue;
-      if (/^\d+[smhd]$/.test(text)) continue;
+      const normalizedSegmentAge = normalizeTradeAgeText(text);
+      if ((normalizedTradeAge && normalizedSegmentAge === normalizedTradeAge) || normalizedSegmentAge) continue;
       if (segments[segments.length - 1] !== text) {
         segments.push(text);
       }
@@ -1134,6 +1908,172 @@
     return text;
   }
 
+  function normalizeTradeAmountText(value) {
+    const text = String(value || '').replace(/\s+/g, '').trim();
+    if (!text) return '';
+    if (/^[\$￥]?\d[\d.,]*(?:[KMBkmb])?$/.test(text)) {
+      return text;
+    }
+    return '';
+  }
+
+  function splitTradeAmountAndToken(headPart) {
+    const text = String(headPart || '').trim();
+    if (!text) {
+      return { amount: '', tokenSymbol: '' };
+    }
+
+    const currencyPrefixMatch = text.match(/^((?:[\$￥]\s*)\d[\d.,]*(?:[KMBkmb])?)\s*(.+)$/);
+    if (currencyPrefixMatch) {
+      return {
+        amount: normalizeTradeAmountText(currencyPrefixMatch[1]),
+        tokenSymbol: currencyPrefixMatch[2].trim()
+      };
+    }
+
+    const spacedAmountMatch = text.match(/^(\d[\d.,]*(?:[KMBkmb])?)\s+(.+)$/);
+    if (spacedAmountMatch) {
+      return {
+        amount: normalizeTradeAmountText(spacedAmountMatch[1]),
+        tokenSymbol: spacedAmountMatch[2].trim()
+      };
+    }
+
+    return { amount: '', tokenSymbol: text };
+  }
+
+  function splitCompactAmountAndToken(headPart) {
+    const text = String(headPart || '').trim();
+    if (!text) return { amount: '', tokenSymbol: '' };
+
+    const compactMatch = text.match(/^((?:[\$￥]\s*)?\d[\d.,]*)(.+)$/);
+    if (!compactMatch) return { amount: '', tokenSymbol: text };
+    return {
+      amount: normalizeTradeAmountText(compactMatch[1]),
+      tokenSymbol: compactMatch[2].trim()
+    };
+  }
+
+  function sanitizeFallbackWalletName(value) {
+    return String(value || '')
+      .replace(/\s+/g, ' ')
+      .replace(/^[☆★\s]+/, '')
+      .trim();
+  }
+
+  function extractFallbackWalletNameFromText(text) {
+    const source = String(text || '').replace(/\s+/g, ' ').trim();
+    const actionMatch = source.match(TRADE_ACTION_RE);
+    if (!actionMatch) return '';
+    return sanitizeFallbackWalletName(source.slice(0, actionMatch.index));
+  }
+
+  function stripLeadingActionMeta(value) {
+    return String(value || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/^[+\-−]?\s*\d+(?:\.\d+)?%\s*/, '')
+      .trim();
+  }
+
+  function parseTradeRowFromText(row, baseInfo = {}) {
+    const fullText = compactDebugText(row, 1000);
+    if (!fullText) return null;
+
+    const mcMatch = fullText.match(/\bMC\b[:\s]*[\$￥]?([\d.]+[KMBkmb]?)/);
+    const mcap = mcMatch ? '$' + mcMatch[1] : '';
+    const beforeMcap = mcMatch ? fullText.slice(0, fullText.indexOf(mcMatch[0])).trim() : fullText;
+    const actionMatch = beforeMcap.match(TRADE_ACTION_RE);
+    if (!actionMatch) return null;
+
+    const wallet = sanitizeFallbackWalletName(beforeMcap.slice(0, actionMatch.index));
+    if (!wallet) return null;
+
+    const action = actionMatch[1];
+    const isBuy = isBuyAction(action);
+    let tail = stripLeadingActionMeta(beforeMcap.slice(actionMatch.index + action.length));
+
+    let timeAgo = '';
+    const leadingAge = tail.match(/^(\d+\s*(?:[smhdSMHD]|\u79d2|\u79d2\u949f|\u5206|\u5206\u949f|\u65f6|\u5c0f\u65f6|\u5929|\u65e5))\s*/);
+    if (leadingAge) {
+      timeAgo = normalizeTradeAgeText(leadingAge[1]);
+      tail = tail.slice(leadingAge[0].length).trim();
+    }
+
+    const strippedTail = stripTrailingTradeAgeText(tail);
+    const tradeAge = strippedTail.age;
+    const headPart = strippedTail.text;
+
+    let parsedHead = splitTradeAmountAndToken(headPart);
+    if (!parsedHead.amount && parsedHead.tokenSymbol === headPart) {
+      parsedHead = splitCompactAmountAndToken(headPart);
+    }
+
+    const amount = parsedHead.amount || '';
+    const tokenSymbol = stripInlineSvgPrefixTokenText(parsedHead.tokenSymbol || headPart, row);
+    if (!tokenSymbol) return null;
+
+    const chain = baseInfo.chain || getLocationChainHint();
+    const mint = baseInfo.mint || '';
+    const href = baseInfo.href || '';
+    const platform = detectPlatform(mint, chain, '');
+    const stableFingerprint = `${wallet}|${action}|${headPart}`;
+    const observedKey = buildObservedTradeKey({
+      chain,
+      mint,
+      token: tokenSymbol,
+      wallet,
+      action,
+      amount,
+      fingerprint: stableFingerprint
+    });
+    const timeInfo = resolveTradeTimeInfo(timeAgo, observedKey);
+    const walletAvatar = row.querySelector('img')?.src || '';
+    let tokenLogo = '';
+    row.querySelectorAll('img').forEach(img => {
+      const src = img.src || '';
+      if (!tokenLogo && !src.includes('/icons/icon_')) tokenLogo = src;
+    });
+
+    if (mint) {
+      const existing = tokenMeta.get(mint) || {};
+      tokenMeta.set(mint, {
+        chain: chain || existing.chain,
+        symbol: tokenSymbol || existing.symbol,
+        logo: tokenLogo || existing.logo
+      });
+    }
+
+    return {
+      wallet,
+      walletAvatar,
+      action,
+      isBuy,
+      token: tokenSymbol,
+      mint,
+      chain,
+      amount,
+      mcap,
+      timeAgo: timeInfo.timeAgo,
+      tradeAge,
+      timeMs: timeInfo.timeMs,
+      inferredTime: timeInfo.inferredTime,
+      tokenLogo,
+      href,
+      platform,
+      stableKey: buildStableTradeKey({
+        chain,
+        mint,
+        token: tokenSymbol,
+        wallet,
+        action,
+        amount,
+        fingerprint: stableFingerprint,
+        timeMs: timeInfo.timeMs
+      })
+    };
+  }
+
   function parseTradeRow(row) {
     if (!row || !row.querySelector) return null;
     const anchors = Array.from(row.querySelectorAll('a[href]'));
@@ -1146,27 +2086,30 @@
     const href = tokenLink.href || a.getAttribute('href') || '';
     const chain = tokenLink.chain || getLocationChainHint();
     const mint = tokenLink.mint || '';
+    const fallbackInfo = { href, chain, mint };
 
     // 钱包名：第一个 .text-yellow-100 的 AutoTruncateText
     const walletEl = a.querySelector('.text-yellow-100[data-sentry-component="AutoTruncateText"]')
       || a.querySelector('[data-sentry-component="AutoTruncateText"]');
-    const wallet = walletEl ? walletEl.textContent.trim() : '';
-    if (!wallet) return null;
+    const wallet = walletEl
+      ? walletEl.textContent.trim()
+      : extractFallbackWalletNameFromText(row.textContent || a.textContent || '');
+    if (!wallet) return parseTradeRowFromText(row, fallbackInfo);
 
     // 第一行：动作 + 涨跌 + 时间
     const line1 = a.children[0];
     const line2 = a.children[1];
-    if (!line1 || !line2) return null;
+    if (!line1 || !line2) return parseTradeRowFromText(row, fallbackInfo);
 
     // 动作：含 清仓/加仓/建仓/减仓/买入/卖出
     let action = '';
     let isBuy = false;
     line1.querySelectorAll('.whitespace-nowrap').forEach(el => {
       const t = el.textContent.trim();
-      if (!action && /(清仓|加仓|建仓|减仓|买入|卖出)/.test(t)) action = t;
+      if (!action && TRADE_ACTION_RE.test(t)) action = t;
     });
     if (!action) {
-      const actionMatch = line1.textContent.replace(/\s+/g, ' ').match(/(清仓|加仓|建仓|减仓|买入|卖出)/);
+      const actionMatch = line1.textContent.replace(/\s+/g, ' ').match(TRADE_ACTION_RE);
       if (actionMatch) action = actionMatch[1];
     }
     if (isBuyAction(action)) isBuy = true;
@@ -1176,17 +2119,18 @@
     let timeAgo = '';
     timeEls.forEach(el => {
       const t = el.textContent.trim();
-      if (/^\d+[smhd]$/.test(t.replace(/\s/g, ''))) timeAgo = t.replace(/\s/g, '');
+      const normalizedAge = normalizeTradeAgeText(t);
+      if (normalizedAge) timeAgo = normalizedAge;
     });
     if (!timeAgo) {
       // 兜底：line1 里找 \d+[smhd] 模式
       const txt = line1.textContent.replace(/\s+/g, ' ');
-      const tm = txt.match(/(\d+)\s*([smhd])\b/);
-      if (tm) timeAgo = tm[1] + tm[2];
+      const tm = txt.match(/(\d+)\s*([smhdSMHD]|\u79d2|\u79d2\u949f|\u5206|\u5206\u949f|\u65f6|\u5c0f\u65f6|\u5929|\u65e5)(?=\s|$)/);
+      if (tm) timeAgo = normalizeTradeAgeText(tm[0]);
     }
     const line1StableText = line1.textContent
       .replace(/\s+/g, ' ')
-      .replace(/(\d+)\s*([smhd])\b/g, '')
+      .replace(/(\d+)\s*([smhdSMHD]|\u79d2|\u79d2\u949f|\u5206|\u5206\u949f|\u65f6|\u5c0f\u65f6|\u5929|\u65e5)(?=\s|$)/g, '')
       .trim();
 
     // line2: <amount><tokenSymbol><tradeAge> MC:$<mcap>
@@ -1198,41 +2142,40 @@
     let headPart = mcMatch ? line2Text.substring(0, line2Text.indexOf(mcMatch[0])).trim() : line2Text;
     // **先剥掉末尾的时间** (\d+[smhd]) — 否则会被当成 token 名的一部分
     let tradeAge = '';
-    const tmTail = headPart.match(/(\d+[smhd])\s*$/);
-    if (tmTail) {
-      tradeAge = tmTail[1];
-      headPart = headPart.substring(0, headPart.length - tmTail[0].length).trim();
-    }
+    const strippedHeadPart = stripTrailingTradeAgeText(headPart);
+    tradeAge = strippedHeadPart.age;
+    headPart = strippedHeadPart.text;
     const line2Segments = extractLine2Segments(line2, tradeAge);
 
     // headPart 现在只剩 "<amount><tokenSymbol>"
     let amount = '', tokenSymbol = '';
-    if (line2Segments.length >= 2 && /^[\d.,]+$/.test(line2Segments[0])) {
-      amount = line2Segments[0];
+    const firstSegmentAmount = normalizeTradeAmountText(line2Segments[0]);
+    if (line2Segments.length >= 2 && firstSegmentAmount) {
+      amount = firstSegmentAmount;
       tokenSymbol = line2Segments.slice(1).join(' ').trim();
     } else {
-      const spacedAmountMatch = headPart.match(/^([\d.,]+)\s+(.+)$/);
-      if (spacedAmountMatch) {
-        amount = spacedAmountMatch[1];
-        tokenSymbol = spacedAmountMatch[2].trim();
-      } else {
-        const am = headPart.match(/^([\d.,]+)/);
-        if (am) {
-          amount = am[1];
-          tokenSymbol = headPart.substring(am[1].length).trim();
-        } else {
-          tokenSymbol = headPart;
-        }
-      }
+      const parsedHead = splitTradeAmountAndToken(headPart);
+      amount = parsedHead.amount;
+      tokenSymbol = parsedHead.tokenSymbol;
     }
     if (!tokenSymbol) {
       amount = '';
       tokenSymbol = headPart;
     }
 
-    // 把时间 "2h" 转成稳定的事件毫秒时间，避免每次重扫轻微漂移
     tokenSymbol = stripInlineSvgPrefixTokenText(tokenSymbol, line2);
-    const timeMs = deriveStableTradeTimeMs(timeAgo);
+    const platform = detectPlatform(mint, chain, '');
+    const stableFingerprint = `${line1StableText}|${headPart}`;
+    const observedKey = buildObservedTradeKey({
+      chain,
+      mint,
+      token: tokenSymbol,
+      wallet,
+      action,
+      amount,
+      fingerprint: stableFingerprint
+    });
+    const timeInfo = resolveTradeTimeInfo(timeAgo, observedKey);
 
     // 钱包头像 = line 1 里第一个 <img>
     const walletAvatar = line1.querySelector('img')?.src || '';
@@ -1253,10 +2196,6 @@
       });
     }
 
-    // gmgn 没有显式的 dex 字段，靠 mint 后缀检测平台（BSC 的 four.meme 暂时识别不到）
-    const platform = detectPlatform(mint, chain, '');
-    const stableFingerprint = `${line1StableText}|${headPart}`;
-
     return {
       wallet,
       walletAvatar,
@@ -1267,9 +2206,10 @@
       chain,
       amount,
       mcap,
-      timeAgo,
+      timeAgo: timeInfo.timeAgo,
       tradeAge,
-      timeMs,
+      timeMs: timeInfo.timeMs,
+      inferredTime: timeInfo.inferredTime,
       tokenLogo,
       href,
       platform,
@@ -1281,7 +2221,7 @@
         action,
         amount,
         fingerprint: stableFingerprint,
-        timeMs
+        timeMs: timeInfo.timeMs
       })
     };
   }
@@ -1292,9 +2232,614 @@
     panelCount: 0,
     activeTrackingPanels: 0,
     rowCount: 0,
+    parsedRows: 0,
+    parseMisses: 0,
+    parseErrors: 0,
+    rowsRootMissing: 0,
+    duplicateSkips: 0,
+    unclassifiedActions: 0,
+    added: 0,
     panelsOff: 0,            // 在非追踪 tab 的面板
     error: ''
   };
+
+  function isDebotHost() {
+    return /(^|\.)debot\.ai$/i.test(location.hostname || '');
+  }
+
+  function isDebotMonitorWindowPage() {
+    return isDebotHost() && !/^\/likwid(?:\/|$)/i.test(location.pathname || '');
+  }
+
+  function getDebotRequestId() {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+      return crypto.randomUUID();
+    }
+    return `gcp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function buildDebotTrackTransactionsUrl() {
+    const params = new URLSearchParams();
+    params.set('request_id', getDebotRequestId());
+    params.set('next', '');
+    DEBOT_TRACK_CHAINS.forEach((chain) => params.append('chains', chain));
+    params.append('op', 'buy');
+    params.append('op', 'sell');
+    return `${DEBOT_TRACK_API_PATH}?${params.toString()}`;
+  }
+
+  function normalizeDebotAddress(value) {
+    const address = String(value || '').trim();
+    if (/^0x[a-f0-9]{40}$/i.test(address)) return address.toLowerCase();
+    return address;
+  }
+
+  function shortAddress(value) {
+    const address = String(value || '').trim();
+    if (!address) return '';
+    if (address.length <= 10) return address;
+    return `${address.slice(0, 4)}...${address.slice(-4)}`;
+  }
+
+  function rememberDebotWallet(address, info = {}) {
+    const key = normalizeDebotAddress(address);
+    if (!key) return;
+    const existing = debotWalletNameByAddress.get(key) || {};
+    debotWalletNameByAddress.set(key, {
+      ...existing,
+      ...info,
+      name: info.name || existing.name || shortAddress(key)
+    });
+  }
+
+  function rememberDebotToken(mint, info = {}) {
+    const key = normalizeDebotTokenAddress(mint);
+    if (!key) return;
+    const existing = debotTokenDomMetaByMint.get(key) || {};
+    debotTokenDomMetaByMint.set(key, {
+      ...existing,
+      ...info
+    });
+  }
+
+  function normalizeDebotTimestamp(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+    return numeric > 1e12 ? Math.round(numeric) : Math.round(numeric * 1000);
+  }
+
+  function parseDebotDateTime(value) {
+    const text = String(value || '').trim();
+    const match = text.match(/^(\d{2})\/(\d{2})\s+(\d{2}):(\d{2})(?::(\d{2}))?$/);
+    if (!match) return 0;
+    const now = new Date();
+    const year = now.getFullYear();
+    const date = new Date(
+      year,
+      Number(match[1]) - 1,
+      Number(match[2]),
+      Number(match[3]),
+      Number(match[4]),
+      Number(match[5] || 0)
+    );
+    const timeMs = date.getTime();
+    if (!Number.isFinite(timeMs)) return 0;
+    if (timeMs - now.getTime() > 24 * 60 * 60 * 1000) {
+      date.setFullYear(year - 1);
+      return date.getTime();
+    }
+    return timeMs;
+  }
+
+  function formatTradeAgeFromTimeMs(timeMs, now = Date.now()) {
+    const ageMs = Math.max(0, now - (timeMs || now));
+    if (ageMs < 60 * 1000) return `${Math.max(0, Math.round(ageMs / 1000))}s`;
+    if (ageMs < 60 * 60 * 1000) return `${Math.floor(ageMs / (60 * 1000))}m`;
+    if (ageMs < 24 * 60 * 60 * 1000) return `${Math.floor(ageMs / (60 * 60 * 1000))}h`;
+    return `${Math.floor(ageMs / (24 * 60 * 60 * 1000))}d`;
+  }
+
+  function formatDebotAmount(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric === 0) return '';
+    const abs = Math.abs(numeric);
+    if (abs >= 100) return String(Math.round(abs * 100) / 100);
+    if (abs >= 1) return String(Math.round(abs * 1000) / 1000);
+    return String(Math.round(abs * 1000000) / 1000000).replace(/0+$/, '').replace(/\.$/, '');
+  }
+
+  function formatUsdCompact(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) return '';
+    const units = [
+      { suffix: 'B', value: 1e9 },
+      { suffix: 'M', value: 1e6 },
+      { suffix: 'K', value: 1e3 }
+    ];
+    for (const unit of units) {
+      if (numeric >= unit.value) {
+        const scaled = numeric / unit.value;
+        return `$${scaled >= 100 ? Math.round(scaled) : Math.round(scaled * 10) / 10}${unit.suffix}`;
+      }
+    }
+    return `$${Math.round(numeric * 100) / 100}`;
+  }
+
+  function getDebotActionLabel(rowOrAction) {
+    const row = rowOrAction && typeof rowOrAction === 'object' ? rowOrAction : {};
+    const action = typeof rowOrAction === 'string' ? rowOrAction : (row.position_action || row.op || '');
+    const normalized = String(action || '').toLowerCase();
+    if (normalized === 'open') return '\u5efa\u4ed3';
+    if (normalized === 'add') return '\u52a0\u4ed3';
+    if (normalized === 'reduce') return '\u51cf\u4ed3';
+    if (normalized === 'close') return '\u6e05\u4ed3';
+    if (normalized === 'buy') return '\u4e70\u5165';
+    if (normalized === 'sell') return '\u5356\u51fa';
+    return String(action || '');
+  }
+
+  function findDebotNestedWalletInfo(value) {
+    if (!value || typeof value !== 'object') return null;
+    if (value.alias || value.remark || value.twitter_name || value.twitter_handle || value.avatar_url) {
+      return value;
+    }
+    for (const nested of Object.values(value)) {
+      const found = findDebotNestedWalletInfo(nested);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function getDebotWalletMeta(walletMeta, address) {
+    const key = normalizeDebotAddress(address);
+    if (!key || !walletMeta || typeof walletMeta !== 'object') return null;
+    const direct = walletMeta[key] || walletMeta[address];
+    const directInfo = findDebotNestedWalletInfo(direct);
+    if (directInfo) return directInfo;
+
+    for (const [candidateAddress, candidateInfo] of Object.entries(walletMeta)) {
+      if (normalizeDebotAddress(candidateAddress) !== key) continue;
+      return findDebotNestedWalletInfo(candidateInfo);
+    }
+    return null;
+  }
+
+  function getDebotWalletDisplay(row, meta) {
+    const address = row?.trader || row?.from || row?.to || '';
+    const key = normalizeDebotAddress(address);
+    const domInfo = debotWalletNameByAddress.get(key);
+    const walletInfo = getDebotWalletMeta(meta?.wallet, address);
+    const name = domInfo?.name
+      || walletInfo?.alias
+      || walletInfo?.remark
+      || walletInfo?.twitter_name
+      || walletInfo?.twitter_handle
+      || shortAddress(address);
+    const avatar = domInfo?.avatar || walletInfo?.avatar_url || '';
+    return { name, avatar, address };
+  }
+
+  function getDebotTokenMarketCap(row, tokenInfo, domInfo) {
+    const directValue = tokenInfo?.market_cap
+      || tokenInfo?.marketCap
+      || tokenInfo?.mcap
+      || domInfo?.mcap;
+    if (typeof directValue === 'string' && directValue.trim()) {
+      return directValue.trim().startsWith('$') ? directValue.trim() : `$${directValue.trim()}`;
+    }
+    if (Number.isFinite(Number(directValue))) {
+      return formatUsdCompact(Number(directValue));
+    }
+
+    const price = Number(row?.price);
+    const supply = Number(tokenInfo?.total_supply);
+    const decimals = Number(tokenInfo?.decimals);
+    if (!Number.isFinite(price) || !Number.isFinite(supply) || supply <= 0) return '';
+    const adjustedSupply = Number.isFinite(decimals) && decimals > 0 && supply > 1e12
+      ? supply / Math.pow(10, decimals)
+      : supply;
+    return formatUsdCompact(adjustedSupply * price);
+  }
+
+  function convertDebotTransactionToTrade(row, meta = {}) {
+    if (!row || typeof row !== 'object') return null;
+    const chain = normalizeChainName(row.chain);
+    const mint = normalizeDebotTokenAddress(row.token || row.address || '');
+    if (!chain || !mint) return null;
+
+    const domInfo = debotTokenDomMetaByMint.get(mint) || {};
+    const tokenInfo = meta?.token?.[mint] || meta?.token?.[row.token] || {};
+    const walletDisplay = getDebotWalletDisplay(row, meta);
+    if (!walletDisplay.name) return null;
+
+    const action = getDebotActionLabel(row);
+    const isBuy = String(row.op || '').toLowerCase() === 'buy' || isBuyAction(action);
+    const timeMs = normalizeDebotTimestamp(row.time) || Date.now();
+    const tokenSymbol = tokenInfo.symbol || domInfo.symbol || tokenInfo.name || domInfo.name || shortAddress(mint);
+    const tokenLogo = tokenInfo.logo || domInfo.tokenLogo || '';
+    const launchpad = tokenInfo.launchpad || tokenInfo.platform || tokenInfo.dex || '';
+    const amount = formatDebotAmount(row.base_token_amount);
+    const mcap = getDebotTokenMarketCap(row, tokenInfo, domInfo);
+    const stableFingerprint = row.uuid || row.tx || `${row.op || ''}|${row.log_index || ''}|${row.amount || ''}|${row.volume || ''}`;
+
+    if (walletDisplay.address) {
+      rememberDebotWallet(walletDisplay.address, {
+        name: walletDisplay.name,
+        avatar: walletDisplay.avatar
+      });
+    }
+    rememberDebotToken(mint, {
+      symbol: tokenSymbol,
+      tokenLogo,
+      mcap
+    });
+    tokenMeta.set(mint, {
+      chain,
+      symbol: tokenSymbol,
+      logo: tokenLogo
+    });
+
+    return {
+      wallet: walletDisplay.name,
+      walletAvatar: walletDisplay.avatar,
+      action,
+      isBuy,
+      token: tokenSymbol,
+      mint,
+      chain,
+      amount,
+      mcap,
+      timeAgo: formatTradeAgeFromTimeMs(timeMs),
+      tradeAge: '',
+      timeMs,
+      inferredTime: false,
+      tokenLogo,
+      href: buildDebotTokenUrl(chain, mint),
+      platform: detectPlatform(mint, chain, launchpad),
+      stableKey: buildStableTradeKey({
+        chain,
+        mint,
+        token: tokenSymbol,
+        wallet: walletDisplay.address || walletDisplay.name,
+        action,
+        amount,
+        fingerprint: stableFingerprint,
+        timeMs
+      })
+    };
+  }
+
+  function getDebotAddressFromHref(rawHref) {
+    try {
+      const parsed = new URL(String(rawHref || ''), location.href);
+      const match = parsed.pathname.match(/\/address\/([^/]+)\/([^/?#]+)/i);
+      return match ? decodeURIComponent(match[2] || '') : '';
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function extractDebotDomTokenSymbol(text, chain) {
+    const chainWord = chain === 'sol' ? 'solana' : chain === 'eth' ? '(?:ethereum|eth)' : chain;
+    if (!chainWord) return '';
+    const re = new RegExp(`\\b${chainWord}\\b\\s+(.+?)(?:\\s+(?:Pump\\.fun|Four\\.Meme|PancakeSwap|Raydium|Meteora|Uniswap)|\\s+\\d{2}\\/\\d{2}|\\s+\\d{4}\\/|\\s+市值|$)`, 'i');
+    const match = String(text || '').match(re);
+    return match ? match[1].trim() : '';
+  }
+
+  function parseDebotDomTradeText(text) {
+    const source = String(text || '').replace(/\s+/g, ' ').trim();
+    const actionMatch = source.match(/(建仓|加仓|买入|减仓|卖出|清仓)/);
+    if (!actionMatch) return null;
+
+    const wallet = source.slice(0, actionMatch.index)
+      .replace(/\baddress_avatar\b/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!wallet) return null;
+
+    const action = actionMatch[1];
+    const mcapMatch = source.match(/市值\s*\$?\s*([\d.,]+[KMB]?)/i);
+    const beforeMcap = mcapMatch
+      ? source.slice(0, source.indexOf(mcapMatch[0])).trim()
+      : source;
+    let tail = beforeMcap.slice(actionMatch.index + action.length).trim();
+    tail = stripLeadingActionMeta(tail);
+
+    let timeAgo = '';
+    const leadingAge = tail.match(/^(\d+\s*(?:[smhdSMHD]|\u79d2|\u79d2\u949f|\u5206|\u5206\u949f|\u65f6|\u5c0f\u65f6|\u5929|\u65e5))\s*/);
+    if (leadingAge) {
+      timeAgo = normalizeTradeAgeText(leadingAge[1]);
+      tail = tail.slice(leadingAge[0].length).trim();
+    }
+
+    const strippedTail = stripTrailingTradeAgeText(tail);
+    const tradeAge = strippedTail.age;
+    let headPart = strippedTail.text;
+    let parsedHead = splitTradeAmountAndToken(headPart);
+    if (!parsedHead.amount && parsedHead.tokenSymbol === headPart) {
+      parsedHead = splitCompactAmountAndToken(headPart);
+    }
+
+    return {
+      wallet,
+      action,
+      amount: parsedHead.amount || '',
+      tokenSymbol: (parsedHead.tokenSymbol || headPart || '').trim(),
+      timeAgo,
+      tradeAge,
+      mcap: mcapMatch ? `$${mcapMatch[1]}` : ''
+    };
+  }
+
+  function parseDebotDomTradeAnchor(anchor) {
+    if (!anchor || !anchor.querySelector) return null;
+    const tokenInfo = parseDebotTokenHref(anchor.getAttribute('href') || anchor.href || '');
+    if (!tokenInfo.mint || !tokenInfo.chain) return null;
+
+    const text = compactDebugText(anchor, 1000);
+    const parsedText = parseDebotDomTradeText(text);
+    if (!parsedText) return null;
+    const wallet = parsedText.wallet;
+
+    const addressAnchor = anchor.querySelector('a[href*="/address/"]');
+    const walletAddress = getDebotAddressFromHref(addressAnchor?.getAttribute('href') || addressAnchor?.href || '');
+    const walletAvatar = anchor.querySelector('img')?.src || '';
+    rememberDebotWallet(walletAddress, { name: wallet, avatar: walletAvatar });
+
+    const timeMatch = text.match(/(\d{2}\/\d{2}\s+\d{2}:\d{2}(?::\d{2})?)/);
+    const absoluteTimeMs = parseDebotDateTime(timeMatch ? timeMatch[1] : '');
+    const observedKey = buildObservedTradeKey({
+      chain: tokenInfo.chain,
+      mint: tokenInfo.mint,
+      token: parsedText.tokenSymbol,
+      wallet: walletAddress || wallet,
+      action: parsedText.action,
+      amount: parsedText.amount,
+      fingerprint: text
+    });
+    const timeInfo = absoluteTimeMs
+      ? { timeAgo: formatTradeAgeFromTimeMs(absoluteTimeMs), timeMs: absoluteTimeMs, inferredTime: false }
+      : resolveTradeTimeInfo(parsedText.timeAgo, observedKey);
+    const tokenSymbol = parsedText.tokenSymbol
+      || extractDebotDomTokenSymbol(text, tokenInfo.chain)
+      || shortAddress(tokenInfo.mint);
+    const action = parsedText.action;
+    const isBuy = isBuyAction(action);
+
+    rememberDebotToken(tokenInfo.mint, {
+      symbol: tokenSymbol,
+      mcap: parsedText.mcap,
+      tokenLogo: ''
+    });
+    tokenMeta.set(tokenInfo.mint, {
+      chain: tokenInfo.chain,
+      symbol: tokenSymbol,
+      logo: ''
+    });
+
+    return {
+      wallet,
+      walletAvatar,
+      action,
+      isBuy,
+      token: tokenSymbol,
+      mint: tokenInfo.mint,
+      chain: tokenInfo.chain,
+      amount: parsedText.amount,
+      mcap: parsedText.mcap,
+      timeAgo: timeInfo.timeAgo,
+      tradeAge: parsedText.tradeAge,
+      timeMs: timeInfo.timeMs,
+      inferredTime: timeInfo.inferredTime,
+      tokenLogo: '',
+      href: buildDebotTokenUrl(tokenInfo.chain, tokenInfo.mint),
+      platform: detectPlatform(tokenInfo.mint, tokenInfo.chain, text),
+      stableKey: buildStableTradeKey({
+        chain: tokenInfo.chain,
+        mint: tokenInfo.mint,
+        token: tokenSymbol,
+        wallet: walletAddress || wallet,
+        action,
+        amount: parsedText.amount,
+        fingerprint: `${walletAddress || wallet}|${action}|${tokenInfo.mint}`,
+        timeMs: timeInfo.timeMs
+      })
+    };
+  }
+
+  function findDebotDomTradeAnchors() {
+    return Array.from(document.querySelectorAll('a[href*="/token/"]'))
+      .filter((anchor) => {
+        if (anchor.closest('#gcp-inline-panel')) return false;
+        const parsed = parseDebotTokenHref(anchor.getAttribute('href') || anchor.href || '');
+        if (!parsed.mint) return false;
+        const text = compactDebugText(anchor, 500);
+        return /(建仓|加仓|买入|减仓|卖出|清仓)/.test(text);
+      });
+  }
+
+  function looksLikeAddressLabel(value) {
+    const text = String(value || '').trim();
+    return /^0x[a-f0-9]{4}\.\.\.[a-f0-9]{4}$/i.test(text)
+      || /^[1-9A-HJ-NP-Za-km-z]{4}\.\.\.[1-9A-HJ-NP-Za-km-z]{4}$/.test(text);
+  }
+
+  function looksLikeTokenFallbackLabel(value) {
+    const text = String(value || '').trim();
+    if (!text) return false;
+    return looksLikeAddressLabel(text)
+      || /^[A-Za-z0-9]{3,10}\.\.\.[A-Za-z0-9]{3,10}$/.test(text);
+  }
+
+  function improveDuplicateTradeRecord(trade) {
+    if (!trade || !trade.stableKey) return;
+    const pools = [buyRecords, sellRecords, closedRecords];
+    for (const pool of pools) {
+      const existing = pool.find((record) => record && record.stableKey === trade.stableKey);
+      if (!existing) continue;
+      if (trade.wallet && existing.wallet !== trade.wallet && looksLikeAddressLabel(existing.wallet)) {
+        existing.wallet = trade.wallet;
+      }
+      if (trade.walletAvatar && !existing.walletAvatar) existing.walletAvatar = trade.walletAvatar;
+      if (trade.amount && !existing.amount) existing.amount = trade.amount;
+      if (trade.mcap && !existing.mcap) existing.mcap = trade.mcap;
+      if (trade.tokenLogo && !existing.tokenLogo) existing.tokenLogo = trade.tokenLogo;
+      if (
+        trade.token
+        && trade.token !== existing.token
+        && looksLikeTokenFallbackLabel(existing.token)
+        && !looksLikeTokenFallbackLabel(trade.token)
+      ) {
+        existing.token = trade.token;
+      }
+      if (trade.mint && !existing.mint) existing.mint = trade.mint;
+      if (trade.chain && !existing.chain) existing.chain = trade.chain;
+      if (trade.href && !existing.href) existing.href = trade.href;
+      if (trade.platform && !existing.platform) existing.platform = trade.platform;
+      return;
+    }
+  }
+
+  function addTradeRecordToPools(trade, watchedTradesToSpeak, canAnnounceWatchedTrades) {
+    if (!trade) return 'miss';
+    if (trade.isBuy) {
+      const key = `B|${trade.stableKey || buildStableTradeKey(trade)}`;
+      if (seenKeys.has(key)) {
+        improveDuplicateTradeRecord(trade);
+        return 'duplicate';
+      }
+      seenKeys.add(key);
+      buyRecords.push(trade);
+      void dispatchSignalEvent(buildWalletTradeSignalEvent(trade));
+      if (canAnnounceWatchedTrades && isTradeStarred(trade)) watchedTradesToSpeak.push(trade);
+      return 'buy';
+    }
+    if (isCloseAction(trade.action)) {
+      const key = `C|${trade.stableKey || buildStableTradeKey(trade)}`;
+      if (seenClosedKeys.has(key)) {
+        improveDuplicateTradeRecord(trade);
+        return 'duplicate';
+      }
+      seenClosedKeys.add(key);
+      closedRecords.push(trade);
+      void dispatchSignalEvent(buildWalletTradeSignalEvent(trade));
+      if (canAnnounceWatchedTrades && isTradeStarred(trade)) watchedTradesToSpeak.push(trade);
+      return 'close';
+    }
+    if (isSellAction(trade.action)) {
+      const key = `S|${trade.stableKey || buildStableTradeKey(trade)}`;
+      if (seenSellKeys.has(key)) {
+        improveDuplicateTradeRecord(trade);
+        return 'duplicate';
+      }
+      seenSellKeys.add(key);
+      sellRecords.push(trade);
+      void dispatchSignalEvent(buildWalletTradeSignalEvent(trade));
+      if (canAnnounceWatchedTrades && isTradeStarred(trade)) watchedTradesToSpeak.push(trade);
+      return 'sell';
+    }
+    return 'unclassified';
+  }
+
+  function ingestDebotTradeRecords(records, source, rowCount) {
+    const trades = Array.isArray(records) ? records.filter(Boolean) : [];
+    const watchedTradesToSpeak = [];
+    const canAnnounceWatchedTrades = watchedTradesPrimed;
+    let added = 0;
+    let duplicateSkips = 0;
+    let unclassifiedActions = 0;
+
+    for (const trade of trades) {
+      const result = addTradeRecordToPools(trade, watchedTradesToSpeak, canAnnounceWatchedTrades);
+      if (result === 'duplicate') duplicateSkips++;
+      else if (result === 'unclassified') unclassifiedActions++;
+      else if (result !== 'miss') added++;
+    }
+
+    lastScanInfo.panelCount = 1;
+    lastScanInfo.activeTrackingPanels = 1;
+    lastScanInfo.panelsOff = 0;
+    lastScanInfo.rowCount = Number.isFinite(rowCount) ? rowCount : trades.length;
+    lastScanInfo.parsedRows = trades.length;
+    lastScanInfo.parseMisses = Math.max(0, lastScanInfo.rowCount - trades.length);
+    lastScanInfo.parseErrors = 0;
+    lastScanInfo.rowsRootMissing = 0;
+    lastScanInfo.duplicateSkips = duplicateSkips;
+    lastScanInfo.unclassifiedActions = unclassifiedActions;
+    lastScanInfo.added = added;
+    lastScanInfo.error = '';
+
+    if ((added > 0 || shouldLogScanDebug()) && trades.length) {
+      aggregateDebugLog('Debot trades ingested.', {
+        source,
+        rowCount: lastScanInfo.rowCount,
+        parsedRows: trades.length,
+        added,
+        duplicateSkips,
+        samples: trades.slice(0, 5).map(describeTradeForDebug)
+      });
+    }
+
+    cleanOldRecords();
+    schedulePublishSharedSnapshot();
+    checkConvergence();
+    flushWatchedTradeAnnouncements(watchedTradesToSpeak);
+    watchedTradesPrimed = true;
+    updateStatus();
+  }
+
+  function normalizeDebotTrackPayload(payload) {
+    if (!payload) return null;
+    if (typeof payload === 'string') {
+      try { return JSON.parse(payload); } catch (e) { return null; }
+    }
+    if (payload.text) {
+      try { return JSON.parse(payload.text); } catch (e) { return null; }
+    }
+    return payload;
+  }
+
+  function handleDebotTrackPayload(payload, source = 'network') {
+    const parsed = normalizeDebotTrackPayload(payload);
+    const transactions = parsed?.data?.transactions;
+    if (!Array.isArray(transactions)) return;
+    const meta = parsed?.data?.meta || {};
+    const trades = transactions.map((row) => convertDebotTransactionToTrade(row, meta)).filter(Boolean);
+    ingestDebotTradeRecords(trades, source, transactions.length);
+  }
+
+  async function maybeFetchDebotTrackTransactions(force = false) {
+    if (!isDebotMonitorWindowPage() || debotApiFetchInFlight) return;
+    const now = Date.now();
+    if (!force && (now - debotLastApiFetchAt) < DEBOT_API_FETCH_MIN_INTERVAL_MS) return;
+    debotApiFetchInFlight = true;
+    debotLastApiFetchAt = now;
+    try {
+      const response = await fetch(buildDebotTrackTransactionsUrl(), {
+        credentials: 'include',
+        cache: 'no-store'
+      });
+      if (!response.ok) throw new Error(`Debot API ${response.status}`);
+      const data = await response.json();
+      handleDebotTrackPayload(data, 'api-fetch');
+    } catch (e) {
+      if (shouldLogScanDebug()) {
+        aggregateDebugLog('Debot API fetch failed.', {
+          error: e && e.message ? e.message : String(e)
+        });
+      }
+    } finally {
+      debotApiFetchInFlight = false;
+    }
+  }
+
+  function scanDebotTrades() {
+    const anchors = findDebotDomTradeAnchors();
+    const trades = anchors.map(parseDebotDomTradeAnchor).filter(Boolean);
+    ingestDebotTradeRecords(trades, 'dom', anchors.length);
+    void maybeFetchDebotTrackTransactions();
+  }
 
   function updateStatus() {
     if (!panelEl) return;
@@ -1317,6 +2862,7 @@
       const parts = [
         `${i.activeTrackingPanels}/${i.panelCount} 个面板在追踪 tab`,
         `当前可见 ${i.rowCount} 行`,
+        `解析 ${i.parsedRows || 0} 行，跳过 ${i.parseMisses || 0} 行，异常 ${i.parseErrors || 0} 行，重复 ${i.duplicateSkips || 0} 行，未知动作 ${i.unclassifiedActions || 0} 行`,
         `池中 ${buys} 笔买入${sells ? ' / ' + sells + ' 笔卖出' : ''}${closes ? ' / ' + closes + ' 笔清仓' : ''}`,
       ];
       title = parts.join('\n');
@@ -1341,6 +2887,16 @@
 
   function scanTrades() {
     if (!followModeActive || !isMonitorWindowPage()) {
+      if (shouldLogScanDebug()) {
+        aggregateDebugLog('scan skipped.', buildScanDebugSnapshot({
+          reason: !followModeActive ? 'follow-mode-inactive' : 'not-monitor-page'
+        }));
+      }
+      return;
+    }
+
+    if (isDebotMonitorWindowPage()) {
+      scanDebotTrades();
       return;
     }
 
@@ -1348,10 +2904,22 @@
     lastScanInfo.panelCount = all.length;
     lastScanInfo.activeTrackingPanels = all.filter(p => p.isOnTracking).length;
     lastScanInfo.panelsOff = all.length - lastScanInfo.activeTrackingPanels;
+    lastScanInfo.parsedRows = 0;
+    lastScanInfo.parseMisses = 0;
+    lastScanInfo.parseErrors = 0;
+    lastScanInfo.rowsRootMissing = 0;
+    lastScanInfo.duplicateSkips = 0;
+    lastScanInfo.unclassifiedActions = 0;
+    lastScanInfo.added = 0;
 
     if (all.length === 0) {
       lastScanInfo.rowCount = 0;
       lastScanInfo.error = '没找到钱包追踪面板';
+      if (shouldLogScanDebug()) {
+        aggregateDebugLog('scan found no tracking panels.', buildScanDebugSnapshot({
+          lists: describeTrackingListsForDebug(all)
+        }));
+      }
       cleanOldRecords();
       schedulePublishSharedSnapshot();
       checkConvergence();
@@ -1361,6 +2929,11 @@
     if (lastScanInfo.activeTrackingPanels === 0) {
       lastScanInfo.rowCount = 0;
       lastScanInfo.error = '所有面板都不在「追踪」tab';
+      if (shouldLogScanDebug()) {
+        aggregateDebugLog('scan found tracking panels but none active.', buildScanDebugSnapshot({
+          lists: describeTrackingListsForDebug(all)
+        }));
+      }
       cleanOldRecords();
       schedulePublishSharedSnapshot();
       checkConvergence();
@@ -1370,30 +2943,85 @@
 
     let added = 0;
     let totalRows = 0;
+    let parsedRows = 0;
+    let parseMisses = 0;
+    let parseErrors = 0;
+    let rowsRootMissing = 0;
+    let duplicateSkips = 0;
+    let unclassifiedActions = 0;
+    const parseMissSamples = [];
+    const parseErrorSamples = [];
+    const rowsRootMissingSamples = [];
+    const parsedTradeSamples = [];
+    const duplicateSamples = [];
+    const unclassifiedSamples = [];
     const watchedTradesToSpeak = [];
     const canAnnounceWatchedTrades = watchedTradesPrimed;
     // 遍历所有在「追踪」tab 的面板
     for (const { list, isOnTracking } of all) {
       if (!isOnTracking) continue;
       const rowsRoot = list.children[0]?.children[0];
-      if (!rowsRoot) continue;
+      if (!rowsRoot) {
+        rowsRootMissing++;
+        if (rowsRootMissingSamples.length < 3) {
+          rowsRootMissingSamples.push({
+            listChildren: list.children.length,
+            firstChildChildren: list.children[0]?.children?.length || 0,
+            text: compactDebugText(list, 180)
+          });
+        }
+        continue;
+      }
       const rows = rowsRoot.children;
       totalRows += rows.length;
       for (const row of rows) {
-        const trade = parseTradeRow(row);
-        if (!trade) continue;
+        let trade = null;
+        try {
+          trade = parseTradeRow(row);
+        } catch (e) {
+          parseErrors++;
+          if (parseErrorSamples.length < 5) {
+            parseErrorSamples.push({
+              message: e && e.message ? e.message : String(e),
+              text: compactDebugText(row, 220)
+            });
+          }
+          continue;
+        }
+        if (!trade) {
+          parseMisses++;
+          if (parseMissSamples.length < 5) {
+            parseMissSamples.push({
+              issue: getTradeRowParseIssue(row),
+              text: compactDebugText(row, 220)
+            });
+          }
+          continue;
+        }
+        parsedRows++;
+        if (parsedTradeSamples.length < 8) {
+          parsedTradeSamples.push(describeTradeForDebug(trade));
+        }
         if (trade.isBuy) {
           const key = `B|${trade.stableKey || buildStableTradeKey(trade)}`;
-          if (seenKeys.has(key)) continue;
+          if (seenKeys.has(key)) {
+            duplicateSkips++;
+            if (duplicateSamples.length < 5) duplicateSamples.push({ kind: 'buy', ...describeTradeForDebug(trade) });
+            continue;
+          }
           seenKeys.add(key);
           buyRecords.push(trade);
           added++;
           if (canAnnounceWatchedTrades && isTradeStarred(trade)) {
             watchedTradesToSpeak.push(trade);
           }
-        } else if (trade.action && trade.action.includes('清仓')) {
+        } else if (isCloseAction(trade.action)) {
           const ck = `C|${trade.stableKey || buildStableTradeKey(trade)}`;
-          if (seenClosedKeys.has(ck)) continue;
+          if (seenClosedKeys.has(ck)) {
+            duplicateSkips++;
+            if (duplicateSamples.length < 5) duplicateSamples.push({ kind: 'close', ...describeTradeForDebug(trade) });
+            continue;
+          }
           seenClosedKeys.add(ck);
           closedRecords.push(trade);
           added++;
@@ -1402,18 +3030,55 @@
           }
         } else if (isSellAction(trade.action)) {
           const sk = `S|${trade.stableKey || buildStableTradeKey(trade)}`;
-          if (seenSellKeys.has(sk)) continue;
+          if (seenSellKeys.has(sk)) {
+            duplicateSkips++;
+            if (duplicateSamples.length < 5) duplicateSamples.push({ kind: 'sell', ...describeTradeForDebug(trade) });
+            continue;
+          }
           seenSellKeys.add(sk);
           sellRecords.push(trade);
           added++;
           if (canAnnounceWatchedTrades && isTradeStarred(trade)) {
             watchedTradesToSpeak.push(trade);
           }
+        } else {
+          unclassifiedActions++;
+          if (unclassifiedSamples.length < 5) {
+            unclassifiedSamples.push(describeTradeForDebug(trade));
+          }
         }
       }
     }
     lastScanInfo.rowCount = totalRows;
-    lastScanInfo.error = totalRows === 0 ? '追踪 tab 列表为空（gmgn 过滤无活动钱包？）' : '';
+    lastScanInfo.parsedRows = parsedRows;
+    lastScanInfo.parseMisses = parseMisses;
+    lastScanInfo.parseErrors = parseErrors;
+    lastScanInfo.rowsRootMissing = rowsRootMissing;
+    lastScanInfo.duplicateSkips = duplicateSkips;
+    lastScanInfo.unclassifiedActions = unclassifiedActions;
+    lastScanInfo.added = added;
+    lastScanInfo.error = parseErrors > 0
+      ? `解析异常 ${parseErrors} 行`
+      : totalRows > 0 && parsedRows === 0
+        ? '可见行全部解析失败'
+        : totalRows > 0 && parsedRows > 0 && added === 0 && (buyRecords.length + sellRecords.length + closedRecords.length) === 0
+          ? '行已解析但没有进入买卖池'
+        : rowsRootMissing > 0 && totalRows === 0
+          ? '追踪列表结构变化，找不到行容器'
+          : totalRows === 0
+            ? '追踪 tab 列表为空（gmgn 过滤无活动钱包？）'
+            : '';
+    if (lastScanInfo.error && shouldLogScanDebug()) {
+      aggregateDebugLog('scan anomaly.', buildScanDebugSnapshot({
+        lists: describeTrackingListsForDebug(all),
+        parsedTradeSamples,
+        parseMissSamples,
+        parseErrorSamples,
+        rowsRootMissingSamples,
+        duplicateSamples,
+        unclassifiedSamples
+      }));
+    }
     updateStatus();
 
     cleanOldRecords();
@@ -1436,6 +3101,7 @@
     buyRecords = dedupeTradeRecords(buyRecords.filter(r => r.timeMs && (now - r.timeMs) < cutoff));
     sellRecords = dedupeTradeRecords(sellRecords.filter(r => r.timeMs && (now - r.timeMs) < cutoff));
     closedRecords = dedupeTradeRecords(closedRecords.filter(r => r.timeMs && (now - r.timeMs) < cutoff * 2));
+    pruneInferredTradeTimes(now);
     if (seenKeys.size > 5000) seenKeys = new Set(Array.from(seenKeys).slice(-2500));
     if (seenSellKeys.size > 5000) seenSellKeys = new Set(Array.from(seenSellKeys).slice(-2500));
     if (seenClosedKeys.size > 5000) seenClosedKeys = new Set(Array.from(seenClosedKeys).slice(-2500));
@@ -1462,9 +3128,9 @@
 
     for (const r of combinedBuyRecords) {
       if (!r.timeMs || (now - r.timeMs) > windowMs) continue;
-      // 严格按 mint 聚合，没 mint 不参与
-      if (!r.mint) continue;
-      const key = `${r.chain || 'unknown'}|${r.mint}`;
+      // 优先按 mint 聚合；GMGN 新 DOM 缺少 mint 时，按链 + token 名兜底。
+      const key = buildAlertGroupKey(r);
+      if (!key) continue;
       if (!groups[key]) {
         groups[key] = {
           wallets: {},
@@ -1532,19 +3198,17 @@
 
       const newTier = calcTier(effectiveCount);
 
-      // 严格按 mint 匹配（group.mint 一定存在）
-      const existing = alerts.find(a =>
-        a.mint &&
-        a.mint === group.mint &&
-        (a.chain || '') === (group.chain || '')
-      );
+      const existing = alerts.find(a => getAlertGroupKey(a) === groupKey);
 
       if (existing) {
         const sameCount = existing.walletCount === walletNames.length;
         const sameClose = (existing.closedCount || 0) === closedCount;
         const sameMcap = (existing.mcap || '') === (group.mcap || '');
         const sameLatestTrade = (existing.latestTradeTimeMs || 0) === (group.latestTradeTimeMs || 0);
-        if (sameCount && sameClose && sameMcap && sameLatestTrade) continue;
+        const sameToken = (existing.token || '') === (group.token || '');
+        const sameTokenLogo = (existing.tokenLogo || '') === (group.tokenLogo || '');
+        const samePlatform = JSON.stringify(existing.platform || null) === JSON.stringify(group.platform || null);
+        if (sameCount && sameClose && sameMcap && sameLatestTrade && sameToken && sameTokenLogo && samePlatform) continue;
         const prevTier = existing.tier || calcTier(existing.effectiveCount || existing.walletCount);
         const crossedStandardThreshold = qualifiesStandardThreshold && existing.walletCount < config.minWallets;
         existing.walletCount = walletNames.length;
@@ -1568,6 +3232,10 @@
         existing.updatedAt = Date.now();
         existing.isNew = true;
         updated = true;
+        void dispatchSignalEvent(buildConvergenceAlertSignalEvent(existing, {
+          requiredWallets,
+          hasPriorityWallet
+        }));
         const soundReasons = [];
         if (crossedStandardThreshold) soundReasons.push('crossed-standard-threshold');
         if (newTier > prevTier) soundReasons.push(`tier-up:${prevTier}->${newTier}`);
@@ -1614,6 +3282,10 @@
         alerts.unshift(alert);
         pruneHiddenAlertsState();
         triggered = true;
+        void dispatchSignalEvent(buildConvergenceAlertSignalEvent(alert, {
+          requiredWallets,
+          hasPriorityWallet
+        }));
         if (alertsBeforePush >= MAX_VISIBLE_ALERTS) {
           debugEvents.push({
             type: 'new-alert-while-full',
@@ -1857,7 +3529,7 @@
     }
 
     try {
-      const response = await fetch(TTS_API, {
+      const response = await fetch(ttsSettings.apiUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -2067,6 +3739,35 @@
   }
 
   let lastRenderState = '';
+
+  function getFilteredRecentBuyCount() {
+    const now = Date.now();
+    const windowMs = config.timeWindowMin * 60 * 1000;
+    return getCombinedBuyRecords().filter((record) => {
+      if (!record || !record.timeMs || (now - record.timeMs) > windowMs) return false;
+      if (config.chainFilter === 'all') return true;
+      return normalizeChainName(record.chain) === config.chainFilter;
+    }).length;
+  }
+
+  function getCurrentFilterLabel() {
+    return config.chainFilter === 'all' ? '全部链' : getChainDisplay(config.chainFilter).label;
+  }
+
+  function buildEmptyAlertsHtml(filteredAlerts) {
+    const buyCount = getFilteredRecentBuyCount();
+    if (filteredAlerts.length > 0) {
+      return '<div class="gcp-empty">当前提醒已隐藏，等待新买入</div>';
+    }
+    if (buyCount > 0) {
+      const label = getCurrentFilterLabel();
+      return `<div class="gcp-empty">${escHtml(label)} 已扫描 ${escHtml(buyCount)} 笔买入，暂无 ≥${escHtml(config.minWallets)} 钱包聚合</div>`;
+    }
+    return alerts.length === 0
+      ? '<div class="gcp-empty">监听中…等待信号</div>'
+      : '<div class="gcp-empty">当前链筛选下暂无提醒</div>';
+  }
+
   function renderAlerts() {
     if (!panelEl) return;
     const container = panelEl.querySelector('.gcp-alerts');
@@ -2080,11 +3781,7 @@
 
     let html;
     if (limitedVisibleAlerts.length === 0) {
-      html = alerts.length === 0
-        ? '<div class="gcp-empty">监听中…等待信号</div>'
-        : filteredAlerts.length === 0
-          ? '<div class="gcp-empty">当前链筛选下暂无提醒</div>'
-          : '<div class="gcp-empty">当前提醒已隐藏，等待新买入</div>';
+      html = buildEmptyAlertsHtml(filteredAlerts);
     } else {
       html = limitedVisibleAlerts.map(a => {
         const hasStar = isAlertStarred(a);
@@ -2099,6 +3796,7 @@
         const chainBadge = a.chain ? renderChainBadge(a.chain) : '';
         const mcapBadge = a.mcap ? `<span class="gcp-alert-mcap">市值 ${escHtml(a.mcap)}</span>` : '';
         const metaLine = `${mcapBadge}${chainBadge}`;
+        const externalLinks = renderTokenExternalLinks(a);
         const hideBtn = groupKey
           ? `<button class="gcp-alert-hide-btn" data-group-key="${escHtml(groupKey)}" data-latest-trade-time="${escHtml(a.latestTradeTimeMs || 0)}" title="闅愯棌杩欐潯鎻愰啋锛岀洿鍒颁笅娆℃湁鏂颁拱鍏?">×</button>`
           : '';
@@ -2107,13 +3805,13 @@
         return `
         <div class="gcp-alert-item gcp-tier-${tier} ${a.isNew ? 'is-new' : ''} ${isFaded ? 'is-faded' : ''}" data-token="${escHtml(a.token)}">
           <div class="gcp-alert-token">
-            <span class="gcp-alert-token-name gcp-token-link" data-mint="${escHtml(a.mint || '')}" data-chain="${escHtml(a.chain || '')}" data-token="${escHtml(a.token)}" title="跳转到 ${escHtml(a.token)}">${logoImg}${escHtml(a.token)} ↗</span>${a.mint ? `<span class="gcp-mint-tag" title="合约：${escHtml(a.mint)}（点击复制）" data-mint="${escHtml(a.mint)}">${escHtml(shortMint(a.mint))}</span>` : ''}${a.platform ? `<span class="gcp-plat-badge ${escHtml(a.platform.cls)}" title="${escHtml(a.platform.label)}">${escHtml(a.platform.tag)}</span>` : ''}
+            <span class="gcp-alert-token-name gcp-token-link" data-mint="${escHtml(a.mint || '')}" data-chain="${escHtml(a.chain || '')}" data-token="${escHtml(a.token)}" title="跳转到 ${escHtml(a.token)}">${logoImg}${escHtml(a.token)} ↗</span>${a.mint ? `<span class="gcp-mint-tag" title="合约：${escHtml(a.mint)}（点击复制）" data-mint="${escHtml(a.mint)}">${escHtml(shortMint(a.mint))}</span>` : ''}${a.platform ? `<span class="gcp-plat-badge ${escHtml(a.platform.cls)}" title="${escHtml(a.platform.label)}">${escHtml(a.platform.tag)}</span>` : ''}${externalLinks}
             <span class="gcp-alert-actions"><span class="gcp-alert-count">${effective} 个钱包${closedCount > 0 ? ` <span class="gcp-closed-tag">−${closedCount} 清仓</span>` : ''}${tierIcon}</span>${hideBtn}</span>
           </div>
           <div class="gcp-alert-time">${metaLine}</div>
           <div class="gcp-alert-wallets">
             ${a.wallets.map(w => {
-              const star = starred.has(w.name);
+                const star = !!findSpeechWatchWalletKey(w.name);
               const blacklisted = isWalletBlacklisted(w.name);
               const av = w.avatar
                 ? `<img class="gcp-wallet-avatar" src="${escHtml(w.avatar)}" loading="lazy" referrerpolicy="no-referrer" />`
@@ -2140,6 +3838,23 @@
       el.addEventListener('click', (e) => {
         e.stopPropagation();
         jumpToToken(el.dataset.token, el.dataset.mint, el.dataset.chain);
+      });
+    });
+    container.querySelectorAll('.gcp-token-ext-link').forEach(el => {
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        const url = el.href || el.getAttribute('href') || '';
+        if (!url) return;
+
+        if (isMonitorWindowPage()) {
+          void openPanelLinkInMainWindow(url).then((opened) => {
+            if (!opened) window.open(url, '_blank', 'noopener,noreferrer');
+          });
+          return;
+        }
+
+        window.open(url, '_blank', 'noopener,noreferrer');
       });
     });
     container.querySelectorAll('.gcp-mint-tag').forEach(el => {
@@ -2190,7 +3905,7 @@
   }
 
   function isMonitorWindowPage() {
-    return FOLLOW_PATH_RE.test(location.pathname);
+    return FOLLOW_PATH_RE.test(location.pathname) || isDebotMonitorWindowPage();
   }
 
   async function openPanelLinkInMainWindow(url) {
@@ -2217,7 +3932,15 @@
       }
     }
     if (useMint && useChain) {
-      const url = `/${useChain}/token/${useMint}`;
+      if (isDebotMonitorWindowPage()) {
+        const debotUrl = buildDebotTokenUrl(useChain, useMint);
+        if (debotUrl) {
+          if (await openPanelLinkInMainWindow(debotUrl)) return;
+          window.location.href = debotUrl;
+          return;
+        }
+      }
+      const url = buildGmgnTokenPath(useChain, useMint);
       if (await openPanelLinkInMainWindow(location.origin + url)) return;
       if (spaNavigate(url)) return;
       window.location.href = location.origin + url;
@@ -2261,7 +3984,7 @@
         || row.querySelector('[data-sentry-component="AutoTruncateText"]');
       if (!walletEl) continue;
       const wallet = walletEl.textContent.trim();
-      const isStar = starred.has(wallet);
+      const isStar = !!findSpeechWatchWalletKey(wallet);
       const isBlacklisted = isWalletBlacklisted(wallet);
 
       row.classList.toggle('gcp-orig-starred', isStar);
@@ -2519,8 +4242,34 @@
 
   // ===== Observer =====
   let observers = [];
+  function findDebotTrackingRoot() {
+    return document.querySelector('#root, #__next, [id="app"], main') || document.body;
+  }
+
+  function scheduleDebotScan() {
+    if (debotScanScheduled) return;
+    debotScanScheduled = true;
+    setTimeout(() => {
+      debotScanScheduled = false;
+      scanTrades();
+    }, 500);
+  }
+
   function startObserver() {
     if (!followModeActive || !isMonitorWindowPage()) return false;
+    if (isDebotMonitorWindowPage()) {
+      observers.forEach(o => { try { o.disconnect(); } catch(e) {} });
+      observers = [];
+      const root = findDebotTrackingRoot();
+      if (!root) return false;
+      const ob = new MutationObserver(scheduleDebotScan);
+      ob.observe(root, { childList: true, subtree: true });
+      observers.push(ob);
+      observer = ob;
+      if (scanInterval) clearInterval(scanInterval);
+      scanInterval = setInterval(scanTrades, 5000);
+      return true;
+    }
     const all = findAllTrackingLists();
     if (all.length === 0) return false;
     // 拆掉旧的
@@ -2560,6 +4309,10 @@
       if (!document.getElementById('gcp-inline-panel')) {
         if (mountPanel()) renderAlerts();
       }
+      if (isDebotMonitorWindowPage()) {
+        if (observers.length === 0) startObserver();
+        return;
+      }
       // 追踪列表数量变化时重启 observer（新增/移除面板）
       const all = findAllTrackingLists();
       if (all.length > 0 && observers.length !== all.length) {
@@ -2589,7 +4342,13 @@
     seenSellKeys.clear();
     seenClosedKeys.clear();
     spokenWatchedTradeKeys.clear();
+    inferredTradeTimeByKey.clear();
     tokenMeta.clear();
+    debotWalletNameByAddress.clear();
+    debotTokenDomMetaByMint.clear();
+    debotApiFetchInFlight = false;
+    debotLastApiFetchAt = 0;
+    debotScanScheduled = false;
     sharedSources = {};
     watchedTradesPrimed = false;
     watchedTradeSpeechQueue = Promise.resolve();
@@ -2597,6 +4356,13 @@
       panelCount: 0,
       activeTrackingPanels: 0,
       rowCount: 0,
+      parsedRows: 0,
+      parseMisses: 0,
+      parseErrors: 0,
+      rowsRootMissing: 0,
+      duplicateSkips: 0,
+      unclassifiedActions: 0,
+      added: 0,
       panelsOff: 0,
       error: ''
     };
@@ -2685,6 +4451,8 @@
 
   // ===== 初始化 =====
   function init() {
+    installPageDebugMessageBridge();
+    installDebotNetworkMessageBridge();
     installRouteWatcher();
     ensureAudioSyncChannel();
     Promise.all([
@@ -2718,8 +4486,22 @@
     get audioSettings() { return audioSettings; },
     get speechWatchlist() { return speechWatchlist; },
     get sharedSources() { return sharedSources; },
+    get lastScanInfo() { return { ...lastScanInfo }; },
     get combinedBuyRecords() { return getCombinedBuyRecords(); },
     get combinedSellRecords() { return getCombinedSellRecords(); },
+    dumpScanDebug: () => {
+      const all = findAllTrackingLists();
+      const snapshot = buildScanDebugSnapshot({
+        lists: describeTrackingListsForDebug(all)
+      });
+      aggregateDebugLog('manual scan debug snapshot.', snapshot);
+      return snapshot;
+    },
+    getConvergence: () => {
+      const snapshot = buildConvergenceDebugSnapshot();
+      aggregateDebugLog('manual convergence debug snapshot.', snapshot);
+      return snapshot;
+    },
     rerender: () => { lastRenderState = ''; renderAlerts(); },
     rescan: () => scanTrades(),
     syncShared: () => loadSharedSnapshots({ recalculate: true })

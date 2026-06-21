@@ -1,5 +1,11 @@
 dist/
+.deploy-temp/
 *.zip
+*.tar.gz
 .DS_Store
 Thumbs.db
 node_modules/
+gmgn-trade-service/data/
+.Private_key.txt
+.env
+docs/wallet.json

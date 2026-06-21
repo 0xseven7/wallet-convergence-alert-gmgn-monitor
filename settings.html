@@ -19,6 +19,19 @@
       <section class="card">
         <div class="card-heading">
           <div>
+            <h2>推特交易</h2>
+            <p class="card-subtitle">Hook、每账号买入策略、市值过滤、创建时间过滤和 GMGN 止盈挂单在独立页面管理。</p>
+          </div>
+        </div>
+
+        <div class="button-row single-button-row">
+          <a class="primary button-link" href="twitter-trade.html" target="_blank" rel="noreferrer">打开推特交易设置</a>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-heading">
+          <div>
             <h2>主窗口</h2>
             <p class="card-subtitle">GMGN follow 监控页打开的外部链接，会优先落到这里选中的 Chrome 窗口。</p>
           </div>
@@ -82,6 +95,11 @@
               <select id="ttsRateSelect"></select>
               <select id="ttsPitchSelect"></select>
             </div>
+
+            <label class="setting-row">
+              <span>TTS 代理地址</span>
+              <input id="ttsApiUrlInput" type="url" placeholder="例如 http://127.0.0.1:8788/tts" />
+            </label>
           </div>
 
           <label class="setting-row">
@@ -139,6 +157,115 @@
           <button id="addBlacklistBtn" class="primary" type="button">添加黑名单钱包</button>
           <div id="blacklistList" class="list-container"></div>
         </div>
+      </section>
+
+      <section class="card">
+        <div class="card-heading">
+          <div>
+            <h2>GMGN 外部 Hook</h2>
+            <p class="card-subtitle">推特触发规则和本地事件面板共用这一组外部转发设置。浏览器只发信号，不在本地持有交易密钥。</p>
+          </div>
+        </div>
+
+        <div class="setting-list">
+          <label class="setting-row toggle-row">
+            <span>启用外部 Hook</span>
+            <input type="checkbox" id="gmgnHookEnabled" />
+          </label>
+
+          <label class="setting-row">
+            <span>Webhook URL</span>
+            <input type="url" id="gmgnHookUrl" placeholder="例如：http://127.0.0.1:8787/webhook/twitter-trigger" />
+          </label>
+
+          <label class="setting-row">
+            <span>Hook Secret</span>
+            <input type="password" id="gmgnHookSecret" placeholder="可选，用于 x-gmgn-hook-secret" />
+          </label>
+
+          <label class="setting-row">
+            <span>超时（毫秒）</span>
+            <input type="number" id="gmgnHookTimeout" min="500" max="15000" step="100" placeholder="3000" />
+          </label>
+
+          <label class="setting-row toggle-row">
+            <span>启用事件面板 API</span>
+            <input type="checkbox" id="gmgnEventApiEnabled" />
+          </label>
+
+          <label class="setting-row">
+            <span>事件 API URL</span>
+            <input type="url" id="gmgnEventApiUrl" placeholder="例如：http://192.168.50.196:3000/api/events" />
+          </label>
+
+          <label class="setting-row">
+            <span>Bearer Token</span>
+            <input type="password" id="gmgnEventApiToken" placeholder="LOCAL_SIGNAL_TOKEN" />
+          </label>
+
+          <label class="setting-row toggle-row">
+            <span>发送钱包买卖事件</span>
+            <input type="checkbox" id="gmgnEventSendWalletTrades" />
+          </label>
+
+          <label class="setting-row toggle-row">
+            <span>发送聚合提醒事件</span>
+            <input type="checkbox" id="gmgnEventSendConvergenceAlerts" />
+          </label>
+
+          <label class="setting-row toggle-row">
+            <span>直接买推文中的 CA</span>
+            <input type="checkbox" id="gmgnDirectCaEnabled" />
+          </label>
+
+          <div class="direct-ca-panel">
+            <label class="setting-row">
+              <span>直接 CA 链</span>
+              <select id="gmgnDirectCaChain"></select>
+            </label>
+
+            <label class="setting-row">
+              <span>直接 CA 买入数量</span>
+              <input type="text" id="gmgnDirectCaBuyAmount" placeholder="例如：0.3" />
+            </label>
+
+            <label class="setting-row">
+              <span>允许账号（可选）</span>
+              <textarea id="gmgnDirectCaTwitterIds" rows="3" placeholder="一行一个推特 ID。留空表示全部 GMGN 推特监控消息。"></textarea>
+            </label>
+          </div>
+
+          <div class="button-row single-button-row">
+            <button id="saveGmgnHookBtn" class="primary" type="button">保存 Hook 设置</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-heading">
+          <div>
+            <h2>GMGN 买入触发规则</h2>
+            <p class="card-subtitle">规则命中后，插件会把账号、动作、正文、CA、链和买入数量发给你的外部服务。</p>
+          </div>
+        </div>
+
+        <div class="form-stack">
+          <input type="text" id="gmgnTriggerTwitterId" placeholder="推特 ID，例如：cz_binance" />
+          <select id="gmgnTriggerEventType"></select>
+          <textarea id="gmgnTriggerKeywords" rows="3" placeholder="关键词，一行一个。留空表示该账号该动作全部触发"></textarea>
+          <select id="gmgnTriggerChain"></select>
+          <input type="text" id="gmgnTriggerCa" placeholder="固定 CA / 合约地址" />
+          <input type="text" id="gmgnTriggerTokenSymbol" placeholder="代币 symbol（可选）" />
+          <input type="text" id="gmgnTriggerBuyAmount" placeholder="买入数量，例如：0.3" />
+          <input type="text" id="gmgnTriggerNote" placeholder="备注（可选）" />
+
+          <div class="button-row">
+            <button id="saveGmgnTriggerRuleBtn" class="primary" type="button">保存触发规则</button>
+            <button id="cancelGmgnTriggerRuleBtn" class="secondary" type="button">取消编辑</button>
+          </div>
+        </div>
+
+        <div id="gmgnTriggerRulesList" class="list-container"></div>
       </section>
 
       <section class="card">

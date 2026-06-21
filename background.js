@@ -4,12 +4,17 @@ const GET_MAIN_WINDOW_MESSAGE = 'get-main-window';
 const CLEAR_MAIN_WINDOW_MESSAGE = 'clear-main-window';
 const REGISTER_MONITOR_TAB_MESSAGE = 'register-monitor-tab';
 const ALLOW_MONITOR_NAVIGATION_MESSAGE = 'allow-monitor-navigation';
+const DISPATCH_GMGN_TWITTER_HOOK_MESSAGE = 'dispatch-gmgn-twitter-trigger-hook';
+const DISPATCH_GMGN_SIGNAL_EVENT_MESSAGE = 'dispatch-gmgn-signal-event';
 const LEGACY_MAIN_WINDOW_STORAGE_KEY = 'mainWindowId';
 const MAIN_WINDOW_STORAGE_KEY = 'mainWindowState';
 const MONITOR_STATE_STORAGE_KEY = 'monitorState';
 const DEFAULT_MONITOR_URL = 'https://gmgn.ai/follow';
 const SETTINGS_PAGE_PATH = 'settings.html';
 const TWITTER_AUDIO_MAPPING_STORAGE_KEY = 'twitterAudioMappings';
+const GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY = 'gmgnTwitterTriggerHookSettings';
+const GMGN_TWITTER_TRIGGER_RULES_KEY = 'gmgnTwitterTriggerRules';
+const GMGN_TWITTER_TRADE_PROFILES_KEY = 'gmgnTwitterTradeProfiles';
 const GMGN_FOLLOW_CHAIN_SEGMENT = '(?:sol|eth|bsc|base|tron|blast)';
 const TWITTER_AUDIO_DEFAULTS = {
   twitterAudioMappings: {
@@ -32,8 +37,26 @@ const TWITTER_AUDIO_DEFAULTS = {
   enableTTS: true,
   ttsVoice: 'zh-CN-XiaoxiaoNeural',
   ttsRate: '+0%',
-  ttsPitch: '+0%'
+  ttsPitch: '+0%',
+  ttsApiUrl: 'https://cloudflare-edge-tts.tech-melon.workers.dev/tts'
 };
+const GMGN_TWITTER_TRIGGER_HOOK_DEFAULTS = {
+  enabled: false,
+  webhookUrl: '',
+  secret: '',
+  timeoutMs: 3000,
+  eventApiEnabled: false,
+  eventApiUrl: '',
+  eventApiToken: '',
+  eventSendWalletTrades: true,
+  eventSendConvergenceAlerts: true,
+  directCaEnabled: false,
+  directCaChain: 'bsc',
+  directCaBuyAmount: '',
+  directCaTwitterIds: ''
+};
+const GMGN_TWITTER_TRIGGER_RULE_DEFAULTS = [];
+const GMGN_TWITTER_TRADE_PROFILE_DEFAULTS = [];
 
 let monitorState = {
   tabId: null,
@@ -52,6 +75,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const monitorWindowId = sender.tab ? sender.tab.windowId : undefined;
 
     openInMainWindow(message.url, monitorWindowId)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+
+    return true;
+  }
+
+  if (message.type === DISPATCH_GMGN_TWITTER_HOOK_MESSAGE && message.payload) {
+    dispatchGmgnTwitterTriggerHook(message.payload)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+
+    return true;
+  }
+
+  if (message.type === DISPATCH_GMGN_SIGNAL_EVENT_MESSAGE && message.payload) {
+    dispatchGmgnSignalEvent(message.payload)
       .then((result) => sendResponse(result))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
 
@@ -228,6 +267,7 @@ chrome.runtime.onInstalled.addListener(() => {
 async function initializeExtensionState() {
   await ensureMonitorState();
   await ensureTwitterAudioDefaults();
+  await ensureGmgnTwitterTriggerHookDefaults();
   await refreshActionBadges();
 }
 
@@ -269,7 +309,8 @@ async function ensureTwitterAudioDefaults() {
     'enableTTS',
     'ttsVoice',
     'ttsRate',
-    'ttsPitch'
+    'ttsPitch',
+    'ttsApiUrl'
   ]);
 
   const nextState = {};
@@ -307,9 +348,211 @@ async function ensureTwitterAudioDefaults() {
   if (typeof stored.ttsPitch !== 'string') {
     nextState.ttsPitch = TWITTER_AUDIO_DEFAULTS.ttsPitch;
   }
+  if (typeof stored.ttsApiUrl !== 'string') {
+    nextState.ttsApiUrl = TWITTER_AUDIO_DEFAULTS.ttsApiUrl;
+  }
 
   if (Object.keys(nextState).length > 0) {
     await chrome.storage.local.set(nextState);
+  }
+}
+
+async function ensureGmgnTwitterTriggerHookDefaults() {
+  const stored = await chrome.storage.local.get([
+    GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY,
+    GMGN_TWITTER_TRIGGER_RULES_KEY,
+    GMGN_TWITTER_TRADE_PROFILES_KEY
+  ]);
+
+  const nextState = {};
+
+  if (
+    !stored[GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY]
+    || typeof stored[GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY] !== 'object'
+  ) {
+    nextState[GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY] = GMGN_TWITTER_TRIGGER_HOOK_DEFAULTS;
+  }
+
+  if (!Array.isArray(stored[GMGN_TWITTER_TRIGGER_RULES_KEY])) {
+    nextState[GMGN_TWITTER_TRIGGER_RULES_KEY] = GMGN_TWITTER_TRIGGER_RULE_DEFAULTS;
+  }
+
+  if (!Array.isArray(stored[GMGN_TWITTER_TRADE_PROFILES_KEY])) {
+    nextState[GMGN_TWITTER_TRADE_PROFILES_KEY] = GMGN_TWITTER_TRADE_PROFILE_DEFAULTS;
+  }
+
+  if (Object.keys(nextState).length > 0) {
+    await chrome.storage.local.set(nextState);
+  }
+}
+
+function normalizeGmgnTwitterTriggerHookSettings(raw) {
+  const settings = {
+    ...GMGN_TWITTER_TRIGGER_HOOK_DEFAULTS,
+    ...(raw || {})
+  };
+
+  settings.enabled = settings.enabled === true;
+  settings.webhookUrl = typeof settings.webhookUrl === 'string' ? settings.webhookUrl.trim() : '';
+  settings.secret = typeof settings.secret === 'string' ? settings.secret.trim() : '';
+  settings.timeoutMs = clampHookTimeout(settings.timeoutMs);
+  settings.eventApiEnabled = settings.eventApiEnabled === true;
+  settings.eventApiUrl = typeof settings.eventApiUrl === 'string' ? settings.eventApiUrl.trim() : '';
+  settings.eventApiToken = typeof settings.eventApiToken === 'string' ? settings.eventApiToken.trim() : '';
+  settings.eventSendWalletTrades = settings.eventSendWalletTrades !== false;
+  settings.eventSendConvergenceAlerts = settings.eventSendConvergenceAlerts !== false;
+  settings.directCaEnabled = settings.directCaEnabled === true;
+  settings.directCaChain = typeof settings.directCaChain === 'string' ? settings.directCaChain.trim().toLowerCase() : 'bsc';
+  settings.directCaBuyAmount = typeof settings.directCaBuyAmount === 'string'
+    ? settings.directCaBuyAmount.trim()
+    : String(settings.directCaBuyAmount || '').trim();
+  settings.directCaTwitterIds = typeof settings.directCaTwitterIds === 'string'
+    ? settings.directCaTwitterIds.trim()
+    : '';
+
+  return settings;
+}
+
+function clampHookTimeout(value) {
+  const timeout = Number(value);
+  if (!Number.isFinite(timeout)) return GMGN_TWITTER_TRIGGER_HOOK_DEFAULTS.timeoutMs;
+  return Math.max(500, Math.min(15000, Math.round(timeout)));
+}
+
+async function dispatchGmgnTwitterTriggerHook(payload) {
+  const stored = await chrome.storage.local.get(GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY);
+  const settings = normalizeGmgnTwitterTriggerHookSettings(stored[GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY]);
+
+  if (!settings.enabled) {
+    return { ok: false, skipped: true, error: 'Hook is disabled.' };
+  }
+
+  if (!settings.webhookUrl) {
+    return { ok: false, skipped: true, error: 'Webhook URL is empty.' };
+  }
+
+  let webhookUrl;
+  try {
+    webhookUrl = new URL(settings.webhookUrl);
+  } catch (_error) {
+    return { ok: false, skipped: true, error: 'Webhook URL is invalid.' };
+  }
+
+  if (webhookUrl.protocol !== 'http:' && webhookUrl.protocol !== 'https:') {
+    return { ok: false, skipped: true, error: 'Webhook URL must use http or https.' };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), settings.timeoutMs);
+  const headers = {
+    'Content-Type': 'application/json',
+    'x-gmgn-hook-source': 'wallet-convergence-alert-gmgn-monitor',
+    'x-gmgn-hook-event': 'twitter-trigger'
+  };
+
+  if (settings.secret) {
+    headers['x-gmgn-hook-secret'] = settings.secret;
+  }
+
+  try {
+    const response = await fetch(webhookUrl.href, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        ...payload,
+        forwardedAt: Date.now()
+      }),
+      signal: controller.signal
+    });
+
+    const responseText = await response.text().catch(() => '');
+    return {
+      ok: response.ok,
+      status: response.status,
+      statusText: response.statusText,
+      body: responseText.slice(0, 500)
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error && error.name === 'AbortError'
+        ? `Webhook request timed out after ${settings.timeoutMs}ms.`
+        : (error && error.message ? error.message : String(error))
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function dispatchGmgnSignalEvent(payload) {
+  const stored = await chrome.storage.local.get(GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY);
+  const settings = normalizeGmgnTwitterTriggerHookSettings(stored[GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY]);
+  const eventType = typeof payload?.type === 'string' ? payload.type.trim() : '';
+
+  if (!settings.eventApiEnabled) {
+    return { ok: false, skipped: true, error: 'Event API is disabled.' };
+  }
+
+  if (eventType === 'wallet_trade' && !settings.eventSendWalletTrades) {
+    return { ok: false, skipped: true, error: 'wallet_trade forwarding is disabled.' };
+  }
+
+  if (eventType === 'convergence_alert' && !settings.eventSendConvergenceAlerts) {
+    return { ok: false, skipped: true, error: 'convergence_alert forwarding is disabled.' };
+  }
+
+  if (!settings.eventApiUrl) {
+    return { ok: false, skipped: true, error: 'Event API URL is empty.' };
+  }
+
+  if (!settings.eventApiToken) {
+    return { ok: false, skipped: true, error: 'Event API token is empty.' };
+  }
+
+  let eventApiUrl;
+  try {
+    eventApiUrl = new URL(settings.eventApiUrl);
+  } catch (_error) {
+    return { ok: false, skipped: true, error: 'Event API URL is invalid.' };
+  }
+
+  if (eventApiUrl.protocol !== 'http:' && eventApiUrl.protocol !== 'https:') {
+    return { ok: false, skipped: true, error: 'Event API URL must use http or https.' };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), settings.timeoutMs);
+  const headers = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${settings.eventApiToken}`,
+    'x-gmgn-hook-source': 'wallet-convergence-alert-gmgn-monitor',
+    'x-gmgn-hook-event': eventType || 'signal-event'
+  };
+
+  try {
+    const response = await fetch(eventApiUrl.href, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+
+    const responseText = await response.text().catch(() => '');
+    return {
+      ok: response.ok,
+      status: response.status,
+      statusText: response.statusText,
+      body: responseText.slice(0, 500)
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error && error.name === 'AbortError'
+        ? `Event API request timed out after ${settings.timeoutMs}ms.`
+        : (error && error.message ? error.message : String(error))
+    };
+  } finally {
+    clearTimeout(timer);
   }
 }
 

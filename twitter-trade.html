@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>推特交易设置</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body class="settings-page twitter-trade-page">
+    <div id="toast" class="toast"></div>
+
+    <main class="popup-shell">
+      <header class="page-header">
+        <p class="eyebrow">GMGN Twitter Trade</p>
+        <h1>推特交易设置</h1>
+        <p class="page-copy">按推特账号配置买入策略。浏览器只发送信号，交易执行仍由外部 service 和 GMGN CLI 完成。</p>
+      </header>
+
+      <section class="card">
+        <div class="card-heading">
+          <div>
+            <h2>外部 Hook</h2>
+            <p class="card-subtitle">插件命中交易策略后，把信号发到你的 gmgn-trade-service。</p>
+          </div>
+        </div>
+
+        <div class="setting-list">
+          <label class="setting-row toggle-row">
+            <span>启用外部 Hook</span>
+            <input type="checkbox" id="hookEnabled" />
+          </label>
+
+          <label class="setting-row">
+            <span>Webhook URL</span>
+            <input type="url" id="hookUrl" placeholder="http://127.0.0.1:8787/webhook/twitter-trigger" />
+          </label>
+
+          <label class="setting-row">
+            <span>Hook Secret</span>
+            <input type="password" id="hookSecret" placeholder="用于 x-gmgn-hook-secret" />
+          </label>
+
+          <label class="setting-row">
+            <span>超时（毫秒）</span>
+            <input type="number" id="hookTimeout" min="500" max="15000" step="100" placeholder="3000" />
+          </label>
+
+          <div class="button-row single-button-row">
+            <button id="saveHookBtn" class="primary" type="button">保存 Hook</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-heading">
+          <div>
+            <h2>账号策略</h2>
+            <p class="card-subtitle">每个推特账号单独设置 CA 提取、买入金额、过滤条件和止盈挂单。</p>
+          </div>
+        </div>
+
+        <div class="trade-form-grid">
+          <label class="setting-row toggle-row">
+            <span>启用策略</span>
+            <input type="checkbox" id="profileEnabled" checked />
+          </label>
+
+          <label class="setting-row">
+            <span>推特 ID</span>
+            <input type="text" id="profileTwitterId" placeholder="例如：cz_binance" />
+          </label>
+
+          <label class="setting-row">
+            <span>事件类型</span>
+            <select id="profileEventTypes" multiple size="5"></select>
+          </label>
+
+          <label class="setting-row">
+            <span>链</span>
+            <select id="profileChain"></select>
+          </label>
+
+          <label class="setting-row">
+            <span>买入数量</span>
+            <input type="text" id="profileBuyAmount" placeholder="例如：0.3" />
+          </label>
+
+          <label class="setting-row toggle-row">
+            <span>自动滑点</span>
+            <input type="checkbox" id="profileAutoSlippage" checked />
+          </label>
+
+          <label class="setting-row">
+            <span>滑点 %（关闭自动时使用）</span>
+            <input type="number" id="profileSlippage" min="0.0001" step="0.0001" placeholder="0.01" />
+          </label>
+
+          <label class="setting-row">
+            <span>Gas 费用(Gwei)</span>
+            <input type="number" id="profileGasPriceGwei" min="0.05" step="0.01" placeholder="10" />
+          </label>
+
+          <label class="setting-row">
+            <span>贿赂费(BNB)</span>
+            <input type="number" id="profileTipFeeBnb" min="0" step="0.000001" placeholder="自动" />
+          </label>
+
+          <label class="setting-row toggle-row">
+            <span>防夹节点提交</span>
+            <input type="checkbox" id="profileAntiMev" checked />
+          </label>
+
+          <label class="setting-row">
+            <span>关键词（可选）</span>
+            <textarea id="profileKeywords" rows="3" placeholder="一行一个。留空表示该账号全部命中。"></textarea>
+          </label>
+
+          <label class="setting-row">
+            <span>排除关键词（可选）</span>
+            <textarea id="profileExcludeKeywords" rows="3" placeholder="一行一个。命中任意排除词则不触发。"></textarea>
+          </label>
+
+          <label class="setting-row">
+            <span>市值下限 USD（可选）</span>
+            <input type="number" id="profileMarketCapMin" min="0" step="1" placeholder="10000" />
+          </label>
+
+          <label class="setting-row">
+            <span>市值上限 USD（可选）</span>
+            <input type="number" id="profileMarketCapMax" min="0" step="1" placeholder="20000" />
+          </label>
+
+          <label class="setting-row">
+            <span>最大创建时间（秒，可选）</span>
+            <input type="number" id="profileMaxAgeSeconds" min="1" step="1" placeholder="120" />
+          </label>
+
+          <label class="setting-row">
+            <span>止盈价格涨幅 %（可选）</span>
+            <input type="number" id="profileProfitScale" min="0" step="1" placeholder="30" />
+          </label>
+
+          <label class="setting-row">
+            <span>止盈卖出比例 %（可选）</span>
+            <input type="number" id="profileProfitSellRatio" min="1" max="100" step="1" placeholder="50" />
+          </label>
+
+          <label class="setting-row">
+            <span>备注（可选）</span>
+            <input type="text" id="profileNote" placeholder="例如：CZ 电脑梗" />
+          </label>
+        </div>
+
+        <div class="button-row">
+          <button id="saveProfileBtn" class="primary" type="button">保存策略</button>
+          <button id="cancelProfileBtn" class="secondary" type="button">取消编辑</button>
+        </div>
+
+        <div id="profilesList" class="list-container trade-profile-list"></div>
+      </section>
+    </main>
+
+    <script src="twitter-trade.js"></script>
+  </body>
+</html>

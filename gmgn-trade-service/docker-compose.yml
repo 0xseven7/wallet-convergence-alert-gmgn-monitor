@@ -1,0 +1,12 @@
+services:
+  gmgn-trade-service:
+    build: .
+    container_name: gmgn-trade-service
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./data:/app/data
