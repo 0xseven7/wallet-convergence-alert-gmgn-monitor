@@ -252,7 +252,9 @@ bash release.sh
 - 聚合买入扫描、follow 信息流扫描、语音特别关注匹配，都在本地浏览器内完成
 - 配置数据保存在浏览器本地存储中
 - 如果启用 TTS，扩展会请求外部 TTS 接口：
-  - `https://cloudflare-edge-tts.tech-melon.workers.dev/tts`
+  - 默认使用 Mac mini 上的豆包语音服务：`http://tts.macmini.lan/tts/v3-task`
+  - 也可以在设置页切换到 Cloudflare Worker：`https://cloudflare-edge-tts.tech-melon.workers.dev/tts`
+  - 兼容旧代理格式：`POST /tts`，请求体为 `{ text, voice, rate, pitch }`
 - 如果外部 TTS 失败，会回退到浏览器原生 `speechSynthesis`
 - 如果你添加了远程音频链接，浏览器会直接请求对应音频 URL
 - GMGN 聚合买入主提醒本身仍然使用本地蜂鸣音，不依赖外部 TTS

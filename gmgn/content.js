@@ -834,8 +834,53 @@
     return true;
   }
 
+  function getElementClassText(element) {
+    const className = element?.className;
+    if (!className) return '';
+    if (typeof className === 'string') return className;
+    return String(className.baseVal || className.animVal || '');
+  }
+
+  function isExcludedTradeTextElement(element) {
+    if (!element) return false;
+    const tagName = String(element.tagName || element.nodeName || '').toLowerCase();
+    if (['svg', 'use', 'symbol', 'path', 'title', 'desc'].includes(tagName)) {
+      return true;
+    }
+    if (element.hidden || element.getAttribute?.('aria-hidden') === 'true') return true;
+    const role = String(element.getAttribute?.('role') || '').toLowerCase();
+    if (role === 'img' || role === 'presentation' || role === 'none') return true;
+    const classText = getElementClassText(element);
+    return /(^|[\s_-])(svg|icon|avatar|logo|sprite)([\s_-]|$)/i.test(classText);
+  }
+
+  function hasExcludedTradeTextAncestor(node, boundary) {
+    let current = node?.parentElement || null;
+    while (current && current !== boundary) {
+      if (isExcludedTradeTextElement(current)) return true;
+      current = current.parentElement;
+    }
+    return false;
+  }
+
+  function getTextExcludingSvg(node) {
+    if (node == null) return '';
+    if (typeof node === 'string' || typeof node === 'number') return String(node);
+
+    if (isExcludedTradeTextElement(node)) {
+      return '';
+    }
+
+    const childNodes = Array.from(node.childNodes || []);
+    if (childNodes.length) {
+      return childNodes.map(getTextExcludingSvg).join('');
+    }
+
+    return String(node.textContent || '');
+  }
+
   function compactDebugText(node, maxLen = 220) {
-    const text = String(node && node.textContent ? node.textContent : node || '')
+    const text = getTextExcludingSvg(node)
       .replace(/\s+/g, ' ')
       .trim();
     if (text.length <= maxLen) return text;
@@ -893,13 +938,13 @@
     if (!a) return 'missing-trade-anchor';
     const walletEl = a.querySelector('.text-yellow-100[data-sentry-component="AutoTruncateText"]')
       || a.querySelector('[data-sentry-component="AutoTruncateText"]');
-    if (!walletEl || !walletEl.textContent.trim()) {
-      return extractFallbackWalletNameFromText(row.textContent || a.textContent || '')
+    if (!walletEl || !getTextExcludingSvg(walletEl).trim()) {
+      return extractFallbackWalletNameFromText(getTextExcludingSvg(row) || getTextExcludingSvg(a) || '')
         ? 'missing-wallet-selector'
         : 'missing-wallet';
     }
     if (!a.children[0] || !a.children[1]) return 'missing-line1-or-line2';
-    if (!TRADE_ACTION_RE.test(a.children[0].textContent || '')) return 'missing-action';
+    if (!TRADE_ACTION_RE.test(getTextExcludingSvg(a.children[0]))) return 'missing-action';
     if (!compactDebugText(a.children[1], 80)) return 'missing-line2-text';
     return 'unknown';
   }
@@ -1847,7 +1892,7 @@
       const walker = document.createTreeWalker(line2, NodeFilter.SHOW_TEXT);
       let textNode = walker.nextNode();
       while (textNode) {
-        if (textNode.parentElement && textNode.parentElement.closest('svg')) {
+        if (hasExcludedTradeTextAncestor(textNode, line2)) {
           textNode = walker.nextNode();
           continue;
         }
@@ -1879,8 +1924,8 @@
     }
 
     for (const child of Array.from(line2.children || [])) {
-      if (!child || child.tagName === 'IMG' || child.tagName === 'SVG') continue;
-      const text = child.textContent.replace(/\s+/g, ' ').trim();
+      if (!child || child.tagName === 'IMG' || isExcludedTradeTextElement(child)) continue;
+      const text = getTextExcludingSvg(child).replace(/\s+/g, ' ').trim();
       if (!text) continue;
       if (/^MC\b/i.test(text) || /^MC[:\s]*[\$￥]?[\d.]+[KMBkmb]?$/i.test(text)) break;
       const normalizedSegmentAge = normalizeTradeAgeText(text);
@@ -1893,9 +1938,27 @@
   }
 
   // ===== 解析单条 trade =====
+  function stripDuplicateShortTokenPrefix(tokenSymbol) {
+    const text = String(tokenSymbol || '').replace(/\s+/g, ' ').trim();
+    const parts = text.split(' ').filter(Boolean);
+    if (parts.length < 2) return text;
+
+    const [first, second] = parts;
+    if (
+      /^[a-z]{1,4}$/i.test(first)
+      && second.length > first.length
+      && second.toLowerCase().startsWith(first.toLowerCase())
+    ) {
+      return parts.slice(1).join(' ');
+    }
+
+    return text;
+  }
+
   function stripInlineSvgPrefixTokenText(tokenSymbol, line2) {
     const text = String(tokenSymbol || '').trim();
-    if (!text || !line2 || !line2.querySelectorAll) return text;
+    if (!text) return text;
+    if (!line2 || !line2.querySelectorAll) return stripDuplicateShortTokenPrefix(text);
     const svgTexts = Array.from(line2.querySelectorAll('svg'))
       .map((svg) => (svg.textContent || '').replace(/\s+/g, ' ').trim())
       .filter(Boolean)
@@ -1903,9 +1966,9 @@
     for (const svgText of svgTexts) {
       if (!text.startsWith(svgText + ' ')) continue;
       const stripped = text.slice(svgText.length).trim();
-      if (stripped) return stripped;
+      if (stripped) return stripDuplicateShortTokenPrefix(stripped);
     }
-    return text;
+    return stripDuplicateShortTokenPrefix(text);
   }
 
   function normalizeTradeAmountText(value) {
@@ -2092,8 +2155,8 @@
     const walletEl = a.querySelector('.text-yellow-100[data-sentry-component="AutoTruncateText"]')
       || a.querySelector('[data-sentry-component="AutoTruncateText"]');
     const wallet = walletEl
-      ? walletEl.textContent.trim()
-      : extractFallbackWalletNameFromText(row.textContent || a.textContent || '');
+      ? getTextExcludingSvg(walletEl).trim()
+      : extractFallbackWalletNameFromText(getTextExcludingSvg(row) || getTextExcludingSvg(a) || '');
     if (!wallet) return parseTradeRowFromText(row, fallbackInfo);
 
     // 第一行：动作 + 涨跌 + 时间
@@ -2105,11 +2168,11 @@
     let action = '';
     let isBuy = false;
     line1.querySelectorAll('.whitespace-nowrap').forEach(el => {
-      const t = el.textContent.trim();
+      const t = getTextExcludingSvg(el).trim();
       if (!action && TRADE_ACTION_RE.test(t)) action = t;
     });
     if (!action) {
-      const actionMatch = line1.textContent.replace(/\s+/g, ' ').match(TRADE_ACTION_RE);
+      const actionMatch = getTextExcludingSvg(line1).replace(/\s+/g, ' ').match(TRADE_ACTION_RE);
       if (actionMatch) action = actionMatch[1];
     }
     if (isBuyAction(action)) isBuy = true;
@@ -2118,23 +2181,23 @@
     const timeEls = line1.querySelectorAll('.text-text-300.inline');
     let timeAgo = '';
     timeEls.forEach(el => {
-      const t = el.textContent.trim();
+      const t = getTextExcludingSvg(el).trim();
       const normalizedAge = normalizeTradeAgeText(t);
       if (normalizedAge) timeAgo = normalizedAge;
     });
     if (!timeAgo) {
       // 兜底：line1 里找 \d+[smhd] 模式
-      const txt = line1.textContent.replace(/\s+/g, ' ');
+      const txt = getTextExcludingSvg(line1).replace(/\s+/g, ' ');
       const tm = txt.match(/(\d+)\s*([smhdSMHD]|\u79d2|\u79d2\u949f|\u5206|\u5206\u949f|\u65f6|\u5c0f\u65f6|\u5929|\u65e5)(?=\s|$)/);
       if (tm) timeAgo = normalizeTradeAgeText(tm[0]);
     }
-    const line1StableText = line1.textContent
+    const line1StableText = getTextExcludingSvg(line1)
       .replace(/\s+/g, ' ')
       .replace(/(\d+)\s*([smhdSMHD]|\u79d2|\u79d2\u949f|\u5206|\u5206\u949f|\u65f6|\u5c0f\u65f6|\u5929|\u65e5)(?=\s|$)/g, '')
       .trim();
 
     // line2: <amount><tokenSymbol><tradeAge> MC:$<mcap>
-    const line2Text = line2.textContent.replace(/\s+/g, ' ').trim();
+    const line2Text = getTextExcludingSvg(line2).replace(/\s+/g, ' ').trim();
     // 拆 MC:
     // 只匹配独立的 "MC" 字段，避免把 "CMC 18m" 里的 "MC 18m" 误识别成市值。
     const mcMatch = line2Text.match(/\bMC\b[:\s]*[\$￥]?([\d.]+[KMBkmb]?)/);
@@ -3983,7 +4046,7 @@
       const walletEl = row.querySelector('.text-yellow-100[data-sentry-component="AutoTruncateText"]')
         || row.querySelector('[data-sentry-component="AutoTruncateText"]');
       if (!walletEl) continue;
-      const wallet = walletEl.textContent.trim();
+      const wallet = getTextExcludingSvg(walletEl).trim();
       const isStar = !!findSpeechWatchWalletKey(wallet);
       const isBlacklisted = isWalletBlacklisted(wallet);
 

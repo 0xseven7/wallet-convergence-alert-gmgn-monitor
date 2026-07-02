@@ -67,6 +67,18 @@
     },
     {
       "matches": [
+        "https://gmgn.ai/*",
+        "https://www.gmgn.ai/*",
+        "https://*.gmgn.ai/*",
+        "https://fomo.family/*",
+        "https://www.fomo.family/*",
+        "https://*.fomo.family/*"
+      ],
+      "js": ["gmgn/token-quick-add.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
         "https://gmgn.ai/follow*",
         "https://www.gmgn.ai/follow*",
         "https://gmgn.ai/*/follow*",

@@ -17,7 +17,7 @@
   ]);
   const TTS_RATE_OPTIONS = new Set(['-10%', '+0%', '+15%', '+30%']);
   const TTS_PITCH_OPTIONS = new Set(['-5%', '+0%', '+5%']);
-  const DEFAULT_TTS_API = 'https://cloudflare-edge-tts.tech-melon.workers.dev/tts';
+  const DEFAULT_TTS_API = 'http://tts.macmini.lan/tts/v3-task';
   const STORAGE_KEYS = [
     'twitterAudioMappings',
     'customAudios',
@@ -33,10 +33,12 @@
     'ttsApiUrl'
   ];
   const AUDIO_SYNC_CHANNEL_NAME = 'gmgn_twitter_audio_sync_channel';
+  const FETCH_TWITTER_TTS_AUDIO_MESSAGE = 'fetch-twitter-tts-audio';
   const DEBUG_PREFIX = '[GMGN Twitter Audio]';
   const AUDIO_PLAY_TIMEOUT_MS = 8000;
   const TTS_FETCH_TIMEOUT_MS = 10000;
   const NATIVE_TTS_TIMEOUT_MS = 10000;
+  const TTS_FAILURE_COOLDOWN_MS = 60000;
   const MAX_AUDIO_VOLUME = 2;
   const DEFAULT_STATE = {
     mappings: {
@@ -76,7 +78,10 @@
   let playbackQueue = Promise.resolve();
   let lastSkipReason = '';
   let lastSkipAt = 0;
+  let networkTtsCooldownUntil = 0;
+  let lastNetworkTtsFailure = '';
 
+  publishTwitterAudioDebugState();
   void loadConfig();
 
   window.addEventListener('TWITTER_WS_MSG_RECEIVED', handleTwitterMessage);
@@ -107,7 +112,11 @@
       }
     });
     preloadedAudios.clear();
-    networkTtsCache.forEach((url) => URL.revokeObjectURL(url));
+    networkTtsCache.forEach((url) => {
+      if (typeof url === 'string' && url.startsWith('blob:')) {
+        URL.revokeObjectURL(url);
+      }
+    });
     networkTtsCache.clear();
   }, { once: true });
 
@@ -141,9 +150,32 @@
     logInfo(reason, detail);
   }
 
+  function publishTwitterAudioDebugState() {
+    window.__gmgnTwitterAudioDebug = {
+      ttsApiUrl: config.ttsApiUrl,
+      ttsVoice: config.ttsVoice,
+      ttsRate: config.ttsRate,
+      ttsPitch: config.ttsPitch,
+      enableTTS: config.enableTTS,
+      defaultAudio: config.defaultAudio,
+      globalVolume: config.globalVolume,
+      playDefaultUnmapped: config.playDefaultUnmapped,
+      mappingCount: Object.keys(config.mappings || {}).length,
+      customAudioCount: Object.keys(config.customAudios || {}).length,
+      networkTtsCooldownUntil,
+      lastNetworkTtsFailure
+    };
+  }
+
   async function loadConfig() {
-    const stored = await chrome.storage.local.get(STORAGE_KEYS);
+    let stored = {};
+    try {
+      stored = await chrome.storage.local.get(STORAGE_KEYS);
+    } catch (error) {
+      logWarn('Failed to load twitter audio config, using defaults.', error && error.message ? error.message : error);
+    }
     config = normalizeConfig(stored);
+    publishTwitterAudioDebugState();
     warmupAudioCache();
     dispatchToggleState();
     isReady = true;
@@ -285,6 +317,10 @@
     const speakerName = getSpeakerName(trigger, rule);
 
     if (config.customAudios[audioId]) {
+      logInfo('Using custom mapped audio instead of network TTS.', {
+        twitterId: trigger?.id || '',
+        audioId
+      });
       return {
         audioSrc: getCustomAudioSource(config.customAudios[audioId]),
         ttsText: ''
@@ -292,6 +328,11 @@
     }
 
     if (audioId.startsWith('custom_')) {
+      logInfo('Using fallback audio for missing custom mapping instead of network TTS.', {
+        twitterId: trigger?.id || '',
+        audioId,
+        fallbackAudio: config.defaultAudio
+      });
       return {
         audioSrc: getBuiltInAudioUrl(config.defaultAudio),
         ttsText: ''
@@ -299,12 +340,21 @@
     }
 
     if (GENERIC_AUDIO_FILES.has(audioId) && config.enableTTS) {
+      logInfo('Using mapped generic audio as network TTS trigger.', {
+        twitterId: trigger?.id || '',
+        audioId,
+        ttsApiUrl: config.ttsApiUrl
+      });
       return {
         audioSrc: null,
         ttsText: buildTwitterTtsText(speakerName, normalizeEventType(trigger.tw))
       };
     }
 
+    logInfo('Using mapped MP3 instead of network TTS.', {
+      twitterId: trigger?.id || '',
+      audioId
+    });
     return {
       audioSrc: getBuiltInAudioUrl(audioId),
       ttsText: ''
@@ -334,7 +384,8 @@
 
     logInfo('Starting twitter audio playback.', {
       audioSrc: playback.audioSrc ? 'audio' : '',
-      ttsText: playback.ttsText || ''
+      ttsText: playback.ttsText || '',
+      ttsApiUrl: playback.ttsText ? normalizeTtsApiUrl(config.ttsApiUrl) : ''
     });
 
     if (playback.audioSrc) {
@@ -456,56 +507,99 @@
     const ttsApiUrl = normalizeTtsApiUrl(config.ttsApiUrl);
     const cacheKey = JSON.stringify([ttsApiUrl, text, config.ttsVoice, config.ttsRate, config.ttsPitch]);
     let timeoutId = null;
+    if (Date.now() < networkTtsCooldownUntil) {
+      logWarn('Skipping network TTS during failure cooldown, using native speech synthesis.', {
+        ttsApiUrl,
+        until: new Date(networkTtsCooldownUntil).toLocaleTimeString(),
+        lastError: lastNetworkTtsFailure,
+        text
+      });
+      await playNativeOrEmergencyTts(text, 'Network TTS is in failure cooldown.');
+      return;
+    }
+
     try {
       if (networkTtsCache.has(cacheKey)) {
+        logInfo('Playing network TTS from cache.', {
+          ttsApiUrl,
+          text
+        });
         const playedFromCache = await playAudio(networkTtsCache.get(cacheKey), Math.min(config.globalVolume * 1.25, 1));
-        if (playedFromCache) return;
+        if (playedFromCache) {
+          markNetworkTtsHealthy();
+          return;
+        }
         networkTtsCache.delete(cacheKey);
       }
 
-      const controller = new AbortController();
-      timeoutId = setTimeout(() => controller.abort(), TTS_FETCH_TIMEOUT_MS);
-      const response = await fetch(ttsApiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        signal: controller.signal,
-        body: JSON.stringify({
-          text,
-          voice: config.ttsVoice,
-          rate: config.ttsRate,
-          pitch: config.ttsPitch
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error(`TTS request failed with ${response.status}`);
-      }
-
-      const blob = await response.blob();
-      logInfo('Network TTS response received.', {
-        type: blob.type || '',
-        size: blob.size || 0,
+      logInfo('Requesting network TTS.', {
+        ttsApiUrl,
+        voice: config.ttsVoice,
+        rate: config.ttsRate,
+        pitch: config.ttsPitch,
         text
       });
-      const objectUrl = URL.createObjectURL(blob);
-      networkTtsCache.set(cacheKey, objectUrl);
-      const played = await playAudio(objectUrl, Math.min(config.globalVolume * 1.25, 1));
+      const controller = new AbortController();
+      timeoutId = setTimeout(() => controller.abort(), TTS_FETCH_TIMEOUT_MS);
+      const ttsResponse = await fetchNetworkTtsThroughBackground(ttsApiUrl, text);
+      logInfo('Network TTS response received.', {
+        ttsApiUrl,
+        type: ttsResponse.contentType || '',
+        size: ttsResponse.size || 0,
+        text
+      });
+      networkTtsCache.set(cacheKey, ttsResponse.dataUrl);
+      const played = await playAudio(ttsResponse.dataUrl, Math.min(config.globalVolume * 1.25, 1));
       if (!played) {
         throw new Error('Network TTS audio could not be played');
       }
+      markNetworkTtsHealthy();
     } catch (_error) {
-      logWarn('Network TTS failed, falling back to native speech synthesis.', _error && _error.message ? _error.message : _error);
-      const nativePlayed = await fallbackNativeTts(text);
-      if (!nativePlayed) {
-        await playEmergencyAudioCue('Native TTS unavailable after network TTS failure.');
-      }
+      lastNetworkTtsFailure = _error && _error.message ? _error.message : String(_error);
+      networkTtsCooldownUntil = Date.now() + TTS_FAILURE_COOLDOWN_MS;
+      publishTwitterAudioDebugState();
+      logWarn('Network TTS failed, falling back to native speech synthesis.', {
+        ttsApiUrl,
+        error: lastNetworkTtsFailure,
+        cooldownMs: TTS_FAILURE_COOLDOWN_MS
+      });
+      await playNativeOrEmergencyTts(text, 'Native TTS unavailable after network TTS failure.');
     } finally {
       if (timeoutId !== null) {
         clearTimeout(timeoutId);
       }
     }
+  }
+
+  function markNetworkTtsHealthy() {
+    if (!networkTtsCooldownUntil && !lastNetworkTtsFailure) return;
+    networkTtsCooldownUntil = 0;
+    lastNetworkTtsFailure = '';
+    publishTwitterAudioDebugState();
+  }
+
+  async function playNativeOrEmergencyTts(text, emergencyReason) {
+    const nativePlayed = await fallbackNativeTts(text);
+    if (!nativePlayed) {
+      await playEmergencyAudioCue(emergencyReason);
+    }
+  }
+
+  async function fetchNetworkTtsThroughBackground(ttsApiUrl, text) {
+    const response = await chrome.runtime.sendMessage({
+      type: FETCH_TWITTER_TTS_AUDIO_MESSAGE,
+      payload: {
+        text,
+        ttsApiUrl,
+        voice: config.ttsVoice,
+        rate: config.ttsRate,
+        pitch: config.ttsPitch
+      }
+    });
+    if (!response || !response.ok || !response.dataUrl) {
+      throw new Error(response && response.error ? response.error : 'Background TTS fetch failed.');
+    }
+    return response;
   }
 
   function fallbackNativeTts(text) {
@@ -856,6 +950,46 @@
       }
     } catch (_error) {}
     return DEFAULT_TTS_API;
+  }
+
+  function buildTtsRequest(ttsApiUrl, text, options = {}) {
+    if (usesMacminiTaskTts(ttsApiUrl)) {
+      const url = new URL(ttsApiUrl);
+      url.searchParams.set('data', text);
+      return {
+        url: url.toString(),
+        options: {
+          method: 'GET',
+          signal: options.signal
+        }
+      };
+    }
+
+    return {
+      url: ttsApiUrl,
+      options: {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        signal: options.signal,
+        body: JSON.stringify({
+          text,
+          voice: options.voice,
+          rate: options.rate,
+          pitch: options.pitch
+        })
+      }
+    };
+  }
+
+  function usesMacminiTaskTts(ttsApiUrl) {
+    try {
+      const url = new URL(ttsApiUrl);
+      return url.hostname === 'tts.macmini.lan' && url.pathname === '/tts/v3-task';
+    } catch (_error) {
+      return false;
+    }
   }
 
   function parsePercentString(value) {

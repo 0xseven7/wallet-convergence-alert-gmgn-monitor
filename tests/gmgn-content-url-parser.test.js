@@ -153,6 +153,74 @@ function plain(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+const textExtractionSandbox = {
+  module: { exports: {} }
+};
+
+vm.runInNewContext(`
+${extractFunction('getElementClassText')}
+${extractFunction('isExcludedTradeTextElement')}
+${extractFunction('hasExcludedTradeTextAncestor')}
+${extractFunction('getTextExcludingSvg')}
+${extractFunction('compactDebugText')}
+  module.exports = { compactDebugText };
+`, textExtractionSandbox);
+
+const { compactDebugText: compactTextWithoutSvg } = textExtractionSandbox.module.exports;
+const textNode = (text) => ({ nodeType: 3, nodeName: '#text', textContent: text, childNodes: [] });
+const elementNode = (tagName, childNodes = [], attrs = {}) => ({
+  nodeType: 1,
+  tagName,
+  nodeName: tagName,
+  childNodes,
+  textContent: childNodes.map((child) => child.textContent || '').join(''),
+  hidden: Boolean(attrs.hidden),
+  className: attrs.className || '',
+  getAttribute: (name) => attrs[name] || ''
+});
+
+assert.equal(compactTextWithoutSvg(elementNode('div', [
+  elementNode('svg', [elementNode('title', [textNode('te')])]),
+  textNode(' test')
+])), 'test');
+
+assert.equal(compactTextWithoutSvg(elementNode('div', [
+  textNode('$0.082 '),
+  elementNode('svg', [textNode('te')]),
+  textNode(' test 1m MC:$1K')
+])), '$0.082 test 1m MC:$1K');
+
+assert.equal(compactTextWithoutSvg(elementNode('div', [
+  elementNode('span', [textNode('te')], { 'aria-hidden': 'true' }),
+  textNode(' test')
+])), 'test');
+
+assert.equal(compactTextWithoutSvg(elementNode('div', [
+  elementNode('span', [textNode('te')], { role: 'img' }),
+  textNode(' test')
+])), 'test');
+
+assert.equal(compactTextWithoutSvg(elementNode('div', [
+  elementNode('span', [textNode('te')], { className: 'token-icon' }),
+  textNode(' test')
+])), 'test');
+
+const tokenCleanSandbox = {
+  module: { exports: {} }
+};
+
+vm.runInNewContext(`
+${extractFunction('stripDuplicateShortTokenPrefix')}
+${extractFunction('stripInlineSvgPrefixTokenText')}
+  module.exports = { stripInlineSvgPrefixTokenText };
+`, tokenCleanSandbox);
+
+const { stripInlineSvgPrefixTokenText } = tokenCleanSandbox.module.exports;
+
+assert.equal(stripInlineSvgPrefixTokenText('te test', null), 'test');
+assert.equal(stripInlineSvgPrefixTokenText('TE test', null), 'test');
+assert.equal(stripInlineSvgPrefixTokenText('99 9999', null), '99 9999');
+
 assert.deepEqual(plain(parseDebotDomTradeText('Gibmemes100x加仓1m0.3249Binface45m市值$3.11K买 0')), {
   wallet: 'Gibmemes100x',
   action: '加仓',

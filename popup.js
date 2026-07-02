@@ -8,10 +8,17 @@ const GMGN_BLACKLIST_WALLETS_KEY = 'gmgnBlacklistWallets';
 const GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY = 'gmgnTwitterTriggerHookSettings';
 const GMGN_TWITTER_TRIGGER_RULES_KEY = 'gmgnTwitterTriggerRules';
 const BUILTIN_AUDIO_FILES = ['default.MP3', 'preset1.MP3', 'elonmusk.MP3', 'CZ.MP3', 'heyi.MP3'];
-const DEFAULT_TTS_API = 'https://cloudflare-edge-tts.tech-melon.workers.dev/tts';
+const DEFAULT_TTS_API = 'http://tts.macmini.lan/tts/v3-task';
+const CLOUDFLARE_TTS_API = 'https://cloudflare-edge-tts.tech-melon.workers.dev/tts';
 const DEFAULT_TTS_VOICE = 'zh-CN-XiaoxiaoNeural';
 const DEFAULT_TTS_RATE = '+0%';
 const DEFAULT_TTS_PITCH = '+0%';
+const TTS_API_PRESET_CUSTOM = '__custom__';
+const TTS_API_PRESET_CHOICES = [
+  { value: DEFAULT_TTS_API, label: 'Mac mini 豆包' },
+  { value: CLOUDFLARE_TTS_API, label: 'Cloudflare Worker' },
+  { value: TTS_API_PRESET_CUSTOM, label: '自定义地址' }
+];
 const TTS_VOICE_CHOICES = [
   { value: 'zh-CN-XiaoxiaoNeural', label: '晓晓（甜美女声）' },
   { value: 'zh-CN-YunjianNeural', label: '云健（阳光男声）' },
@@ -118,6 +125,7 @@ const els = {
   ttsVoiceSelect: document.getElementById('ttsVoiceSelect'),
   ttsRateSelect: document.getElementById('ttsRateSelect'),
   ttsPitchSelect: document.getElementById('ttsPitchSelect'),
+  ttsApiPresetSelect: document.getElementById('ttsApiPresetSelect'),
   ttsApiUrlInput: document.getElementById('ttsApiUrlInput'),
   ttsTestBtn: document.getElementById('ttsTestBtn'),
   fallbackPreset: document.getElementById('fallbackPreset'),
@@ -237,6 +245,7 @@ async function initialize() {
   populateChoiceSelect(els.ttsVoiceSelect, TTS_VOICE_CHOICES);
   populateChoiceSelect(els.ttsRateSelect, TTS_RATE_CHOICES);
   populateChoiceSelect(els.ttsPitchSelect, TTS_PITCH_CHOICES);
+  populateChoiceSelect(els.ttsApiPresetSelect, TTS_API_PRESET_CHOICES);
   if (hasGmgnTwitterTriggerHookControls) {
     populateChoiceSelect(els.gmgnTriggerEventType, GMGN_TWITTER_TRIGGER_EVENT_CHOICES);
     populateChoiceSelect(els.gmgnTriggerChain, GMGN_TWITTER_TRIGGER_CHAIN_CHOICES);
@@ -321,6 +330,14 @@ function bindEvents() {
   });
   els.ttsPitchSelect.addEventListener('change', () => {
     void persistTwitterAudioState({ ttsPitch: normalizeTtsPitch(els.ttsPitchSelect.value) }, '已更新 TTS 音调');
+  });
+  els.ttsApiPresetSelect.addEventListener('change', () => {
+    const presetUrl = els.ttsApiPresetSelect.value;
+    if (presetUrl === TTS_API_PRESET_CUSTOM) {
+      els.ttsApiUrlInput.focus();
+      return;
+    }
+    void persistTwitterAudioState({ ttsApiUrl: normalizeTtsApiUrl(presetUrl) }, '已更新 TTS 代理线路');
   });
   els.ttsApiUrlInput.addEventListener('change', () => {
     void persistTwitterAudioState({ ttsApiUrl: normalizeTtsApiUrl(els.ttsApiUrlInput.value) }, '已更新 TTS 代理地址');
@@ -540,6 +557,7 @@ function renderTwitterAudioSettings() {
   els.ttsVoiceSelect.value = twitterState.ttsVoice;
   els.ttsRateSelect.value = twitterState.ttsRate;
   els.ttsPitchSelect.value = twitterState.ttsPitch;
+  els.ttsApiPresetSelect.value = resolveTtsApiPresetValue(twitterState.ttsApiUrl);
   els.ttsApiUrlInput.value = twitterState.ttsApiUrl;
   els.fallbackPreset.value = twitterState.defaultAudio;
   els.globalVolume.value = String(twitterState.globalVolume);
@@ -1313,24 +1331,24 @@ async function playConfiguredTts(text) {
   if (!text) return;
 
   try {
-    const response = await fetch(twitterState.ttsApiUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        text,
-        voice: twitterState.ttsVoice,
-        rate: twitterState.ttsRate,
-        pitch: twitterState.ttsPitch
-      })
+    const ttsRequest = buildTtsRequest(twitterState.ttsApiUrl, text, {
+      voice: twitterState.ttsVoice,
+      rate: twitterState.ttsRate,
+      pitch: twitterState.ttsPitch
     });
+    const response = await fetch(ttsRequest.url, ttsRequest.options);
 
     if (!response.ok) {
-      throw new Error(`TTS request failed with ${response.status}`);
+      throw new Error(`TTS request failed with ${response.status}${await readShortResponseText(response)}`);
     }
 
     const blob = await response.blob();
+    console.info('[GMGN Twitter Audio Settings] TTS preview response received.', {
+      url: ttsRequest.url,
+      type: blob.type || '',
+      size: blob.size || 0,
+      volume: twitterState.globalVolume
+    });
     const objectUrl = URL.createObjectURL(blob);
     const audio = new Audio(objectUrl);
     const cleanupBoost = attachAudioBoost(audio, twitterState.globalVolume * 1.25);
@@ -1349,7 +1367,22 @@ async function playConfiguredTts(text) {
       throw _error;
     }
   } catch (_error) {
+    console.warn('[GMGN Twitter Audio Settings] TTS preview failed, falling back to browser speech synthesis.', {
+      error: _error && _error.message ? _error.message : String(_error),
+      ttsApiUrl: twitterState.ttsApiUrl,
+      volume: twitterState.globalVolume
+    });
+    showToast(`TTS 试听失败：${_error && _error.message ? _error.message : '未知错误'}`, 4200);
     speakPreviewText(text);
+  }
+}
+
+async function readShortResponseText(response) {
+  try {
+    const text = await response.text();
+    return text ? `: ${text.slice(0, 180)}` : '';
+  } catch (_error) {
+    return '';
   }
 }
 
@@ -1803,6 +1836,50 @@ function normalizeTtsApiUrl(value) {
   return DEFAULT_TTS_API;
 }
 
+function resolveTtsApiPresetValue(ttsApiUrl) {
+  const normalizedUrl = normalizeTtsApiUrl(ttsApiUrl);
+  const preset = TTS_API_PRESET_CHOICES.find((option) => option.value === normalizedUrl);
+  return preset ? preset.value : TTS_API_PRESET_CUSTOM;
+}
+
+function buildTtsRequest(ttsApiUrl, text, options = {}) {
+  if (usesMacminiTaskTts(ttsApiUrl)) {
+    const url = new URL(ttsApiUrl);
+    url.searchParams.set('data', text);
+    return {
+      url: url.toString(),
+      options: {
+        method: 'GET'
+      }
+    };
+  }
+
+  return {
+    url: ttsApiUrl,
+    options: {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        text,
+        voice: options.voice,
+        rate: options.rate,
+        pitch: options.pitch
+      })
+    }
+  };
+}
+
+function usesMacminiTaskTts(ttsApiUrl) {
+  try {
+    const url = new URL(ttsApiUrl);
+    return url.hostname === 'tts.macmini.lan' && url.pathname === '/tts/v3-task';
+  } catch (_error) {
+    return false;
+  }
+}
+
 function parsePercentString(value) {
   const match = /^([+-]?\d+(?:\.\d+)?)%$/.exec(String(value || '').trim());
   return match ? Number(match[1]) : 0;
@@ -1847,7 +1924,7 @@ function renderTwitterVolumeValue(volume) {
 
 function renderTwitterTtsControls() {
   const enabled = els.enableTTSToggle.checked;
-  [els.ttsVoiceSelect, els.ttsRateSelect, els.ttsPitchSelect, els.ttsApiUrlInput, els.ttsTestBtn].forEach((element) => {
+  [els.ttsVoiceSelect, els.ttsRateSelect, els.ttsPitchSelect, els.ttsApiPresetSelect, els.ttsApiUrlInput, els.ttsTestBtn].forEach((element) => {
     element.disabled = !enabled;
   });
 }

@@ -6,6 +6,13 @@ const REGISTER_MONITOR_TAB_MESSAGE = 'register-monitor-tab';
 const ALLOW_MONITOR_NAVIGATION_MESSAGE = 'allow-monitor-navigation';
 const DISPATCH_GMGN_TWITTER_HOOK_MESSAGE = 'dispatch-gmgn-twitter-trigger-hook';
 const DISPATCH_GMGN_SIGNAL_EVENT_MESSAGE = 'dispatch-gmgn-signal-event';
+const FETCH_TWITTER_TTS_AUDIO_MESSAGE = 'fetch-twitter-tts-audio';
+const GMGN_TOKEN_QUICK_ADD_MESSAGE = 'gmgn-token-quick-add';
+const GMGN_OPEN_TOKEN_COUNTERPART_MESSAGE = 'gmgn-open-token-counterpart';
+const GMGN_TOKEN_QUICK_ADD_URL = 'http://127.0.0.1:17387/quick-add';
+const GMGN_TOKEN_QUICK_ADD_STATUS_URL = 'http://127.0.0.1:17387/quick-add/status';
+const GMGN_TOKEN_QUICK_ADD_REMOVE_URL = 'http://127.0.0.1:17387/quick-add/remove';
+const DEFAULT_TTS_API = 'http://tts.macmini.lan/tts/v3-task';
 const LEGACY_MAIN_WINDOW_STORAGE_KEY = 'mainWindowId';
 const MAIN_WINDOW_STORAGE_KEY = 'mainWindowState';
 const MONITOR_STATE_STORAGE_KEY = 'monitorState';
@@ -38,7 +45,7 @@ const TWITTER_AUDIO_DEFAULTS = {
   ttsVoice: 'zh-CN-XiaoxiaoNeural',
   ttsRate: '+0%',
   ttsPitch: '+0%',
-  ttsApiUrl: 'https://cloudflare-edge-tts.tech-melon.workers.dev/tts'
+  ttsApiUrl: DEFAULT_TTS_API
 };
 const GMGN_TWITTER_TRIGGER_HOOK_DEFAULTS = {
   enabled: false,
@@ -91,6 +98,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === DISPATCH_GMGN_SIGNAL_EVENT_MESSAGE && message.payload) {
     dispatchGmgnSignalEvent(message.payload)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+
+    return true;
+  }
+
+  if (message.type === FETCH_TWITTER_TTS_AUDIO_MESSAGE && message.payload) {
+    fetchTwitterTtsAudio(message.payload)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+
+    return true;
+  }
+
+  if (message.type === GMGN_TOKEN_QUICK_ADD_MESSAGE && message.payload) {
+    quickAddGmgnToken(message.payload, message.action || message.payload.action)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+
+    return true;
+  }
+
+  if (message.type === GMGN_OPEN_TOKEN_COUNTERPART_MESSAGE && message.url) {
+    const preferredWindowId = sender.tab ? sender.tab.windowId : null;
+    openTokenCounterpartUrl(message.url, preferredWindowId)
       .then((result) => sendResponse(result))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
 
@@ -556,6 +588,177 @@ async function dispatchGmgnSignalEvent(payload) {
   }
 }
 
+async function fetchTwitterTtsAudio(payload) {
+  const text = String(payload.text || '').trim();
+  if (!text) {
+    throw new Error('Missing TTS text.');
+  }
+
+  const ttsApiUrl = normalizeTtsApiUrl(payload.ttsApiUrl || DEFAULT_TTS_API);
+  const request = buildTwitterTtsRequest(ttsApiUrl, text, {
+    voice: payload.voice,
+    rate: payload.rate,
+    pitch: payload.pitch
+  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10000);
+
+  try {
+    const response = await fetch(request.url, {
+      ...request.options,
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      const responseText = await response.text().catch(() => '');
+      throw new Error(`TTS request failed with ${response.status}${responseText ? `: ${responseText.slice(0, 180)}` : ''}`);
+    }
+
+    const contentType = response.headers.get('content-type') || 'audio/mpeg';
+    const buffer = await response.arrayBuffer();
+    const base64 = arrayBufferToBase64(buffer);
+    return {
+      ok: true,
+      url: request.url,
+      contentType,
+      size: buffer.byteLength,
+      dataUrl: `data:${contentType};base64,${base64}`
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function buildTwitterTtsRequest(ttsApiUrl, text, options = {}) {
+  if (usesMacminiTaskTts(ttsApiUrl)) {
+    const url = new URL(ttsApiUrl);
+    url.searchParams.set('data', text);
+    return {
+      url: url.toString(),
+      options: {
+        method: 'GET'
+      }
+    };
+  }
+
+  return {
+    url: ttsApiUrl,
+    options: {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        text,
+        voice: options.voice,
+        rate: options.rate,
+        pitch: options.pitch
+      })
+    }
+  };
+}
+
+function normalizeTtsApiUrl(value) {
+  const rawUrl = String(value || '').trim();
+  if (!rawUrl) return DEFAULT_TTS_API;
+  const url = /^[a-z][a-z0-9+.-]*:\/\//i.test(rawUrl) ? rawUrl : `http://${rawUrl}`;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return parsed.toString();
+    }
+  } catch (_error) {}
+  return DEFAULT_TTS_API;
+}
+
+function usesMacminiTaskTts(ttsApiUrl) {
+  try {
+    const url = new URL(ttsApiUrl);
+    return url.hostname === 'tts.macmini.lan' && url.pathname === '/tts/v3-task';
+  } catch (_error) {
+    return false;
+  }
+}
+
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+
+function normalizeQuickAddPayload(payload) {
+  const ca = String(payload?.ca || '').trim();
+  const chain = String(payload?.chain || '').trim().toLowerCase();
+  const note = String(payload?.note || 'from GMGN plugin').trim() || 'from GMGN plugin';
+  const tags = String(payload?.tags || 'gmgn,quick-add').trim() || 'gmgn,quick-add';
+
+  if (!ca) {
+    throw new Error('Token CA is empty.');
+  }
+
+  if (!/^(solana|bsc|ethereum|base|tron|blast)$/.test(chain)) {
+    throw new Error(`Unsupported chain: ${chain || '(empty)'}`);
+  }
+
+  return { ca, chain, note, tags };
+}
+
+function getQuickAddRequestConfig(action) {
+  const normalizedAction = String(action || 'add').trim().toLowerCase();
+  if (normalizedAction === 'status' || normalizedAction === 'check') {
+    return { url: GMGN_TOKEN_QUICK_ADD_STATUS_URL, method: 'POST', action: 'status' };
+  }
+  if (normalizedAction === 'remove' || normalizedAction === 'delete' || normalizedAction === 'unfavorite') {
+    return { url: GMGN_TOKEN_QUICK_ADD_REMOVE_URL, method: 'POST', action: 'remove' };
+  }
+  return { url: GMGN_TOKEN_QUICK_ADD_URL, method: 'POST', action: 'add' };
+}
+
+async function quickAddGmgnToken(payload, action = 'add') {
+  const body = normalizeQuickAddPayload(payload);
+  const requestConfig = getQuickAddRequestConfig(action);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+
+  try {
+    const response = await fetch(requestConfig.url, {
+      method: requestConfig.method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    const responseText = await response.text().catch(() => '');
+    let responseJson = null;
+    try {
+      responseJson = responseText ? JSON.parse(responseText) : null;
+    } catch (_error) {
+      responseJson = null;
+    }
+    return {
+      ok: response.ok,
+      action: requestConfig.action,
+      status: response.status,
+      statusText: response.statusText,
+      body: responseText.slice(0, 500),
+      json: responseJson
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      action: requestConfig.action,
+      error: error && error.name === 'AbortError'
+        ? 'Quick add request timed out after 5000ms.'
+        : (error && error.message ? error.message : String(error))
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function openInMainWindow(url, monitorWindowId) {
   const windows = await chrome.windows.getAll({ windowTypes: ['normal'], populate: true });
   const resolvedMainWindow = await resolveMainWindow(windows, { clearIfMissing: true });
@@ -628,6 +831,57 @@ async function openInMainWindow(url, monitorWindowId) {
   await refreshActionBadges();
 
   return { ok: true, targetWindowId: targetWindow.id, createdWindow: false };
+}
+
+async function openTokenCounterpartUrl(url, preferredWindowId) {
+  const normalizedUrl = normalizeUrl(url);
+  if (!normalizedUrl) {
+    throw new Error('Invalid token counterpart URL.');
+  }
+
+  const windows = await chrome.windows.getAll({ windowTypes: ['normal'], populate: true });
+  const existingTab = findTabByUrlInWindows(windows, normalizedUrl);
+  if (existingTab && Number.isInteger(existingTab.id)) {
+    await activateExistingTab(existingTab);
+    return {
+      ok: true,
+      url: normalizedUrl,
+      targetWindowId: existingTab.windowId,
+      reusedExistingTab: true,
+      createdTab: false
+    };
+  }
+
+  const preferredWindow = windows.find((windowInfo) => windowInfo.id === preferredWindowId);
+  const targetWindow = preferredWindow || windows.find((windowInfo) => windowInfo.focused) || windows[0];
+  if (!targetWindow || !Number.isInteger(targetWindow.id)) {
+    const createdWindow = await chrome.windows.create({ url: normalizedUrl, focused: true });
+    return {
+      ok: true,
+      url: normalizedUrl,
+      targetWindowId: createdWindow.id,
+      reusedExistingTab: false,
+      createdTab: true,
+      createdWindow: true
+    };
+  }
+
+  const createdTab = await chrome.tabs.create({
+    windowId: targetWindow.id,
+    url: normalizedUrl,
+    active: true
+  });
+  await chrome.windows.update(targetWindow.id, { focused: true });
+
+  return {
+    ok: true,
+    url: normalizedUrl,
+    targetWindowId: targetWindow.id,
+    tabId: createdTab.id,
+    reusedExistingTab: false,
+    createdTab: true,
+    createdWindow: false
+  };
 }
 
 function findTabByUrl(windowInfo, url) {
