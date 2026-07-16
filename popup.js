@@ -1,7 +1,3 @@
-const GET_MAIN_WINDOW_MESSAGE = 'get-main-window';
-const SET_MAIN_WINDOW_MESSAGE = 'set-main-window';
-const CLEAR_MAIN_WINDOW_MESSAGE = 'clear-main-window';
-
 const GMGN_AUDIO_SETTINGS_KEY = 'gmgnAudioSettings';
 const GMGN_SPEECH_WATCHLIST_KEY = 'gmgnSpeechWatchlist';
 const GMGN_BLACKLIST_WALLETS_KEY = 'gmgnBlacklistWallets';
@@ -10,6 +6,8 @@ const GMGN_TWITTER_TRIGGER_RULES_KEY = 'gmgnTwitterTriggerRules';
 const BUILTIN_AUDIO_FILES = ['default.MP3', 'preset1.MP3', 'elonmusk.MP3', 'CZ.MP3', 'heyi.MP3'];
 const DEFAULT_TTS_API = 'http://tts.macmini.lan/tts/v3-task';
 const CLOUDFLARE_TTS_API = 'https://cloudflare-edge-tts.tech-melon.workers.dev/tts';
+const DEFAULT_MARKET_WATCH_DESK_BASE_URL = 'http://127.0.0.1:17387';
+const DEFAULT_MAIN_SCREEN_RELAY_BASE_URL = 'http://127.0.0.1:17390';
 const DEFAULT_TTS_VOICE = 'zh-CN-XiaoxiaoNeural';
 const DEFAULT_TTS_RATE = '+0%';
 const DEFAULT_TTS_PITCH = '+0%';
@@ -97,6 +95,9 @@ const DEFAULT_GMGN_TWITTER_TRIGGER_HOOK_SETTINGS = {
   eventApiToken: '',
   eventSendWalletTrades: true,
   eventSendConvergenceAlerts: true,
+  focusBuysEnabled: true,
+  marketWatchDeskBaseUrl: DEFAULT_MARKET_WATCH_DESK_BASE_URL,
+  mainScreenRelayBaseUrl: DEFAULT_MAIN_SCREEN_RELAY_BASE_URL,
   directCaEnabled: false,
   directCaChain: 'bsc',
   directCaBuyAmount: '',
@@ -106,13 +107,6 @@ const DEFAULT_GMGN_TWITTER_TRIGGER_RULES = [];
 const MAX_AUDIO_VOLUME = 2;
 
 const els = {
-  currentWindow: document.getElementById('current-window'),
-  currentWindowRole: document.getElementById('current-window-role'),
-  mainWindow: document.getElementById('main-window'),
-  mainWindowMeta: document.getElementById('main-window-meta'),
-  status: document.getElementById('status'),
-  setMainWindow: document.getElementById('set-main-window'),
-  clearMainWindow: document.getElementById('clear-main-window'),
   toast: document.getElementById('toast'),
   gmgnAudioEnabled: document.getElementById('gmgn-audio-enabled'),
   gmgnAudioTts: document.getElementById('gmgn-audio-tts'),
@@ -120,15 +114,12 @@ const els = {
   gmgnAudioVolume: document.getElementById('gmgn-audio-volume'),
   gmgnAudioVolumeValue: document.getElementById('gmgn-audio-volume-value'),
   masterToggle: document.getElementById('masterToggle'),
-  playDefaultToggle: document.getElementById('playDefaultToggle'),
-  enableTTSToggle: document.getElementById('enableTTSToggle'),
   ttsVoiceSelect: document.getElementById('ttsVoiceSelect'),
   ttsRateSelect: document.getElementById('ttsRateSelect'),
   ttsPitchSelect: document.getElementById('ttsPitchSelect'),
   ttsApiPresetSelect: document.getElementById('ttsApiPresetSelect'),
   ttsApiUrlInput: document.getElementById('ttsApiUrlInput'),
   ttsTestBtn: document.getElementById('ttsTestBtn'),
-  fallbackPreset: document.getElementById('fallbackPreset'),
   globalVolume: document.getElementById('globalVolume'),
   volumePercent: document.getElementById('volumePercent'),
   filterTweet: document.getElementById('filterTweet'),
@@ -152,6 +143,10 @@ const els = {
   gmgnEventApiToken: document.getElementById('gmgnEventApiToken'),
   gmgnEventSendWalletTrades: document.getElementById('gmgnEventSendWalletTrades'),
   gmgnEventSendConvergenceAlerts: document.getElementById('gmgnEventSendConvergenceAlerts'),
+  gmgnFocusBuysEnabled: document.getElementById('gmgnFocusBuysEnabled'),
+  gmgnMarketWatchDeskBaseUrl: document.getElementById('gmgnMarketWatchDeskBaseUrl'),
+  gmgnMainScreenRelayBaseUrl: document.getElementById('gmgnMainScreenRelayBaseUrl'),
+  saveGmgnRoutingBtn: document.getElementById('saveGmgnRoutingBtn'),
   gmgnDirectCaEnabled: document.getElementById('gmgnDirectCaEnabled'),
   gmgnDirectCaChain: document.getElementById('gmgnDirectCaChain'),
   gmgnDirectCaBuyAmount: document.getElementById('gmgnDirectCaBuyAmount'),
@@ -167,27 +162,7 @@ const els = {
   gmgnTriggerNote: document.getElementById('gmgnTriggerNote'),
   saveGmgnTriggerRuleBtn: document.getElementById('saveGmgnTriggerRuleBtn'),
   cancelGmgnTriggerRuleBtn: document.getElementById('cancelGmgnTriggerRuleBtn'),
-  gmgnTriggerRulesList: document.getElementById('gmgnTriggerRulesList'),
-  twitterIdInput: document.getElementById('twitterId'),
-  twitterRemarkInput: document.getElementById('twitterRemark'),
-  addRuleBtn: document.getElementById('addRuleBtn'),
-  uploadBtn: document.getElementById('uploadBtn'),
-  exportAudioZipBtn: document.getElementById('exportAudioZipBtn'),
-  customAudioFile: document.getElementById('customAudioFile'),
-  customAudioUrl: document.getElementById('custom-audio-url'),
-  customAudioName: document.getElementById('custom-audio-name'),
-  addAudioUrlBtn: document.getElementById('addAudioUrlBtn'),
-  customAudioList: document.getElementById('customAudioList'),
-  exportRulesBtn: document.getElementById('exportRulesBtn'),
-  importRulesBtn: document.getElementById('importRulesBtn'),
-  importRulesFile: document.getElementById('importRulesFile'),
-  searchInput: document.getElementById('searchInput'),
-  rulesList: document.getElementById('rulesList'),
-  editModal: document.getElementById('editModal'),
-  editTwitterId: document.getElementById('editTwitterId'),
-  editTwitterRemark: document.getElementById('editTwitterRemark'),
-  saveEditBtn: document.getElementById('saveEditBtn'),
-  cancelEditBtn: document.getElementById('cancelEditBtn')
+  gmgnTriggerRulesList: document.getElementById('gmgnTriggerRulesList')
 };
 const hasGmgnAudioControls = Boolean(
   els.gmgnAudioEnabled
@@ -206,6 +181,9 @@ const hasGmgnTwitterTriggerHookControls = Boolean(
   && els.gmgnEventApiToken
   && els.gmgnEventSendWalletTrades
   && els.gmgnEventSendConvergenceAlerts
+  && els.gmgnFocusBuysEnabled
+  && els.gmgnMarketWatchDeskBaseUrl
+  && els.gmgnMainScreenRelayBaseUrl
   && els.gmgnDirectCaEnabled
   && els.gmgnDirectCaChain
   && els.gmgnDirectCaBuyAmount
@@ -224,8 +202,6 @@ const hasGmgnTwitterTriggerHookControls = Boolean(
   && els.gmgnTriggerRulesList
 );
 
-let currentWindowId = null;
-let selectedMainWindowId = null;
 let twitterState = { ...DEFAULT_TWITTER_AUDIO_STATE };
 let gmgnSpeechWatchlist = { ...DEFAULT_GMGN_SPEECH_WATCHLIST };
 let gmgnBlacklistWallets = { ...DEFAULT_GMGN_BLACKLIST_WALLETS };
@@ -235,7 +211,7 @@ let editingGmgnTriggerRuleId = null;
 let previewAudioCtx = null;
 
 initialize().catch((error) => {
-  renderStatus(error.message || '初始化失败');
+  showToast(error.message || '初始化失败', 4200);
 });
 
 async function initialize() {
@@ -251,20 +227,12 @@ async function initialize() {
     populateChoiceSelect(els.gmgnTriggerChain, GMGN_TWITTER_TRIGGER_CHAIN_CHOICES);
     populateChoiceSelect(els.gmgnDirectCaChain, GMGN_TWITTER_TRIGGER_CHAIN_CHOICES);
   }
-  populateBuiltInSelect(els.fallbackPreset);
-  setupCustomDropdown('addSelectTrigger', 'addSelectMenu', 'addSelectSearch', 'addSelectList', 'addAudioValue', 'addAudioName');
-  setupCustomDropdown('editSelectTrigger', 'editSelectMenu', 'editSelectSearch', 'editSelectList', 'editAudioValue', 'editAudioName');
   bindEvents();
   if (hasGmgnTwitterTriggerHookControls) {
     resetGmgnTwitterTriggerRuleForm();
   }
 
-  const currentWindow = await chrome.windows.getCurrent({ populate: true });
-  currentWindowId = currentWindow.id || null;
-  els.currentWindow.textContent = formatWindowTitle(currentWindow, currentWindowId);
-
   const tasks = [
-    loadMainWindowState(),
     loadTwitterAudioSettings(),
     loadGmgnSpeechWatchlist(),
     loadGmgnBlacklistWallets()
@@ -300,9 +268,6 @@ function handleStorageChanges(changes, areaName) {
 }
 
 function bindEvents() {
-  els.setMainWindow.addEventListener('click', handleSetMainWindow);
-  els.clearMainWindow.addEventListener('click', handleClearMainWindow);
-
   if (hasGmgnAudioControls) {
     els.gmgnAudioEnabled.addEventListener('change', persistGmgnAudioSettings);
     els.gmgnAudioTts.addEventListener('change', persistGmgnAudioSettings);
@@ -315,12 +280,6 @@ function bindEvents() {
 
   els.masterToggle.addEventListener('change', () => {
     void persistTwitterAudioState({ isMasterEnabled: els.masterToggle.checked }, '已更新推特语音总开关');
-  });
-  els.playDefaultToggle.addEventListener('change', () => {
-    void persistTwitterAudioState({ playDefaultUnmapped: els.playDefaultToggle.checked }, '已更新默认提示音设置');
-  });
-  els.enableTTSToggle.addEventListener('change', () => {
-    void persistTwitterAudioState({ enableTTS: els.enableTTSToggle.checked }, '已更新语音播报设置');
   });
   els.ttsVoiceSelect.addEventListener('change', () => {
     void persistTwitterAudioState({ ttsVoice: normalizeTtsVoice(els.ttsVoiceSelect.value) }, '已更新 TTS 音色');
@@ -344,9 +303,6 @@ function bindEvents() {
   });
   els.ttsTestBtn.addEventListener('click', () => {
     void playConfiguredTts('技术瓜发推啦');
-  });
-  els.fallbackPreset.addEventListener('change', () => {
-    void persistTwitterAudioState({ defaultAudio: normalizeAudioId(els.fallbackPreset.value) }, '已更新默认提示音');
   });
   els.globalVolume.addEventListener('input', () => {
     renderTwitterVolumeValue(Number(els.globalVolume.value));
@@ -373,79 +329,13 @@ function bindEvents() {
   els.addBlacklistBtn.addEventListener('click', addBlacklistWallet);
   if (hasGmgnTwitterTriggerHookControls) {
     els.saveGmgnHookBtn.addEventListener('click', saveGmgnTwitterTriggerHookSettings);
+    els.saveGmgnRoutingBtn?.addEventListener('click', saveGmgnTwitterTriggerHookSettings);
+    els.gmgnFocusBuysEnabled.addEventListener('change', saveGmgnTwitterTriggerHookSettings);
+    els.gmgnMarketWatchDeskBaseUrl.addEventListener('change', saveGmgnTwitterTriggerHookSettings);
+    els.gmgnMainScreenRelayBaseUrl.addEventListener('change', saveGmgnTwitterTriggerHookSettings);
     els.saveGmgnTriggerRuleBtn.addEventListener('click', saveGmgnTwitterTriggerRule);
     els.cancelGmgnTriggerRuleBtn.addEventListener('click', resetGmgnTwitterTriggerRuleForm);
   }
-  els.addRuleBtn.addEventListener('click', addMappingRule);
-  els.uploadBtn.addEventListener('click', importCustomAudioFiles);
-  els.addAudioUrlBtn.addEventListener('click', addCustomAudioUrl);
-  els.exportAudioZipBtn.addEventListener('click', exportCustomAudioZip);
-  els.exportRulesBtn.addEventListener('click', exportRules);
-  els.importRulesBtn.addEventListener('click', () => els.importRulesFile.click());
-  els.importRulesFile.addEventListener('change', importRules);
-  els.searchInput.addEventListener('input', filterRulesList);
-  els.saveEditBtn.addEventListener('click', saveEditedRule);
-  els.cancelEditBtn.addEventListener('click', () => {
-    els.editModal.style.display = 'none';
-  });
-
-  document.addEventListener('click', () => {
-    document.querySelectorAll('.custom-dropdown-menu').forEach((menu) => menu.classList.remove('show'));
-  });
-}
-
-async function handleSetMainWindow() {
-  if (!currentWindowId) {
-    renderStatus('当前窗口不可用');
-    return;
-  }
-
-  const result = await chrome.runtime.sendMessage({
-    type: SET_MAIN_WINDOW_MESSAGE,
-    windowId: currentWindowId
-  });
-
-  if (!result || !result.ok) {
-    renderStatus(result && result.error ? result.error : '设置主窗口失败');
-    return;
-  }
-
-  selectedMainWindowId = result.windowId;
-  renderMainWindow(result.title, result.windowId, false);
-  renderCurrentWindowRole();
-  renderButtons();
-  renderStatus('已把当前窗口设为主窗口');
-}
-
-async function handleClearMainWindow() {
-  const result = await chrome.runtime.sendMessage({ type: CLEAR_MAIN_WINDOW_MESSAGE });
-
-  if (!result || !result.ok) {
-    renderStatus(result && result.error ? result.error : '清除主窗口失败');
-    return;
-  }
-
-  selectedMainWindowId = null;
-  renderMainWindow(null, null, false);
-  renderCurrentWindowRole();
-  renderButtons();
-  renderStatus('已清除主窗口选择');
-}
-
-async function loadMainWindowState() {
-  const result = await chrome.runtime.sendMessage({ type: GET_MAIN_WINDOW_MESSAGE });
-  if (!result || !result.ok || !result.windowId) {
-    selectedMainWindowId = null;
-    renderMainWindow(null, null, false);
-    renderCurrentWindowRole();
-    renderButtons();
-    return;
-  }
-
-  selectedMainWindowId = result.windowId;
-  renderMainWindow(result.title, result.windowId, Boolean(result.resolvedFromSnapshot));
-  renderCurrentWindowRole();
-  renderButtons();
 }
 
 async function loadGmgnAudioSettings() {
@@ -477,7 +367,7 @@ async function persistGmgnAudioSettings() {
   renderGmgnAudioControls();
 
   await chrome.storage.local.set({ [GMGN_AUDIO_SETTINGS_KEY]: settings });
-  renderStatus('已更新聚合告警音频设置');
+  showToast('已更新聚合告警音频设置');
 }
 
 async function loadTwitterAudioSettings() {
@@ -552,14 +442,11 @@ async function persistUnifiedVolumeSetting(rawVolume) {
 
 function renderTwitterAudioSettings() {
   els.masterToggle.checked = twitterState.isMasterEnabled;
-  els.playDefaultToggle.checked = twitterState.playDefaultUnmapped;
-  els.enableTTSToggle.checked = twitterState.enableTTS;
   els.ttsVoiceSelect.value = twitterState.ttsVoice;
   els.ttsRateSelect.value = twitterState.ttsRate;
   els.ttsPitchSelect.value = twitterState.ttsPitch;
   els.ttsApiPresetSelect.value = resolveTtsApiPresetValue(twitterState.ttsApiUrl);
   els.ttsApiUrlInput.value = twitterState.ttsApiUrl;
-  els.fallbackPreset.value = twitterState.defaultAudio;
   els.globalVolume.value = String(twitterState.globalVolume);
   renderTwitterVolumeValue(twitterState.globalVolume);
   els.filterTweet.checked = twitterState.eventFilters.tweet;
@@ -568,11 +455,6 @@ function renderTwitterAudioSettings() {
   els.filterQuote.checked = twitterState.eventFilters.quote;
   els.filterOther.checked = twitterState.eventFilters.other;
   renderTwitterTtsControls();
-
-  renderAudioDropdownOptions();
-  renderCustomAudioList();
-  renderRulesList();
-  filterRulesList();
 }
 
 async function loadGmgnSpeechWatchlist() {
@@ -650,6 +532,9 @@ function renderGmgnTwitterTriggerHookSettings() {
   els.gmgnEventApiToken.value = gmgnTwitterTriggerHookSettings.eventApiToken;
   els.gmgnEventSendWalletTrades.checked = gmgnTwitterTriggerHookSettings.eventSendWalletTrades;
   els.gmgnEventSendConvergenceAlerts.checked = gmgnTwitterTriggerHookSettings.eventSendConvergenceAlerts;
+  els.gmgnFocusBuysEnabled.checked = gmgnTwitterTriggerHookSettings.focusBuysEnabled;
+  els.gmgnMarketWatchDeskBaseUrl.value = gmgnTwitterTriggerHookSettings.marketWatchDeskBaseUrl;
+  els.gmgnMainScreenRelayBaseUrl.value = gmgnTwitterTriggerHookSettings.mainScreenRelayBaseUrl;
   els.gmgnDirectCaEnabled.checked = gmgnTwitterTriggerHookSettings.directCaEnabled;
   els.gmgnDirectCaChain.value = gmgnTwitterTriggerHookSettings.directCaChain;
   els.gmgnDirectCaBuyAmount.value = gmgnTwitterTriggerHookSettings.directCaBuyAmount;
@@ -719,6 +604,7 @@ function renderGmgnSpeechWatchlist() {
 
   for (const [walletName, meta] of entries) {
     const alias = typeof meta.alias === 'string' ? meta.alias.trim() : '';
+    const focusPushEnabled = meta.focusPushEnabled !== false;
     const row = document.createElement('div');
     row.className = 'list-item';
     row.innerHTML = `
@@ -730,6 +616,26 @@ function renderGmgnSpeechWatchlist() {
         <button class="btn-icon del" type="button">删除</button>
       </div>
     `;
+
+    const focusPushButton = document.createElement('button');
+    focusPushButton.className = `btn-icon focus-push ${focusPushEnabled ? 'enabled' : 'disabled'}`;
+    focusPushButton.type = 'button';
+    focusPushButton.title = focusPushEnabled ? '关闭 Focus 推送' : '开启 Focus 推送';
+    focusPushButton.setAttribute('aria-label', focusPushButton.title);
+    focusPushButton.textContent = focusPushEnabled ? '🔔' : '🔕';
+    row.querySelector('.action-btns').prepend(focusPushButton);
+
+    focusPushButton.addEventListener('click', async () => {
+      const nextWatchlist = { ...gmgnSpeechWatchlist };
+      nextWatchlist[walletName] = {
+        ...(nextWatchlist[walletName] || {}),
+        focusPushEnabled: !focusPushEnabled
+      };
+      await persistGmgnSpeechWatchlist(
+        nextWatchlist,
+        !focusPushEnabled ? `已开启 Focus 推送：${walletName}` : `已关闭 Focus 推送：${walletName}`
+      );
+    });
 
     row.querySelector('.del').addEventListener('click', async () => {
       const nextWatchlist = { ...gmgnSpeechWatchlist };
@@ -773,113 +679,6 @@ function renderGmgnBlacklistWallets() {
   }
 }
 
-function renderAudioDropdownOptions() {
-  const options = buildAudioOptions(twitterState.customAudios);
-  renderDropdownList(document.getElementById('addSelectList'), options);
-  renderDropdownList(document.getElementById('editSelectList'), options);
-
-  resetDropdownSelection('add', document.getElementById('addAudioValue').value || 'default.MP3');
-
-  if (els.editModal.style.display === 'flex') {
-    resetDropdownSelection('edit', document.getElementById('editAudioValue').value || 'default.MP3');
-  }
-}
-
-function renderCustomAudioList() {
-  const entries = Object.entries(twitterState.customAudios);
-  els.customAudioList.innerHTML = '';
-
-  if (entries.length === 0) {
-    els.customAudioList.innerHTML = '<div class="empty-state">暂无自定义音源</div>';
-    return;
-  }
-
-  for (const [customId, audioItem] of entries) {
-    const audioName = getCustomAudioName(audioItem, customId);
-    const sourceLabel = isRemoteAudioSource(audioItem)
-      ? '链接音源'
-      : '本地音源';
-    const row = document.createElement('div');
-    row.className = 'list-item';
-    row.innerHTML = `
-      <div class="item-info">
-        <span class="item-title">${escapeHtml(audioName)}</span>
-        <span class="item-sub">${escapeHtml(sourceLabel)}</span>
-      </div>
-      <div class="action-btns">
-        <button class="btn-icon play" type="button">试听</button>
-        <button class="btn-icon del" type="button">删除</button>
-      </div>
-    `;
-
-    row.querySelector('.play').addEventListener('click', async () => {
-      await previewAudio(customId, audioName);
-    });
-
-    row.querySelector('.del').addEventListener('click', async () => {
-      const nextCustomAudios = { ...twitterState.customAudios };
-      delete nextCustomAudios[customId];
-      await persistTwitterAudioState({ customAudios: nextCustomAudios }, `已删除音源：${audioName}`);
-    });
-
-    els.customAudioList.appendChild(row);
-  }
-}
-
-function renderRulesList() {
-  els.rulesList.innerHTML = '';
-
-  const mappings = Object.entries(twitterState.mappings).sort((left, right) => left[0].localeCompare(right[0]));
-  if (mappings.length === 0) {
-    els.rulesList.innerHTML = '<div class="empty-state">暂无映射规则</div>';
-    return;
-  }
-
-  for (const [twitterId, rule] of mappings) {
-    const audioId = normalizeAudioId(rule.id);
-    const audioLabel = getAudioLabel(audioId, twitterState.customAudios);
-    const remark = typeof rule.remark === 'string' ? rule.remark.trim() : '';
-    const isMissingCustom = audioId.startsWith('custom_') && !twitterState.customAudios[audioId];
-    const subLabel = isMissingCustom ? `${audioLabel}（原音源已丢失，将回退到默认提示音）` : audioLabel;
-
-    const row = document.createElement('div');
-    row.className = 'list-item';
-    row.innerHTML = `
-      <div class="item-info">
-        <span class="item-title">@${escapeHtml(twitterId)}${remark ? ` <span class="item-sub">(${escapeHtml(remark)})</span>` : ''}</span>
-        <span class="item-sub">${escapeHtml(subLabel)}</span>
-      </div>
-      <div class="action-btns">
-        <button class="btn-icon play" type="button">试听</button>
-        <button class="btn-icon" type="button">编辑</button>
-        <button class="btn-icon del" type="button">删除</button>
-      </div>
-    `;
-
-    const buttons = row.querySelectorAll('button');
-    buttons[0].addEventListener('click', async () => {
-      await previewAudio(audioId, remark || twitterId);
-    });
-    buttons[1].addEventListener('click', () => {
-      openEditModal(twitterId, rule);
-    });
-    buttons[2].addEventListener('click', async () => {
-      const nextMappings = { ...twitterState.mappings };
-      delete nextMappings[twitterId];
-      await persistTwitterAudioState({ mappings: nextMappings }, `已删除映射：@${twitterId}`);
-    });
-
-    els.rulesList.appendChild(row);
-  }
-}
-
-function filterRulesList() {
-  const searchTerm = els.searchInput.value.trim().toLowerCase();
-  els.rulesList.querySelectorAll('.list-item').forEach((item) => {
-    item.style.display = item.textContent.toLowerCase().includes(searchTerm) ? 'flex' : 'none';
-  });
-}
-
 async function addSpeechWatchWallet() {
   const walletName = normalizeSpeechWatchWallet(els.speechWatchWalletInput.value);
   const alias = normalizeSpeechWatchAlias(els.speechWatchAliasInput.value);
@@ -893,7 +692,8 @@ async function addSpeechWatchWallet() {
   const nextWatchlist = {
     ...gmgnSpeechWatchlist,
     [walletName]: {
-      alias
+      alias,
+      focusPushEnabled: gmgnSpeechWatchlist[walletName]?.focusPushEnabled !== false
     }
   };
 
@@ -936,6 +736,9 @@ async function saveGmgnTwitterTriggerHookSettings() {
     eventApiToken: els.gmgnEventApiToken.value,
     eventSendWalletTrades: els.gmgnEventSendWalletTrades.checked,
     eventSendConvergenceAlerts: els.gmgnEventSendConvergenceAlerts.checked,
+    focusBuysEnabled: els.gmgnFocusBuysEnabled.checked,
+    marketWatchDeskBaseUrl: els.gmgnMarketWatchDeskBaseUrl.value,
+    mainScreenRelayBaseUrl: els.gmgnMainScreenRelayBaseUrl.value,
     directCaEnabled: els.gmgnDirectCaEnabled.checked,
     directCaChain: els.gmgnDirectCaChain.value,
     directCaBuyAmount: els.gmgnDirectCaBuyAmount.value,
@@ -1024,294 +827,6 @@ function resetGmgnTwitterTriggerRuleForm() {
   els.saveGmgnTriggerRuleBtn.textContent = '保存触发规则';
 }
 
-async function addMappingRule() {
-  const twitterId = normalizeTwitterId(els.twitterIdInput.value);
-  const remark = els.twitterRemarkInput.value.trim();
-  const audioId = normalizeAudioId(document.getElementById('addAudioValue').value);
-
-  if (!twitterId) {
-    showToast('请先输入推特 ID 或钱包标签');
-    return;
-  }
-
-  if (twitterState.mappings[twitterId]) {
-    showToast(`@${twitterId} 已存在，请直接编辑`);
-    return;
-  }
-
-  const nextMappings = {
-    ...twitterState.mappings,
-    [twitterId]: {
-      id: audioId,
-      name: getAudioLabel(audioId, twitterState.customAudios),
-      remark
-    }
-  };
-
-  await persistTwitterAudioState({ mappings: nextMappings }, `已添加映射：@${twitterId}`);
-  els.twitterIdInput.value = '';
-  els.twitterRemarkInput.value = '';
-  resetDropdownSelection('add', 'default.MP3');
-}
-
-function openEditModal(twitterId, rule) {
-  els.editTwitterId.value = twitterId;
-  els.editTwitterRemark.value = typeof rule.remark === 'string' ? rule.remark : '';
-  resetDropdownSelection('edit', normalizeAudioId(rule.id));
-  els.editModal.style.display = 'flex';
-}
-
-async function saveEditedRule() {
-  const twitterId = normalizeTwitterId(els.editTwitterId.value);
-  if (!twitterId) return;
-
-  const audioId = normalizeAudioId(document.getElementById('editAudioValue').value);
-  const nextMappings = {
-    ...twitterState.mappings,
-    [twitterId]: {
-      id: audioId,
-      name: getAudioLabel(audioId, twitterState.customAudios),
-      remark: els.editTwitterRemark.value.trim()
-    }
-  };
-
-  await persistTwitterAudioState({ mappings: nextMappings }, `已保存映射：@${twitterId}`);
-  els.editModal.style.display = 'none';
-}
-
-async function importCustomAudioFiles() {
-  const files = Array.from(els.customAudioFile.files || []);
-  if (files.length === 0) {
-    showToast('请先选择音频文件或 ZIP 包');
-    return;
-  }
-
-  const allowedExtensions = new Set(['mp3', 'wav', 'ogg', 'aac', 'm4a', 'flac']);
-  const nextCustomAudios = { ...twitterState.customAudios };
-  let imported = 0;
-  let skipped = 0;
-
-  els.uploadBtn.disabled = true;
-  const previousLabel = els.uploadBtn.textContent;
-  els.uploadBtn.textContent = '导入中...';
-
-  try {
-    for (const file of files) {
-      const fileExt = getFileExtension(file.name);
-
-      if (fileExt === 'zip') {
-        const zip = await JSZip.loadAsync(file);
-        const entryPromises = [];
-
-        zip.forEach((relativePath, zipEntry) => {
-          if (zipEntry.dir) return;
-          const entryExt = getFileExtension(relativePath);
-          if (!allowedExtensions.has(entryExt)) return;
-          entryPromises.push(
-            zipEntry.async('base64').then((base64) => ({
-              name: relativePath.split('/').pop(),
-              mimeType: getAudioMimeType(entryExt),
-              base64
-            }))
-          );
-        });
-
-        const entries = await Promise.all(entryPromises);
-        for (const entry of entries) {
-          const customId = buildCustomAudioId(entry.name);
-          if (nextCustomAudios[customId]) {
-            skipped += 1;
-            continue;
-          }
-
-          nextCustomAudios[customId] = {
-            name: entry.name,
-            data: `data:${entry.mimeType};base64,${entry.base64}`,
-            sourceType: 'local'
-          };
-          imported += 1;
-        }
-        continue;
-      }
-
-      if (!allowedExtensions.has(fileExt)) {
-        skipped += 1;
-        continue;
-      }
-
-      const customId = buildCustomAudioId(file.name);
-      if (nextCustomAudios[customId]) {
-        skipped += 1;
-        continue;
-      }
-
-      nextCustomAudios[customId] = {
-        name: file.name,
-        data: await readFileAsDataUrl(file),
-        sourceType: 'local'
-      };
-      imported += 1;
-    }
-
-    await persistTwitterAudioState(
-      { customAudios: nextCustomAudios },
-      `已导入 ${imported} 个音源${skipped ? `，跳过 ${skipped} 个重复或无效文件` : ''}`
-    );
-    els.customAudioFile.value = '';
-  } finally {
-    els.uploadBtn.disabled = false;
-    els.uploadBtn.textContent = previousLabel;
-  }
-}
-
-async function addCustomAudioUrl() {
-  const rawUrl = els.customAudioUrl.value.trim();
-  const customName = els.customAudioName.value.trim();
-
-  if (!rawUrl) {
-    showToast('请先输入音频链接');
-    return;
-  }
-
-  let parsedUrl;
-  try {
-    parsedUrl = new URL(rawUrl);
-  } catch (_error) {
-    showToast('音频链接格式不正确');
-    return;
-  }
-
-  if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-    showToast('音频链接只支持 http 或 https');
-    return;
-  }
-
-  const customId = buildCustomAudioUrlId(parsedUrl.href);
-  if (twitterState.customAudios[customId]) {
-    showToast('这个音频链接已经存在');
-    return;
-  }
-
-  const nextCustomAudios = {
-    ...twitterState.customAudios,
-    [customId]: {
-      name: customName || deriveAudioNameFromUrl(parsedUrl),
-      data: parsedUrl.href,
-      sourceType: 'remote'
-    }
-  };
-
-  await persistTwitterAudioState({ customAudios: nextCustomAudios }, '已添加链接音源');
-  els.customAudioUrl.value = '';
-  els.customAudioName.value = '';
-}
-
-async function exportCustomAudioZip() {
-  const entries = Object.entries(twitterState.customAudios);
-  if (entries.length === 0) {
-    showToast('没有可导出的自定义音源');
-    return;
-  }
-
-  els.exportAudioZipBtn.disabled = true;
-  const previousLabel = els.exportAudioZipBtn.textContent;
-  els.exportAudioZipBtn.textContent = '打包中...';
-
-  try {
-    const zip = new JSZip();
-    const folder = zip.folder('gmgn-twitter-audio-backup');
-    const remoteLinks = [];
-
-    for (const [customId, audioItem] of entries) {
-      const audioName = getCustomAudioName(audioItem, customId);
-      const source = typeof audioItem === 'string' ? audioItem : audioItem.data;
-
-      if (isRemoteAudioSource(audioItem)) {
-        remoteLinks.push({
-          id: customId,
-          name: audioName,
-          url: source
-        });
-        continue;
-      }
-
-      const base64 = String(source).split(',')[1];
-      if (!base64) continue;
-      folder.file(audioName, base64, { base64: true });
-    }
-
-    if (remoteLinks.length > 0) {
-      folder.file('remote-audio-links.json', JSON.stringify(remoteLinks, null, 2));
-    }
-
-    const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
-    downloadBlob(zipBlob, `gmgn-twitter-audio-backup-${getDateStamp()}.zip`);
-    showToast('已导出音源备份');
-  } finally {
-    els.exportAudioZipBtn.disabled = false;
-    els.exportAudioZipBtn.textContent = previousLabel;
-  }
-}
-
-async function exportRules() {
-  const rulesBlob = new Blob([JSON.stringify(twitterState.mappings, null, 2)], {
-    type: 'application/json'
-  });
-  downloadBlob(rulesBlob, `gmgn-twitter-rules-${getDateStamp()}.json`);
-  showToast('已导出映射规则');
-}
-
-async function importRules(event) {
-  const file = event.target.files && event.target.files[0];
-  if (!file) return;
-
-  try {
-    const text = await file.text();
-    const parsed = JSON.parse(text);
-    const nextMappings = { ...twitterState.mappings };
-    let imported = 0;
-    let skipped = 0;
-
-    for (const [rawId, rawRule] of Object.entries(parsed || {})) {
-      const twitterId = normalizeTwitterId(rawId);
-      if (!twitterId || nextMappings[twitterId]) {
-        skipped += 1;
-        continue;
-      }
-      const normalizedRule = normalizeRule(rawRule);
-      nextMappings[twitterId] = normalizedRule;
-      imported += 1;
-    }
-
-    await persistTwitterAudioState(
-      { mappings: nextMappings },
-      `已导入 ${imported} 条规则${skipped ? `，跳过 ${skipped} 条重复或无效规则` : ''}`
-    );
-  } catch (_error) {
-    showToast('规则文件不是有效的 JSON');
-  } finally {
-    els.importRulesFile.value = '';
-  }
-}
-
-async function previewAudio(audioId, ttsText) {
-  const resolvedAudioId = normalizeAudioId(audioId);
-  const customAudio = twitterState.customAudios[resolvedAudioId];
-
-  if (customAudio) {
-    const source = typeof customAudio === 'string' ? customAudio : customAudio.data;
-    await playAudioSource(source, twitterState.globalVolume);
-    return;
-  }
-
-  if ((resolvedAudioId === 'default.MP3' || resolvedAudioId === 'preset1.MP3') && twitterState.enableTTS) {
-    await playConfiguredTts(`${ttsText} 的推特提示`);
-    return;
-  }
-
-  await playAudioSource(chrome.runtime.getURL(`sounds/${resolvedAudioId}`), twitterState.globalVolume);
-}
-
 function speakPreviewText(text) {
   if (!('speechSynthesis' in window)) {
     showToast('当前浏览器不支持语音播报');
@@ -1320,7 +835,11 @@ function speakPreviewText(text) {
 
   window.speechSynthesis.cancel();
   const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = 'zh-CN';
+  utterance.lang = getNativeTtsLang(twitterState.ttsVoice);
+  const nativeVoice = selectNativeTtsVoice(twitterState.ttsVoice);
+  if (nativeVoice) {
+    utterance.voice = nativeVoice;
+  }
   utterance.rate = speechSynthesisRateFromConfig(twitterState.ttsRate);
   utterance.pitch = speechSynthesisPitchFromConfig(twitterState.ttsPitch);
   utterance.volume = Math.min(twitterState.globalVolume * 1.25, 1);
@@ -1433,8 +952,8 @@ function normalizeTwitterAudioState(raw) {
     isMasterEnabled: raw.isMasterEnabled !== false,
     globalVolume: clampVolume(raw.globalVolume),
     defaultAudio: BUILTIN_AUDIO_FILES.includes(defaultAudio) ? defaultAudio : DEFAULT_TWITTER_AUDIO_STATE.defaultAudio,
-    playDefaultUnmapped: raw.playDefaultUnmapped !== false,
-    enableTTS: raw.enableTTS !== false,
+    playDefaultUnmapped: true,
+    enableTTS: true,
     ttsVoice: normalizeTtsVoice(raw.ttsVoice),
     ttsRate: normalizeTtsRate(raw.ttsRate),
     ttsPitch: normalizeTtsPitch(raw.ttsPitch),
@@ -1493,79 +1012,6 @@ function normalizeCustomAudios(customAudios) {
   return normalized;
 }
 
-function setupCustomDropdown(triggerId, menuId, searchId, listId, valueId, nameId) {
-  const trigger = document.getElementById(triggerId);
-  const menu = document.getElementById(menuId);
-  const search = document.getElementById(searchId);
-  const list = document.getElementById(listId);
-  const valueInput = document.getElementById(valueId);
-  const nameInput = document.getElementById(nameId);
-
-  menu.addEventListener('click', (event) => {
-    event.stopPropagation();
-  });
-
-  trigger.addEventListener('click', (event) => {
-    event.stopPropagation();
-    const isOpen = menu.classList.contains('show');
-    document.querySelectorAll('.custom-dropdown-menu').forEach((dropdown) => dropdown.classList.remove('show'));
-    if (isOpen) return;
-    menu.classList.add('show');
-    search.value = '';
-    search.focus();
-    Array.from(list.children).forEach((child) => {
-      child.style.display = 'block';
-    });
-  });
-
-  list.addEventListener('click', (event) => {
-    const item = event.target.closest('.custom-dropdown-item');
-    if (!item) return;
-    valueInput.value = item.dataset.value || 'default.MP3';
-    nameInput.value = item.dataset.name || item.dataset.value || 'default.MP3';
-    trigger.querySelector('span').textContent = nameInput.value;
-    menu.classList.remove('show');
-  });
-
-  search.addEventListener('input', () => {
-    const term = search.value.trim().toLowerCase();
-    Array.from(list.children).forEach((child) => {
-      const name = (child.dataset.name || '').toLowerCase();
-      child.style.display = name.includes(term) ? 'block' : 'none';
-    });
-  });
-}
-
-function renderDropdownList(container, options) {
-  container.innerHTML = options.map((option) => `
-    <div class="custom-dropdown-item" data-value="${escapeHtml(option.id)}" data-name="${escapeHtml(option.name)}">${escapeHtml(option.name)}</div>
-  `).join('');
-}
-
-function resetDropdownSelection(prefix, audioId) {
-  const resolvedAudioId = normalizeAudioId(audioId);
-  const valueInput = document.getElementById(`${prefix}AudioValue`);
-  const nameInput = document.getElementById(`${prefix}AudioName`);
-  const trigger = document.getElementById(`${prefix}SelectTrigger`);
-  const label = getAudioLabel(resolvedAudioId, twitterState.customAudios);
-
-  valueInput.value = resolvedAudioId;
-  nameInput.value = label;
-  trigger.querySelector('span').textContent = label;
-}
-
-function buildAudioOptions(customAudios) {
-  const builtIns = BUILTIN_AUDIO_FILES.map((fileName) => ({
-    id: fileName,
-    name: fileName
-  }));
-  const customs = Object.entries(customAudios).map(([customId, audioItem]) => ({
-    id: customId,
-    name: getCustomAudioName(audioItem, customId)
-  }));
-  return [...builtIns, ...customs];
-}
-
 function getAudioLabel(audioId, customAudios) {
   const resolvedAudioId = normalizeAudioId(audioId);
   if (customAudios[resolvedAudioId]) {
@@ -1581,14 +1027,6 @@ function getCustomAudioName(audioItem, fallbackId) {
   return decodeCustomAudioName(fallbackId);
 }
 
-function isRemoteAudioSource(audioItem) {
-  if (!audioItem) return false;
-  const sourceType = typeof audioItem === 'object' ? audioItem.sourceType : '';
-  if (sourceType === 'remote') return true;
-  const source = typeof audioItem === 'string' ? audioItem : audioItem.data;
-  return typeof source === 'string' && (source.startsWith('http://') || source.startsWith('https://'));
-}
-
 function decodeCustomAudioName(customId) {
   if (customId.startsWith('custom_file_')) {
     return decodeURIComponent(customId.slice('custom_file_'.length));
@@ -1597,19 +1035,6 @@ function decodeCustomAudioName(customId) {
     return decodeURIComponent(customId.slice('custom_url_'.length));
   }
   return customId;
-}
-
-function buildCustomAudioId(fileName) {
-  return `custom_file_${encodeURIComponent(fileName)}`;
-}
-
-function buildCustomAudioUrlId(url) {
-  return `custom_url_${encodeURIComponent(url)}`;
-}
-
-function deriveAudioNameFromUrl(url) {
-  const fileName = url.pathname.split('/').pop();
-  return fileName || url.hostname || url.href;
 }
 
 function normalizeAudioId(value) {
@@ -1640,7 +1065,10 @@ function normalizeGmgnSpeechWatchlist(raw) {
     const normalizedWallet = normalizeSpeechWatchWallet(walletName);
     if (!normalizedWallet) continue;
     next[normalizedWallet] = {
-      alias: normalizeSpeechWatchAlias(meta && meta.alias)
+      alias: normalizeSpeechWatchAlias(meta && meta.alias),
+      focusPushEnabled: meta && typeof meta.focusPushEnabled === 'boolean'
+        ? meta.focusPushEnabled
+        : true
     };
   }
   return next;
@@ -1680,6 +1108,11 @@ function normalizeGmgnTwitterTriggerHookSettings(raw) {
   settings.eventApiToken = typeof settings.eventApiToken === 'string' ? settings.eventApiToken.trim() : '';
   settings.eventSendWalletTrades = settings.eventSendWalletTrades !== false;
   settings.eventSendConvergenceAlerts = settings.eventSendConvergenceAlerts !== false;
+  settings.focusBuysEnabled = typeof settings.focusBuysEnabled === 'boolean'
+    ? settings.focusBuysEnabled
+    : DEFAULT_GMGN_TWITTER_TRIGGER_HOOK_SETTINGS.focusBuysEnabled;
+  settings.marketWatchDeskBaseUrl = normalizeMarketWatchDeskBaseUrl(settings.marketWatchDeskBaseUrl);
+  settings.mainScreenRelayBaseUrl = normalizeMainScreenRelayBaseUrl(settings.mainScreenRelayBaseUrl);
   settings.directCaEnabled = settings.directCaEnabled === true;
   settings.directCaChain = normalizeGmgnTriggerChain(settings.directCaChain);
   settings.directCaBuyAmount = typeof settings.directCaBuyAmount === 'string'
@@ -1687,6 +1120,32 @@ function normalizeGmgnTwitterTriggerHookSettings(raw) {
     : String(settings.directCaBuyAmount || '').trim();
   settings.directCaTwitterIds = normalizeGmgnTriggerTwitterIds(settings.directCaTwitterIds).join('\n');
   return settings;
+}
+
+function normalizeHttpBaseUrl(value, defaultValue = '') {
+  const rawValue = String(value || '').trim();
+  if (!rawValue) return defaultValue;
+  const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(rawValue) ? rawValue : `http://${rawValue}`;
+  try {
+    const url = new URL(withProtocol);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return '';
+    }
+    url.pathname = url.pathname.replace(/\/+$/, '');
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/$/, '');
+  } catch (_error) {
+    return '';
+  }
+}
+
+function normalizeMarketWatchDeskBaseUrl(value) {
+  return normalizeHttpBaseUrl(value, DEFAULT_MARKET_WATCH_DESK_BASE_URL);
+}
+
+function normalizeMainScreenRelayBaseUrl(value) {
+  return normalizeHttpBaseUrl(value, DEFAULT_MAIN_SCREEN_RELAY_BASE_URL);
 }
 
 function normalizeGmgnTwitterTriggerRules(raw) {
@@ -1845,7 +1304,9 @@ function resolveTtsApiPresetValue(ttsApiUrl) {
 function buildTtsRequest(ttsApiUrl, text, options = {}) {
   if (usesMacminiTaskTts(ttsApiUrl)) {
     const url = new URL(ttsApiUrl);
+    url.pathname = url.pathname.replace(/\/+$/, '');
     url.searchParams.set('data', text);
+    appendTtsQueryParams(url, options);
     return {
       url: url.toString(),
       options: {
@@ -1871,10 +1332,19 @@ function buildTtsRequest(ttsApiUrl, text, options = {}) {
   };
 }
 
+function appendTtsQueryParams(url, options = {}) {
+  const voice = String(options.voice || '').trim();
+  const rate = String(options.rate || '').trim();
+  const pitch = String(options.pitch || '').trim();
+  if (voice) url.searchParams.set('voice', voice);
+  if (rate) url.searchParams.set('rate', rate);
+  if (pitch) url.searchParams.set('pitch', pitch);
+}
+
 function usesMacminiTaskTts(ttsApiUrl) {
   try {
     const url = new URL(ttsApiUrl);
-    return url.hostname === 'tts.macmini.lan' && url.pathname === '/tts/v3-task';
+    return url.hostname === 'tts.macmini.lan' && url.pathname.replace(/\/+$/, '') === '/tts/v3-task';
   } catch (_error) {
     return false;
   }
@@ -1891,6 +1361,26 @@ function speechSynthesisRateFromConfig(value) {
 
 function speechSynthesisPitchFromConfig(value) {
   return Math.min(2, Math.max(0, 1 + (parsePercentString(value) / 100)));
+}
+
+function getNativeTtsLang(voiceId) {
+  const value = String(voiceId || '').trim();
+  const match = /^([a-z]{2}-[A-Z]{2})/.exec(value);
+  return match ? match[1] : 'zh-CN';
+}
+
+function selectNativeTtsVoice(voiceId) {
+  if (!('speechSynthesis' in window) || typeof window.speechSynthesis.getVoices !== 'function') {
+    return null;
+  }
+  const voices = window.speechSynthesis.getVoices();
+  if (!Array.isArray(voices) || voices.length === 0) return null;
+  const lang = getNativeTtsLang(voiceId).toLowerCase();
+  const voiceText = String(voiceId || '').toLowerCase();
+  return voices.find((voice) => String(voice.name || '').toLowerCase().includes(voiceText))
+    || voices.find((voice) => String(voice.lang || '').toLowerCase() === lang)
+    || voices.find((voice) => String(voice.lang || '').toLowerCase().startsWith(lang.split('-')[0]))
+    || null;
 }
 
 function populateBuiltInSelect(selectElement) {
@@ -1923,48 +1413,9 @@ function renderTwitterVolumeValue(volume) {
 }
 
 function renderTwitterTtsControls() {
-  const enabled = els.enableTTSToggle.checked;
   [els.ttsVoiceSelect, els.ttsRateSelect, els.ttsPitchSelect, els.ttsApiPresetSelect, els.ttsApiUrlInput, els.ttsTestBtn].forEach((element) => {
-    element.disabled = !enabled;
+    element.disabled = false;
   });
-}
-
-function renderMainWindow(title, windowId, resolvedFromSnapshot) {
-  if (!windowId) {
-    els.mainWindow.textContent = '未设置';
-    els.mainWindowMeta.textContent = '请在目标 Chrome 窗口里点击“设为主窗口”。';
-    return;
-  }
-
-  els.mainWindow.textContent = `${title} (ID: ${windowId})`;
-  els.mainWindowMeta.textContent = resolvedFromSnapshot
-    ? '已根据最近一次保存的窗口快照自动恢复。'
-    : '后续从 GMGN follow 打开的外部链接会优先落到这个窗口。';
-}
-
-function renderCurrentWindowRole() {
-  const isCurrentWindowMain = Boolean(currentWindowId && selectedMainWindowId && currentWindowId === selectedMainWindowId);
-  els.currentWindowRole.textContent = isCurrentWindowMain ? '当前窗口就是主窗口' : '当前窗口不是主窗口';
-  els.currentWindowRole.dataset.role = isCurrentWindowMain ? 'main' : 'normal';
-}
-
-function renderButtons() {
-  const isCurrentWindowMain = Boolean(currentWindowId && selectedMainWindowId && currentWindowId === selectedMainWindowId);
-  els.setMainWindow.disabled = !currentWindowId || isCurrentWindowMain;
-  els.clearMainWindow.disabled = !selectedMainWindowId;
-}
-
-function formatWindowTitle(windowInfo, windowId) {
-  return `${getWindowTitle(windowInfo)} (ID: ${windowId ?? 'unknown'})`;
-}
-
-function getWindowTitle(windowInfo) {
-  if (!windowInfo.tabs || windowInfo.tabs.length === 0) {
-    return '未命名窗口';
-  }
-
-  const activeTab = windowInfo.tabs.find((tab) => tab.active) || windowInfo.tabs[0];
-  return activeTab.title || activeTab.url || '未命名窗口';
 }
 
 function showToast(message, duration = 2200) {
@@ -1976,10 +1427,6 @@ function showToast(message, duration = 2200) {
   }, duration);
 }
 
-function renderStatus(message) {
-  els.status.textContent = message;
-}
-
 function escapeHtml(value) {
   return String(value).replace(/[&<>'"]/g, (character) => ({
     '&': '&amp;',
@@ -1988,40 +1435,6 @@ function escapeHtml(value) {
     "'": '&#39;',
     '"': '&quot;'
   }[character]));
-}
-
-function getAudioMimeType(extension) {
-  const ext = extension.toLowerCase();
-  if (ext === 'mp3') return 'audio/mpeg';
-  if (ext === 'm4a') return 'audio/mp4';
-  return `audio/${ext}`;
-}
-
-function getFileExtension(fileName) {
-  const parts = String(fileName).toLowerCase().split('.');
-  return parts.length > 1 ? parts.pop() : '';
-}
-
-function readFileAsDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-}
-
-function downloadBlob(blob, fileName) {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = fileName;
-  anchor.click();
-  URL.revokeObjectURL(url);
-}
-
-function getDateStamp() {
-  return new Date().toISOString().slice(0, 10).replace(/-/g, '');
 }
 
 function buildDefaultTwitterMappings() {

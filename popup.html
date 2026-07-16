@@ -13,38 +13,8 @@
       <section class="card">
         <div class="card-heading">
           <div>
-            <h1>主窗口</h1>
-            <p class="card-subtitle">GMGN follow 监控页打开的外部链接，会优先落到这里选中的 Chrome 窗口。</p>
-          </div>
-        </div>
-
-        <div class="info-grid">
-          <div class="info-block">
-            <div class="eyebrow">当前窗口</div>
-            <div class="info-value" id="current-window">读取中...</div>
-            <div class="role-pill" id="current-window-role" data-role="normal">正在识别当前窗口角色...</div>
-          </div>
-
-          <div class="info-block">
-            <div class="eyebrow">已选主窗口</div>
-            <div class="info-value" id="main-window">未设置</div>
-            <div class="info-meta" id="main-window-meta">请在目标 Chrome 窗口里点击下方按钮。</div>
-          </div>
-        </div>
-
-        <div class="button-row">
-          <button id="set-main-window" class="primary" type="button">设为主窗口</button>
-          <button id="clear-main-window" class="secondary" type="button">清除选择</button>
-        </div>
-
-        <p class="status-text" id="status"></p>
-      </section>
-
-      <section class="card">
-        <div class="card-heading">
-          <div>
             <h2>推特语音设置</h2>
-            <p class="card-subtitle">聚合买入提醒已恢复为原始蜂鸣音。这里仅管理推特语音提示、默认提示音和事件筛选。</p>
+            <p class="card-subtitle">聚合买入提醒已恢复为原始蜂鸣音。Twitter 提醒全部走 TTS，这里仅管理语音提示和事件筛选。</p>
           </div>
           <label class="switch">
             <input type="checkbox" id="masterToggle" />
@@ -53,19 +23,9 @@
         </div>
 
         <div class="setting-list">
-          <label class="setting-row toggle-row">
-            <span>未映射账号使用默认提示音</span>
-            <input type="checkbox" id="playDefaultToggle" />
-          </label>
-
-          <label class="setting-row toggle-row">
-            <span>通用提示音改用语音播报</span>
-            <input type="checkbox" id="enableTTSToggle" />
-          </label>
-
           <div class="setting-row tts-panel">
             <span>TTS 语音风格</span>
-            <p class="setting-help">用于未映射账号提示，以及映射到 `default.MP3` / `preset1.MP3` 的推特语音播报。</p>
+            <p class="setting-help">用于所有 Twitter 提醒；不再播放默认 MP3 或账号映射音频。</p>
 
             <div class="tts-select-row">
               <select id="ttsVoiceSelect"></select>
@@ -87,11 +47,6 @@
               <input id="ttsApiUrlInput" type="url" placeholder="例如 http://tts.macmini.lan/tts/v3-task" />
             </label>
           </div>
-
-          <label class="setting-row">
-            <span>默认提示音</span>
-            <select id="fallbackPreset"></select>
-          </label>
 
           <label class="setting-row">
             <span>提示音量</span>
@@ -145,116 +100,8 @@
         </div>
       </section>
 
-      <section class="card">
-        <div class="card-heading">
-          <div>
-            <h2>新增映射</h2>
-            <p class="card-subtitle">把推特 ID 或钱包标签映射到内置提示音、自定义上传音频或链接音源。</p>
-          </div>
-        </div>
-
-        <div class="form-stack">
-          <input type="text" id="twitterId" placeholder="推特 ID / 钱包标签，例如 elonmusk" />
-          <input type="text" id="twitterRemark" placeholder="备注（可选）" />
-
-          <div class="custom-select">
-            <button class="custom-select-trigger" id="addSelectTrigger" type="button">
-              <span>default.MP3</span>
-              <span class="caret">▼</span>
-            </button>
-            <input type="hidden" id="addAudioValue" value="default.MP3" />
-            <input type="hidden" id="addAudioName" value="default.MP3" />
-            <div class="custom-dropdown-menu" id="addSelectMenu">
-              <input type="text" class="custom-dropdown-search" id="addSelectSearch" placeholder="搜索音源..." />
-              <div class="custom-dropdown-list" id="addSelectList"></div>
-            </div>
-          </div>
-
-          <button id="addRuleBtn" class="primary" type="button">添加映射</button>
-        </div>
-      </section>
-
-      <section class="card">
-        <div class="card-heading">
-          <div>
-            <h2>自定义音源库</h2>
-            <p class="card-subtitle">支持导入本地音频 / ZIP，也支持直接填写音频链接作为提示声来源。</p>
-          </div>
-        </div>
-
-        <div class="form-stack">
-          <input type="file" id="customAudioFile" accept=".mp3,.wav,.ogg,.aac,.m4a,.flac,.zip,audio/*" multiple />
-
-          <div class="button-row">
-            <button id="uploadBtn" class="secondary" type="button">导入音频 / ZIP</button>
-            <button id="exportAudioZipBtn" class="secondary accent" type="button">导出音源备份</button>
-          </div>
-
-          <input type="url" id="custom-audio-url" placeholder="音频链接，例如 https://example.com/alert.mp3" />
-          <input type="text" id="custom-audio-name" placeholder="链接音源名称（可选）" />
-          <button id="addAudioUrlBtn" class="secondary" type="button">添加链接音源</button>
-
-          <div id="customAudioList" class="list-container"></div>
-        </div>
-      </section>
-
-      <section class="card">
-        <div class="card-heading">
-          <div>
-            <h2>规则 JSON</h2>
-            <p class="card-subtitle">这里只导入导出映射规则，不包含内置音频文件。</p>
-          </div>
-        </div>
-
-        <div class="button-row">
-          <button id="exportRulesBtn" class="secondary" type="button">导出规则</button>
-          <button id="importRulesBtn" class="secondary" type="button">导入规则</button>
-        </div>
-        <input type="file" id="importRulesFile" accept=".json" hidden />
-      </section>
-
-      <section class="card">
-        <div class="card-heading">
-          <div>
-            <h2>已有映射</h2>
-            <p class="card-subtitle">可以试听、编辑或删除已经保存的映射关系。</p>
-          </div>
-        </div>
-
-        <input type="text" id="searchInput" class="search-input" placeholder="搜索推特 ID 或备注..." />
-        <div id="rulesList" class="list-container"></div>
-      </section>
     </main>
 
-    <div class="modal-overlay" id="editModal">
-      <div class="modal">
-        <h3>编辑映射</h3>
-        <div class="form-stack">
-          <input type="text" id="editTwitterId" readonly />
-          <input type="text" id="editTwitterRemark" placeholder="备注（可选）" />
-
-          <div class="custom-select">
-            <button class="custom-select-trigger" id="editSelectTrigger" type="button">
-              <span>default.MP3</span>
-              <span class="caret">▼</span>
-            </button>
-            <input type="hidden" id="editAudioValue" value="default.MP3" />
-            <input type="hidden" id="editAudioName" value="default.MP3" />
-            <div class="custom-dropdown-menu" id="editSelectMenu">
-              <input type="text" class="custom-dropdown-search" id="editSelectSearch" placeholder="搜索音源..." />
-              <div class="custom-dropdown-list" id="editSelectList"></div>
-            </div>
-          </div>
-        </div>
-
-        <div class="button-row modal-actions">
-          <button id="cancelEditBtn" class="secondary" type="button">取消</button>
-          <button id="saveEditBtn" class="primary" type="button">保存</button>
-        </div>
-      </div>
-    </div>
-
-    <script src="lib/jszip.min.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

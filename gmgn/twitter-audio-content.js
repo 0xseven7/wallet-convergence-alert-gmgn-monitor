@@ -39,6 +39,8 @@
   const TTS_FETCH_TIMEOUT_MS = 10000;
   const NATIVE_TTS_TIMEOUT_MS = 10000;
   const TTS_FAILURE_COOLDOWN_MS = 60000;
+  const PENDING_PLAYBACK_TTL_MS = 30000;
+  const AUDIO_UNLOCK_EVENTS = ['pointerdown', 'mousedown', 'keydown', 'touchstart'];
   const MAX_AUDIO_VOLUME = 2;
   const DEFAULT_STATE = {
     mappings: {
@@ -80,6 +82,8 @@
   let lastSkipAt = 0;
   let networkTtsCooldownUntil = 0;
   let lastNetworkTtsFailure = '';
+  let lastAudioPlaybackBlockedByPolicy = false;
+  const pendingPlaybacksAfterUnlock = [];
 
   publishTwitterAudioDebugState();
   void loadConfig();
@@ -89,7 +93,14 @@
   window.addEventListener('focus', () => {
     if (document.visibilityState === 'visible') {
       logInfo('Twitter audio tab became active.');
+      handleAudioUnlockSignal();
     }
+  });
+  for (const eventName of AUDIO_UNLOCK_EVENTS) {
+    document.addEventListener(eventName, handleAudioUnlockSignal, { capture: true, passive: true });
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') handleAudioUnlockSignal();
   });
 
   audioSyncChannel.onmessage = (event) => {
@@ -157,9 +168,8 @@
       ttsRate: config.ttsRate,
       ttsPitch: config.ttsPitch,
       enableTTS: config.enableTTS,
-      defaultAudio: config.defaultAudio,
+      ttsOnly: true,
       globalVolume: config.globalVolume,
-      playDefaultUnmapped: config.playDefaultUnmapped,
       mappingCount: Object.keys(config.mappings || {}).length,
       customAudioCount: Object.keys(config.customAudios || {}).length,
       networkTtsCooldownUntil,
@@ -268,20 +278,7 @@
       }
       lastPlayTime.set(dedupeKey, now);
 
-      const mappedRule = config.mappings[twitterId];
-      if (mappedRule) {
-        const mappedPlayback = buildMappedPlayback(trigger, mappedRule);
-        if (mappedPlayback) {
-          queuedPlaybacks.push(mappedPlayback);
-        }
-        continue;
-      }
-
-      if (!config.playDefaultUnmapped) {
-        continue;
-      }
-
-      queuedPlaybacks.push(buildFallbackPlayback(trigger));
+      queuedPlaybacks.push(buildTwitterTtsPlayback(trigger, config.mappings[twitterId] || null));
     }
 
     if (queuedPlaybacks.length === 0) {
@@ -313,66 +310,18 @@
   }
 
   function buildMappedPlayback(trigger, rule) {
-    const audioId = normalizeAudioId(rule.id);
-    const speakerName = getSpeakerName(trigger, rule);
-
-    if (config.customAudios[audioId]) {
-      logInfo('Using custom mapped audio instead of network TTS.', {
-        twitterId: trigger?.id || '',
-        audioId
-      });
-      return {
-        audioSrc: getCustomAudioSource(config.customAudios[audioId]),
-        ttsText: ''
-      };
-    }
-
-    if (audioId.startsWith('custom_')) {
-      logInfo('Using fallback audio for missing custom mapping instead of network TTS.', {
-        twitterId: trigger?.id || '',
-        audioId,
-        fallbackAudio: config.defaultAudio
-      });
-      return {
-        audioSrc: getBuiltInAudioUrl(config.defaultAudio),
-        ttsText: ''
-      };
-    }
-
-    if (GENERIC_AUDIO_FILES.has(audioId) && config.enableTTS) {
-      logInfo('Using mapped generic audio as network TTS trigger.', {
-        twitterId: trigger?.id || '',
-        audioId,
-        ttsApiUrl: config.ttsApiUrl
-      });
-      return {
-        audioSrc: null,
-        ttsText: buildTwitterTtsText(speakerName, normalizeEventType(trigger.tw))
-      };
-    }
-
-    logInfo('Using mapped MP3 instead of network TTS.', {
-      twitterId: trigger?.id || '',
-      audioId
-    });
-    return {
-      audioSrc: getBuiltInAudioUrl(audioId),
-      ttsText: ''
-    };
+    return buildTwitterTtsPlayback(trigger, rule);
   }
 
   function buildFallbackPlayback(trigger) {
-    const speakerName = getSpeakerName(trigger, null);
-    if (config.enableTTS) {
-      return {
-        audioSrc: null,
-        ttsText: buildTwitterTtsText(speakerName, normalizeEventType(trigger.tw))
-      };
-    }
+    return buildTwitterTtsPlayback(trigger, null);
+  }
 
+  function buildTwitterTtsPlayback(trigger, rule) {
+    const speakerName = getSpeakerName(trigger, rule);
     return {
-      audioSrc: getBuiltInAudioUrl(config.defaultAudio),
-      ttsText: ''
+      audioSrc: null,
+      ttsText: buildTwitterTtsText(speakerName, normalizeEventType(trigger.tw))
     };
   }
 
@@ -389,7 +338,11 @@
     });
 
     if (playback.audioSrc) {
-      await playAudio(playback.audioSrc, config.globalVolume);
+      const played = await playAudio(playback.audioSrc, config.globalVolume);
+      if (!played && lastAudioPlaybackBlockedByPolicy) {
+        queuePlaybackAfterUnlock(playback);
+        return;
+      }
     }
 
     if (playback.ttsText) {
@@ -398,6 +351,7 @@
   }
 
   async function playAudio(source, volume) {
+    lastAudioPlaybackBlockedByPolicy = false;
     let player = null;
     const cachedAudio = preloadedAudios.get(source);
     if (cachedAudio && cachedAudio.readyState >= 2) {
@@ -438,6 +392,7 @@
       try {
         await player.play();
       } catch (_error) {
+        lastAudioPlaybackBlockedByPolicy = isAutoplayBlockedError(_error);
         finalize(false, 'Audio playback failed to start.', _error && _error.message ? _error.message : _error);
       }
     });
@@ -470,6 +425,61 @@
       return mediaPlaybackCtx;
     } catch (_error) {
       return null;
+    }
+  }
+
+  async function resumeMediaPlaybackCtx() {
+    const ctx = ensureMediaPlaybackCtx();
+    if (!ctx) return true;
+    if (ctx.state !== 'suspended') return true;
+    try {
+      await ctx.resume();
+      return ctx.state !== 'suspended';
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  function isAutoplayBlockedError(error) {
+    const name = String(error && error.name || '');
+    const message = String(error && error.message || error || '');
+    return name === 'NotAllowedError'
+      || /user.*interact|autoplay|notallowed|play\(\) failed/i.test(message);
+  }
+
+  function queuePlaybackAfterUnlock(playback) {
+    pendingPlaybacksAfterUnlock.push({
+      playback,
+      queuedAt: Date.now()
+    });
+    while (pendingPlaybacksAfterUnlock.length > 5) {
+      pendingPlaybacksAfterUnlock.shift();
+    }
+    logWarn('Queued twitter audio until browser audio is unlocked.', {
+      pendingCount: pendingPlaybacksAfterUnlock.length,
+      ttsText: playback && playback.ttsText ? playback.ttsText : ''
+    });
+  }
+
+  function handleAudioUnlockSignal() {
+    void resumeMediaPlaybackCtx().then(() => {
+      drainPendingPlaybacksAfterUnlock();
+    });
+  }
+
+  function drainPendingPlaybacksAfterUnlock() {
+    if (document.visibilityState !== 'visible' || pendingPlaybacksAfterUnlock.length === 0) {
+      return;
+    }
+
+    const now = Date.now();
+    const queue = pendingPlaybacksAfterUnlock.splice(0)
+      .filter((item) => item && (now - item.queuedAt) <= PENDING_PLAYBACK_TTL_MS);
+    if (queue.length === 0) return;
+
+    logInfo('Retrying twitter audio after browser audio unlock.', { count: queue.length });
+    for (const item of queue) {
+      enqueuePlayback(item.playback);
     }
   }
 
@@ -529,6 +539,10 @@
           markNetworkTtsHealthy();
           return;
         }
+        if (lastAudioPlaybackBlockedByPolicy) {
+          queuePlaybackAfterUnlock({ audioSrc: null, ttsText: text });
+          return;
+        }
         networkTtsCache.delete(cacheKey);
       }
 
@@ -551,6 +565,10 @@
       networkTtsCache.set(cacheKey, ttsResponse.dataUrl);
       const played = await playAudio(ttsResponse.dataUrl, Math.min(config.globalVolume * 1.25, 1));
       if (!played) {
+        if (lastAudioPlaybackBlockedByPolicy) {
+          queuePlaybackAfterUnlock({ audioSrc: null, ttsText: text });
+          return;
+        }
         throw new Error('Network TTS audio could not be played');
       }
       markNetworkTtsHealthy();
@@ -619,7 +637,11 @@
           }
           resolve(!!ok);
         };
-        utterance.lang = 'zh-CN';
+        utterance.lang = getNativeTtsLang(config.ttsVoice);
+        const nativeVoice = selectNativeTtsVoice(config.ttsVoice);
+        if (nativeVoice) {
+          utterance.voice = nativeVoice;
+        }
         utterance.rate = speechSynthesisRateFromConfig(config.ttsRate);
         utterance.pitch = speechSynthesisPitchFromConfig(config.ttsPitch);
         utterance.volume = Math.min(config.globalVolume * 1.25, 1);
@@ -648,9 +670,7 @@
   }
 
   async function playEmergencyAudioCue(reason) {
-    logWarn('Playing fallback alert audio because TTS failed.', reason);
-    const source = getBuiltInAudioUrl(config.defaultAudio);
-    await playAudio(source, config.globalVolume);
+    logWarn('Twitter TTS failed; default audio fallback is disabled.', reason);
   }
 
   function warmupAudioCache() {
@@ -665,33 +685,8 @@
     });
     preloadedAudios.clear();
 
-    const preloadTargets = new Set();
-    preloadTargets.add(getBuiltInAudioUrl(config.defaultAudio));
-
-    Object.values(config.mappings).forEach((rule) => {
-      const audioId = normalizeAudioId(rule.id);
-      if (config.customAudios[audioId]) {
-        preloadTargets.add(getCustomAudioSource(config.customAudios[audioId]));
-        return;
-      }
-
-      if (BUILTIN_AUDIO_FILES.includes(audioId)) {
-        preloadTargets.add(getBuiltInAudioUrl(audioId));
-      }
-    });
-
-    Object.values(config.customAudios).forEach((audioItem) => {
-      preloadTargets.add(getCustomAudioSource(audioItem));
-    });
-
-    preloadTargets.forEach((source) => {
-      if (!source || preloadedAudios.has(source)) return;
-      const audio = new Audio();
-      audio.preload = 'auto';
-      audio.src = source;
-      audio.load();
-      preloadedAudios.set(source, audio);
-    });
+    // Twitter monitor alerts are TTS-only. Keep the cache clear so stale MP3
+    // mappings cannot be used as a fallback path.
   }
 
   function dispatchToggleState() {
@@ -709,8 +704,8 @@
       isMasterEnabled: raw.isMasterEnabled !== false,
       globalVolume: clampVolume(raw.globalVolume),
       defaultAudio: normalizeAudioId(raw.defaultAudio || DEFAULT_STATE.defaultAudio),
-      playDefaultUnmapped: raw.playDefaultUnmapped !== false,
-      enableTTS: raw.enableTTS !== false,
+      playDefaultUnmapped: true,
+      enableTTS: true,
       ttsVoice: normalizeTtsVoice(raw.ttsVoice),
       ttsRate: normalizeTtsRate(raw.ttsRate),
       ttsPitch: normalizeTtsPitch(raw.ttsPitch),
@@ -955,7 +950,9 @@
   function buildTtsRequest(ttsApiUrl, text, options = {}) {
     if (usesMacminiTaskTts(ttsApiUrl)) {
       const url = new URL(ttsApiUrl);
+      url.pathname = url.pathname.replace(/\/+$/, '');
       url.searchParams.set('data', text);
+      appendTtsQueryParams(url, options);
       return {
         url: url.toString(),
         options: {
@@ -983,10 +980,19 @@
     };
   }
 
+  function appendTtsQueryParams(url, options = {}) {
+    const voice = String(options.voice || '').trim();
+    const rate = String(options.rate || '').trim();
+    const pitch = String(options.pitch || '').trim();
+    if (voice) url.searchParams.set('voice', voice);
+    if (rate) url.searchParams.set('rate', rate);
+    if (pitch) url.searchParams.set('pitch', pitch);
+  }
+
   function usesMacminiTaskTts(ttsApiUrl) {
     try {
       const url = new URL(ttsApiUrl);
-      return url.hostname === 'tts.macmini.lan' && url.pathname === '/tts/v3-task';
+      return url.hostname === 'tts.macmini.lan' && url.pathname.replace(/\/+$/, '') === '/tts/v3-task';
     } catch (_error) {
       return false;
     }
@@ -1003,6 +1009,26 @@
 
   function speechSynthesisPitchFromConfig(value) {
     return Math.min(2, Math.max(0, 1 + (parsePercentString(value) / 100)));
+  }
+
+  function getNativeTtsLang(voiceId) {
+    const value = String(voiceId || '').trim();
+    const match = /^([a-z]{2}-[A-Z]{2})/.exec(value);
+    return match ? match[1] : 'zh-CN';
+  }
+
+  function selectNativeTtsVoice(voiceId) {
+    if (!('speechSynthesis' in window) || typeof window.speechSynthesis.getVoices !== 'function') {
+      return null;
+    }
+    const voices = window.speechSynthesis.getVoices();
+    if (!Array.isArray(voices) || voices.length === 0) return null;
+    const lang = getNativeTtsLang(voiceId).toLowerCase();
+    const voiceText = String(voiceId || '').toLowerCase();
+    return voices.find((voice) => String(voice.name || '').toLowerCase().includes(voiceText))
+      || voices.find((voice) => String(voice.lang || '').toLowerCase() === lang)
+      || voices.find((voice) => String(voice.lang || '').toLowerCase().startsWith(lang.split('-')[0]))
+      || null;
   }
 
   function pruneLastPlayTime(now) {

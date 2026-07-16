@@ -74,6 +74,34 @@
 
 .gcp-icon-btn:hover { color: #e2b340; }
 
+.gcp-focus-speech-btn {
+  min-width: 30px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(76, 209, 55, 0.35);
+  background: rgba(76, 209, 55, 0.12);
+  color: #7bed9f;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.gcp-focus-speech-btn:hover {
+  color: #b7ffca;
+  border-color: rgba(76, 209, 55, 0.55);
+}
+
+.gcp-focus-speech-btn.is-off {
+  border-color: rgba(255, 71, 87, 0.35);
+  background: rgba(255, 71, 87, 0.12);
+  color: #ff8c8c;
+}
+
+.gcp-focus-speech-btn.is-off:hover {
+  color: #ffc1c8;
+  border-color: rgba(255, 71, 87, 0.55);
+}
+
 .gcp-toggle-arrow {
   display: inline-block;
   transition: transform 0.2s;
@@ -357,6 +385,12 @@
   color: #d7e6ff;
   background: rgba(0, 82, 255, 0.20);
   border-color: rgba(0, 82, 255, 0.38);
+}
+
+.gcp-chain-robinhood {
+  color: #b9ffbf;
+  background: rgba(0, 200, 5, 0.16);
+  border-color: rgba(0, 200, 5, 0.34);
 }
 
 .gcp-chain-tron {
@@ -829,6 +863,11 @@
   background: rgba(255, 71, 87, 0.20);
   color: #ff8c8c;
   border: 1px solid rgba(255, 71, 87, 0.4);
+}
+.gcp-plat-badge.gcp-plat-robinhood {
+  background: rgba(0, 200, 5, 0.18);
+  color: #8ef59b;
+  border: 1px solid rgba(0, 200, 5, 0.38);
 }
 
 /* 散场状态 — 有效钱包数已低于阈值时降级显示 */

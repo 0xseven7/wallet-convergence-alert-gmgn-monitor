@@ -121,7 +121,8 @@ windowMock.speechSynthesis = {
 const sandbox = {
   window: windowMock,
   document: {
-    visibilityState: 'visible'
+    visibilityState: 'visible',
+    addEventListener() {}
   },
   chrome: {
     storage: {

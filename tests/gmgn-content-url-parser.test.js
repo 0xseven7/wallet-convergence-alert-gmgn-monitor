@@ -57,7 +57,7 @@ const sandbox = {
 };
 
 vm.runInNewContext(`
-  const SUPPORTED_GMGN_CHAINS = new Set(['sol', 'eth', 'bsc', 'bnb', 'base', 'tron', 'blast']);
+  const SUPPORTED_GMGN_CHAINS = new Set(['sol', 'eth', 'bsc', 'bnb', 'base', 'tron', 'blast', 'robinhood']);
 ${helperBlock}
   module.exports = { normalizeChainName, parseGmgnTokenHref, parseDebotTokenHref, buildGmgnTokenPath, buildFomoTokenUrl, buildDebotTokenUrl };
 `, sandbox);
@@ -103,8 +103,12 @@ assert.deepEqual(parse(`/bsc/profile/${bscAddress}`), {
 assert.equal(buildGmgnTokenPath('sol', solMint), `/sol/token/${solMint}`);
 assert.equal(buildGmgnTokenPath('bsc', bscAddress), `/bsc/token/${bscAddress}`);
 assert.equal(buildGmgnTokenPath('bnb', bscAddress), `/bsc/token/${bscAddress}`);
+assert.equal(buildGmgnTokenPath('robinhood', bscAddress), `/robinhood/token/${bscAddress}`);
 assert.equal(normalizeChainName('solana'), 'sol');
 assert.equal(normalizeChainName('ethereum'), 'eth');
+assert.equal(normalizeChainName('Robinhood'), 'robinhood');
+assert.equal(normalizeChainName('RH'), 'robinhood');
+assert.equal(normalizeChainName('Robinhood Chain'), 'robinhood');
 
 assert.deepEqual(JSON.parse(JSON.stringify(parseDebotTokenHref(`/token/solana/274997_${solMint}`))), {
   href: `/token/solana/274997_${solMint}`,
@@ -298,11 +302,12 @@ const signalEventSandbox = {
 };
 
 vm.runInNewContext(`
-  const SUPPORTED_GMGN_CHAINS = new Set(['sol', 'eth', 'bsc', 'bnb', 'base', 'tron', 'blast']);
+  const SUPPORTED_GMGN_CHAINS = new Set(['sol', 'eth', 'bsc', 'bnb', 'base', 'tron', 'blast', 'robinhood']);
   const config = { minWallets: 2 };
   function getSpeechWatchAlias(name) { return name === '西瓜' ? '西瓜哥' : ''; }
   function isDebotMonitorWindowPage() { return false; }
   function shortAddress(value) { return String(value || '').slice(0, 4); }
+  function getFocusWalletMatch() { return null; }
 ${helperBlock}
 ${extractFunction('normalizeTradeKeyPart')}
 ${extractFunction('buildAlertGroupKey')}
@@ -398,6 +403,8 @@ assert.deepEqual(plain(buildConvergenceAlertSignalEvent({
     wallet_count: 5,
     threshold: 2,
     priority_wallet_hit: false,
+    focus_wallet_hit: false,
+    focus_wallets: [],
     group_key: `bsc|${bscAddress}`,
     wallets: ['西瓜', '土豆', '香蕉']
   }
@@ -408,7 +415,7 @@ const watchedSpeechSandbox = {
 };
 
 vm.runInNewContext(`
-  const SUPPORTED_GMGN_CHAINS = new Set(['sol', 'eth', 'bsc', 'bnb', 'base', 'tron', 'blast']);
+  const SUPPORTED_GMGN_CHAINS = new Set(['sol', 'eth', 'bsc', 'bnb', 'base', 'tron', 'blast', 'robinhood']);
   function getSpeechWatchAlias(name) { return name === '西瓜' ? '西瓜哥' : ''; }
 ${helperBlock}
 ${extractFunction('sanitizeSpeechName')}

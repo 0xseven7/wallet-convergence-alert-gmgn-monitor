@@ -14,7 +14,7 @@
     chainFilter: 'all'
   };
   const ALERT_SORT_OPTIONS = new Set(['walletCount', 'latest', 'mcap']);
-  const ALERT_CHAIN_FILTER_OPTIONS = ['all', 'bsc', 'eth', 'base', 'sol'];
+  const ALERT_CHAIN_FILTER_OPTIONS = ['all', 'bsc', 'eth', 'base', 'sol', 'robinhood'];
   const HIDDEN_ALERTS_KEY = 'gcp_hidden_alerts_v1';
   const MAX_VISIBLE_ALERTS = 30;
 
@@ -33,9 +33,19 @@
   let mountCheckInterval = null;
   let injectStarsScheduled = false;
   const GMGN_SPEECH_WATCHLIST_KEY = 'gmgnSpeechWatchlist';
+  const GMGN_FOCUS_ADDRESSES_KEY = 'gmgnFocusAddresses';
   const GMGN_BLACKLIST_WALLETS_KEY = 'gmgnBlacklistWallets';
+  const GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY = 'gmgnTwitterTriggerHookSettings';
+  const GET_MONITOR_SCREEN_STATUS_MESSAGE = 'get-monitor-screen-status';
+  const MONITOR_STATE_STORAGE_KEY = 'monitorState';
+  const DEFAULT_MAIN_SCREEN_RELAY_BASE_URL = 'https://market-watch.macmini.lan';
+  const LEGACY_MAIN_SCREEN_RELAY_BASE_URL = 'http://127.0.0.1:17390';
+  const FOCUS_ADDRESS_SYNC_INTERVAL_MS = 30000;
   let speechWatchlist = {};
+  let focusAddresses = {};
   let blacklistWallets = new Set();
+  let focusAddressSyncInterval = null;
+  let focusAddressSyncInFlight = false;
 
   // 特别关注的钱包名
   let starred = new Set();
@@ -55,6 +65,7 @@
   let sharedRefreshInterval = null;
   let sharedPoolSyncStarted = false;
   let followModeActive = false;
+  let monitorScreenActive = false;
   let routeWatcherInstalled = false;
   const GMGN_AUDIO_SETTINGS_KEY = 'gmgnAudioSettings';
   const AUDIO_SYNC_CHANNEL_NAME = 'gmgn_convergence_audio_sync_channel';
@@ -67,6 +78,7 @@
     eth: { label: 'ETH', cls: 'gcp-chain-eth' },
     bsc: { label: 'BSC', cls: 'gcp-chain-bsc' },
     base: { label: 'BASE', cls: 'gcp-chain-base' },
+    robinhood: { label: 'RH', cls: 'gcp-chain-robinhood' },
     tron: { label: 'TRON', cls: 'gcp-chain-tron' },
     blast: { label: 'BLAST', cls: 'gcp-chain-blast' },
     unknown: { label: 'UNKNOWN', cls: 'gcp-chain-unknown' }
@@ -105,8 +117,8 @@
   const WATCHED_TRADE_TTS_MAX_AGE_MS = 10 * 1000;
   const INFERRED_TRADE_TIME_TTL_MS = 2 * 60 * 60 * 1000;
   const inferredTradeTimeByKey = new Map();
-  const SUPPORTED_GMGN_CHAINS = new Set(['sol', 'eth', 'bsc', 'bnb', 'base', 'tron', 'blast']);
-  const FOLLOW_PATH_RE = /^\/(?:follow(?:\/|$)|(?:sol|eth|bsc|base|tron|blast)\/follow(?:\/|$))/i;
+  const SUPPORTED_GMGN_CHAINS = new Set(['sol', 'eth', 'bsc', 'bnb', 'base', 'tron', 'blast', 'robinhood']);
+  const FOLLOW_PATH_RE = /^\/(?:follow(?:\/|$)|(?:sol|eth|bsc|base|tron|blast|robinhood)\/follow(?:\/|$))/i;
   const DEBOT_TRACK_MESSAGE_FLAG = '__gcpDebot';
   const DEBOT_TRACK_CHANNEL = 'wallet-track-transactions';
   const DEBOT_TRACK_API_PATH = '/api/wallet/track/transactions';
@@ -273,6 +285,8 @@
     if (normalized === 'solana') normalized = 'sol';
     if (normalized === 'ethereum') normalized = 'eth';
     if (normalized === 'bnb' || normalized === 'binance' || normalized === 'binance-smart-chain') normalized = 'bsc';
+    const compact = normalized.replace(/[\s_-]+/g, '');
+    if (normalized === 'rh' || normalized === 'robin' || compact === 'robinhood' || compact === 'robinhoodchain') normalized = 'robinhood';
     if (!SUPPORTED_GMGN_CHAINS.has(normalized)) return '';
     return normalized;
   }
@@ -287,13 +301,13 @@
       );
       if (queryChain) return queryChain;
 
-      const followPrefixMatch = currentUrl.pathname.match(/^\/(sol|eth|bsc|bnb|base|tron|blast)\/follow(?:\/|$)/i);
+      const followPrefixMatch = currentUrl.pathname.match(/^\/(sol|eth|bsc|bnb|base|tron|blast|robinhood)\/follow(?:\/|$)/i);
       if (followPrefixMatch) return normalizeChainName(followPrefixMatch[1]);
 
-      const followSuffixMatch = currentUrl.pathname.match(/^\/follow\/(sol|eth|bsc|bnb|base|tron|blast)(?:\/|$)/i);
+      const followSuffixMatch = currentUrl.pathname.match(/^\/follow\/(sol|eth|bsc|bnb|base|tron|blast|robinhood)(?:\/|$)/i);
       if (followSuffixMatch) return normalizeChainName(followSuffixMatch[1]);
 
-      const pathMatch = currentUrl.pathname.match(/^\/(sol|eth|bsc|bnb|base|tron|blast)(?:\/|$)/i);
+      const pathMatch = currentUrl.pathname.match(/^\/(sol|eth|bsc|bnb|base|tron|blast|robinhood)(?:\/|$)/i);
       if (pathMatch) return normalizeChainName(pathMatch[1]);
     } catch (e) {}
     return '';
@@ -303,7 +317,7 @@
     const href = String(rawHref || '').trim();
     if (!href) return { href: '', chain: '', mint: '' };
 
-    const pathMatch = href.match(/\/(sol|eth|bsc|bnb|base|tron|blast)\/(token|profile)\/([1-9A-HJ-NP-Za-km-z]{32,}|0x[a-fA-F0-9]{40})/i);
+    const pathMatch = href.match(/\/(sol|eth|bsc|bnb|base|tron|blast|robinhood)\/(token|profile)\/([1-9A-HJ-NP-Za-km-z]{32,}|0x[a-fA-F0-9]{40})/i);
     if (pathMatch) {
       const chain = normalizeChainName(pathMatch[1]);
       const routeType = String(pathMatch[2] || '').toLowerCase();
@@ -331,6 +345,59 @@
     } catch (e) {}
 
     return { href, chain: '', mint: '' };
+  }
+
+  function normalizeFocusAddress(value) {
+    return String(value || '').trim();
+  }
+
+  function normalizeFocusAddressKey(address) {
+    const normalized = normalizeFocusAddress(address);
+    return /^0x[a-f0-9]{40}$/i.test(normalized) ? normalized.toLowerCase() : normalized;
+  }
+
+  function buildFocusAddressKey(chain, address) {
+    const normalizedChain = normalizeChainName(chain);
+    const normalizedAddress = normalizeFocusAddressKey(address);
+    if (!normalizedChain || !normalizedAddress) return '';
+    return `${normalizedChain}:${normalizedAddress}`;
+  }
+
+  function isLikelyFocusAddress(address) {
+    const text = normalizeFocusAddress(address);
+    return /^0x[a-fA-F0-9]{40}$/.test(text)
+      || /^[1-9A-HJ-NP-Za-km-z]{32,64}$/.test(text)
+      || /^T[1-9A-HJ-NP-Za-km-z]{25,40}$/.test(text);
+  }
+
+  function parseGmgnAddressHref(rawHref) {
+    const href = String(rawHref || '').trim();
+    if (!href) return { href: '', chain: '', address: '' };
+    try {
+      const parsed = new URL(href, location.href);
+      if (!/(^|\.)gmgn\.ai$/i.test(parsed.hostname)) {
+        return { href, chain: '', address: '' };
+      }
+      const parts = parsed.pathname.split('/').filter(Boolean).map((part) => decodeURIComponent(part));
+      let chain = '';
+      let address = '';
+      if (parts.length >= 3 && String(parts[1]).toLowerCase() === 'address') {
+        chain = normalizeChainName(parts[0]);
+        address = normalizeFocusAddress(parts[2]);
+      } else if (parts.length >= 3 && String(parts[0]).toLowerCase() === 'address') {
+        chain = normalizeChainName(parts[1]);
+        address = normalizeFocusAddress(parts[2]);
+      } else if (parts.length >= 2 && String(parts[0]).toLowerCase() === 'address') {
+        chain = normalizeChainName(parsed.searchParams.get('chain') || parsed.searchParams.get('network') || getLocationChainHint());
+        address = normalizeFocusAddress(parts[1]);
+      }
+      if (!chain || !isLikelyFocusAddress(address)) {
+        return { href, chain: '', address: '' };
+      }
+      return { href, chain, address };
+    } catch (_error) {
+      return { href, chain: '', address: '' };
+    }
   }
 
   function normalizeDebotTokenAddress(value) {
@@ -529,9 +596,16 @@
     if (changes[GMGN_AUDIO_SETTINGS_KEY]) {
       audioSettings = normalizeAudioSettings(changes[GMGN_AUDIO_SETTINGS_KEY].newValue);
       warmupAlertAudio();
+      updateFocusSpeechButtonState();
     }
     if (changes[GMGN_SPEECH_WATCHLIST_KEY]) {
       applySpeechWatchlist(changes[GMGN_SPEECH_WATCHLIST_KEY].newValue || {});
+      lastRenderState = '';
+      renderAlerts();
+      injectOrigStars();
+    }
+    if (changes[GMGN_FOCUS_ADDRESSES_KEY]) {
+      applyFocusAddresses(changes[GMGN_FOCUS_ADDRESSES_KEY].newValue || {});
       lastRenderState = '';
       renderAlerts();
       injectOrigStars();
@@ -552,11 +626,105 @@
     }
   }
 
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type !== 'fomo-aggregate-alert' || !message.payload) return false;
+    const result = ingestFomoAggregateAlert(message.payload);
+    sendResponse(result);
+    return false;
+  });
+
+  function ingestFomoAggregateAlert(payload) {
+    const chain = normalizeChainName(payload.chain);
+    const mint = String(payload.tokenAddress || '').trim();
+    const token = String(payload.symbol || '').trim() || shortAddress(mint);
+    const side = String(payload.side || '').toLowerCase();
+    const traderCount = Math.max(1, Number(payload.traderCount || 1));
+    if (!chain || !mint || !token || side !== 'buy') {
+      return { ok: false, skipped: true };
+    }
+    const stableKey = String(payload.stableKey || [chain, mint.toLowerCase(), side, traderCount, payload.amountText, payload.marketCapText].join('|'));
+    if (alerts.some((item) => item.externalStableKey === stableKey || (item.fomoSignals || []).some((signal) => signal.stableKey === stableKey))) {
+      return { ok: true, duplicate: true };
+    }
+    const observedAt = Number(payload.observedAt || Date.now());
+    const fomoSignal = {
+      stableKey,
+      traderCount,
+      amountText: String(payload.amountText || ''),
+      marketCapText: String(payload.marketCapText || ''),
+      displayTime: String(payload.displayTime || ''),
+      observedAt,
+      url: String(payload.url || '')
+    };
+    const groupKey = getAlertGroupKey({ token, mint, chain });
+    const existing = alerts.find((item) => getAlertGroupKey(item) === groupKey);
+    if (existing) {
+      existing.fomoSignals = [...(existing.fomoSignals || []), fomoSignal].slice(-5);
+      existing.wallets = [
+        ...(existing.wallets || []).filter((wallet) => !wallet.external),
+        ...existing.fomoSignals.map((signal) => ({
+          name: `FOMO ${signal.traderCount} traders`,
+          amount: signal.amountText,
+          timeAgo: signal.displayTime,
+          address: '',
+          external: true,
+          stableKey: signal.stableKey
+        }))
+      ];
+      existing.externalStableKey = stableKey;
+      existing.externalSource = 'fomo';
+      existing.latestTradeTimeMs = Math.max(Number(existing.latestTradeTimeMs || 0), observedAt);
+      existing.updatedAt = Date.now();
+      existing.isNew = true;
+      renderAlerts();
+      if (config.soundEnabled) { playSound(Math.max(existing.tier || 1, calcTier(traderCount)), chain); flashBadge(); }
+      setTimeout(() => { existing.isNew = false; renderAlerts(); }, 1500);
+      return { ok: true, merged: true };
+    }
+    const alert = {
+      token,
+      mint,
+      chain,
+      tokenLogo: '',
+      platform: { tag: 'FOMO', label: 'FOMO Alert', cls: 'gcp-plat-fomo' },
+      walletCount: 0,
+      effectiveCount: 0,
+      closedCount: 0,
+      wallets: [{
+        name: `FOMO ${traderCount} traders`,
+        amount: String(payload.amountText || ''),
+        timeAgo: String(payload.displayTime || ''),
+        address: '',
+        external: true
+      }],
+      mcap: String(payload.marketCapText || ''),
+      latestTradeTimeMs: observedAt,
+      tier: calcTier(traderCount),
+      triggeredAt: Date.now(),
+      updatedAt: Date.now(),
+      isNew: true,
+      externalSource: 'fomo',
+      externalStableKey: stableKey,
+      fomoSignals: [fomoSignal],
+      sourceUrl: String(payload.url || '')
+    };
+    alerts.unshift(alert);
+    pruneHiddenAlertsState();
+    renderAlerts();
+    if (config.soundEnabled) {
+      playSound(alert.tier || 1, chain);
+      flashBadge();
+    }
+    setTimeout(() => { alert.isNew = false; renderAlerts(); }, 1500);
+    return { ok: true };
+  }
+
   function startSharedPoolSync() {
-    if (!USE_MULTI_PAGE_SHARED_POOL || !canUseSharedStorage || sharedPoolSyncStarted) return;
+    if (!canUseSharedStorage || sharedPoolSyncStarted) return;
     sharedPoolSyncStarted = true;
-    loadSharedSnapshots({ recalculate: true });
     chrome.storage.onChanged.addListener(handleSharedStorageChange);
+    if (!USE_MULTI_PAGE_SHARED_POOL) return;
+    loadSharedSnapshots({ recalculate: true });
     if (sharedRefreshInterval) clearInterval(sharedRefreshInterval);
     sharedRefreshInterval = setInterval(() => {
       loadSharedSnapshots({ recalculate: true });
@@ -565,9 +733,10 @@
   }
 
   function stopSharedPoolSync() {
-    if (!USE_MULTI_PAGE_SHARED_POOL || !canUseSharedStorage || !sharedPoolSyncStarted) return;
+    if (!canUseSharedStorage || !sharedPoolSyncStarted) return;
     sharedPoolSyncStarted = false;
     chrome.storage.onChanged.removeListener(handleSharedStorageChange);
+    if (!USE_MULTI_PAGE_SHARED_POOL) return;
     if (sharedRefreshInterval) {
       clearInterval(sharedRefreshInterval);
       sharedRefreshInterval = null;
@@ -648,6 +817,11 @@
       audioSettings = normalizeAudioSettings(stored[GMGN_AUDIO_SETTINGS_KEY]);
       warmupAlertAudio();
     } catch (e) {}
+  }
+
+  function persistAudioSettings() {
+    if (!canUseSharedStorage) return Promise.resolve();
+    return chrome.storage.local.set({ [GMGN_AUDIO_SETTINGS_KEY]: audioSettings }).catch(() => {});
   }
 
   async function loadTtsSettings() {
@@ -759,6 +933,7 @@
     if (normalized === 'eth') return { key: 'eth', label: 'ETH', scale: 1.16 };
     if (normalized === 'base') return { key: 'base', label: 'BASE', scale: 1.3 };
     if (normalized === 'sol') return { key: 'sol', label: 'SOL', scale: 1.46 };
+    if (normalized === 'robinhood') return { key: 'robinhood', label: 'RH', scale: 1.22 };
     return { key: normalized || 'default', label: getChainDisplay(chain).label, scale: 1.08 };
   }
 
@@ -786,6 +961,7 @@
     const m = (mint || '').toLowerCase();
     const c = (chain || '').toLowerCase();
     const d = (dexHint || '').toLowerCase();
+    if (d.includes('robinhood')) return { tag: 'RH', label: 'Robinhood', cls: 'gcp-plat-robinhood' };
     if (c === 'sol') {
       if (m.endsWith('pump')) return { tag: 'pump', label: 'pump.fun', cls: 'gcp-plat-pump' };
       if (m.endsWith('bonk')) return { tag: 'bonk', label: 'bonk.fun', cls: 'gcp-plat-bonk' };
@@ -916,6 +1092,7 @@
   function describeTradeForDebug(trade) {
     return {
       wallet: trade?.wallet || '',
+      walletAddress: trade?.walletAddress || '',
       action: trade?.action || '',
       isBuy: !!trade?.isBuy,
       token: trade?.token || '',
@@ -1371,7 +1548,10 @@
       const normalizedWallet = normalizeSpeechWatchWallet(walletName);
       if (!normalizedWallet) continue;
       next[normalizedWallet] = {
-        alias: typeof meta?.alias === 'string' ? meta.alias.trim() : ''
+        alias: typeof meta?.alias === 'string' ? meta.alias.trim() : '',
+        focusPushEnabled: typeof meta?.focusPushEnabled === 'boolean'
+          ? meta.focusPushEnabled
+          : true
       };
     }
     return next;
@@ -1429,6 +1609,189 @@
     void persistSpeechWatchlist();
   }
 
+  function normalizeFocusAddressEntries(raw) {
+    const next = {};
+    const entries = Array.isArray(raw)
+      ? raw
+      : Object.values(raw || {});
+    for (const item of entries) {
+      if (!item || typeof item !== 'object') continue;
+      const chain = normalizeChainName(item.chain);
+      const address = normalizeFocusAddress(item.address);
+      const key = buildFocusAddressKey(chain, address);
+      if (!key) continue;
+      next[key] = {
+        key,
+        chain,
+        address,
+        addressKey: normalizeFocusAddressKey(address),
+        alias: typeof item.alias === 'string' ? item.alias.trim() : '',
+        name: typeof item.name === 'string' ? item.name.trim() : '',
+        focusPushEnabled: typeof item.focusPushEnabled === 'boolean'
+          ? item.focusPushEnabled
+          : true,
+        source: typeof item.source === 'string' ? item.source.trim() : '',
+        sourceUrl: typeof item.sourceUrl === 'string' ? item.sourceUrl.trim() : '',
+        updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : ''
+      };
+    }
+    return next;
+  }
+
+  function applyFocusAddresses(raw) {
+    focusAddresses = normalizeFocusAddressEntries(raw);
+  }
+
+  function isLocalFocusAddressEntry(entry) {
+    const source = String(entry?.source || '').trim().toLowerCase();
+    return source === 'gmgn-monitor-address-page'
+      || source === 'gmgn-address-page'
+      || source === 'monitor-address-page'
+      || source === 'manual';
+  }
+
+  function mergeRelayFocusAddressesWithLocal(relayItems) {
+    const relayEntries = normalizeFocusAddressEntries(relayItems);
+    for (const entry of Object.values(focusAddresses)) {
+      if (!entry || !entry.key || !isLocalFocusAddressEntry(entry)) continue;
+      relayEntries[entry.key] = entry;
+    }
+    return relayEntries;
+  }
+
+  async function loadFocusAddresses() {
+    if (!canUseSharedStorage) {
+      applyFocusAddresses({});
+      return;
+    }
+    try {
+      const stored = await chrome.storage.local.get(GMGN_FOCUS_ADDRESSES_KEY);
+      applyFocusAddresses(stored[GMGN_FOCUS_ADDRESSES_KEY]);
+    } catch (_error) {
+      applyFocusAddresses({});
+    }
+  }
+
+  function persistFocusAddresses() {
+    if (!canUseSharedStorage) return Promise.resolve();
+    return chrome.storage.local.set({ [GMGN_FOCUS_ADDRESSES_KEY]: focusAddresses }).catch(() => {});
+  }
+
+  function findFocusAddressKey(walletAddress, chain) {
+    const key = buildFocusAddressKey(chain, walletAddress);
+    return key && focusAddresses[key] ? key : '';
+  }
+
+  function getFocusWalletMatch(walletName, walletAddress, chain) {
+    const nameKey = findSpeechWatchWalletKey(walletName);
+    if (nameKey) {
+      return {
+        key: nameKey,
+        type: 'name',
+        meta: speechWatchlist[nameKey] || {}
+      };
+    }
+
+    const addressKey = findFocusAddressKey(walletAddress, chain);
+    if (addressKey) {
+      return {
+        key: addressKey,
+        type: 'address',
+        meta: focusAddresses[addressKey] || {}
+      };
+    }
+
+    return null;
+  }
+
+  function findFocusWalletKey(walletName, walletAddress, chain) {
+    return getFocusWalletMatch(walletName, walletAddress, chain)?.key || '';
+  }
+
+  function getFocusWalletAlias(walletName, walletAddress, chain) {
+    const match = getFocusWalletMatch(walletName, walletAddress, chain);
+    return match?.meta?.alias || match?.meta?.name || '';
+  }
+
+  function isFocusWalletPushEnabled(walletName, walletAddress, chain) {
+    const match = getFocusWalletMatch(walletName, walletAddress, chain);
+    if (!match) return false;
+    return match.meta?.focusPushEnabled !== false;
+  }
+
+  function normalizeHttpBaseUrl(value, defaultValue = '') {
+    const rawValue = String(value || '').trim();
+    if (!rawValue) return defaultValue;
+    const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(rawValue) ? rawValue : `http://${rawValue}`;
+    try {
+      const url = new URL(withProtocol);
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+      url.pathname = url.pathname.replace(/\/+$/, '');
+      url.search = '';
+      url.hash = '';
+      return url.toString().replace(/\/$/, '');
+    } catch (_error) {
+      return '';
+    }
+  }
+
+  function buildRelayUrl(baseUrl, pathname) {
+    try {
+      const normalizedBaseUrl = normalizeHttpBaseUrl(baseUrl, DEFAULT_MAIN_SCREEN_RELAY_BASE_URL);
+      if (!normalizedBaseUrl) return '';
+      return new URL(pathname, `${normalizedBaseUrl}/`).toString();
+    } catch (_error) {
+      return '';
+    }
+  }
+
+  async function getConfiguredRelayBaseUrl() {
+    if (!canUseSharedStorage) return DEFAULT_MAIN_SCREEN_RELAY_BASE_URL;
+    try {
+      const stored = await chrome.storage.local.get(GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY);
+      const settings = stored[GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY] || {};
+      const normalized = normalizeHttpBaseUrl(settings.mainScreenRelayBaseUrl, DEFAULT_MAIN_SCREEN_RELAY_BASE_URL);
+      return normalized === LEGACY_MAIN_SCREEN_RELAY_BASE_URL
+        ? DEFAULT_MAIN_SCREEN_RELAY_BASE_URL
+        : normalized;
+    } catch (_error) {
+      return DEFAULT_MAIN_SCREEN_RELAY_BASE_URL;
+    }
+  }
+
+  async function syncFocusAddressesFromRelay() {
+    if (!canUseSharedStorage || focusAddressSyncInFlight) return;
+    focusAddressSyncInFlight = true;
+    try {
+      const relayBaseUrl = await getConfiguredRelayBaseUrl();
+      const requestUrl = buildRelayUrl(relayBaseUrl, '/focus-addresses');
+      if (!requestUrl) return;
+      const response = await fetch(requestUrl, { method: 'GET', cache: 'no-store' });
+      if (!response.ok) return;
+      const body = await response.json().catch(() => null);
+      if (!body?.ok || !Array.isArray(body.items)) return;
+      focusAddresses = mergeRelayFocusAddressesWithLocal(body.items);
+      await persistFocusAddresses();
+      lastRenderState = '';
+      renderAlerts();
+      injectOrigStars();
+    } catch (_error) {
+      // Relay is optional; keep the last cached focus address list.
+    } finally {
+      focusAddressSyncInFlight = false;
+    }
+  }
+
+  function startFocusAddressSync() {
+    if (!canUseSharedStorage || focusAddressSyncInterval) return;
+    void syncFocusAddressesFromRelay();
+    focusAddressSyncInterval = setInterval(() => {
+      if (!document.hidden) {
+        void syncFocusAddressesFromRelay();
+      }
+    }, FOCUS_ADDRESS_SYNC_INTERVAL_MS);
+  }
+
   function normalizeSpeechWatchWallet(value) {
     return String(value || '').trim();
   }
@@ -1461,9 +1824,9 @@
     return '';
   }
 
-  function getSpeechWatchAlias(walletName) {
+  function getSpeechWatchAlias(walletName, walletAddress = '', chain = '') {
     const matchedWallet = findSpeechWatchWalletKey(walletName) || normalizeSpeechWatchWallet(walletName);
-    return speechWatchlist[matchedWallet]?.alias || '';
+    return speechWatchlist[matchedWallet]?.alias || getFocusWalletAlias(walletName, walletAddress, chain) || '';
   }
 
   function normalizeBlacklistWallets(raw) {
@@ -1541,19 +1904,24 @@
   }
 
   function isAlertStarred(a) {
-    return a.wallets && a.wallets.some(w => !!findSpeechWatchWalletKey(w.name));
+    return a.wallets && a.wallets.some(w => !!findFocusWalletKey(w.name, w.address, a.chain));
   }
 
   function isTradeStarred(trade) {
-    return !!(trade && trade.wallet && findSpeechWatchWalletKey(trade.wallet));
+    return !!(trade && findFocusWalletKey(trade.wallet, trade.walletAddress, trade.chain));
   }
 
   function isWalletBlacklisted(walletName) {
     return !!(walletName && blacklistWallets.has(walletName));
   }
 
-  function hasStarredWallet(walletNames) {
-    return Array.isArray(walletNames) && walletNames.some((walletName) => !!findSpeechWatchWalletKey(walletName));
+  function hasStarredWallet(wallets, chain = '') {
+    return Array.isArray(wallets) && wallets.some((wallet) => {
+      if (wallet && typeof wallet === 'object') {
+        return !!findFocusWalletKey(wallet.name, wallet.address, chain || wallet.chain);
+      }
+      return !!findFocusWalletKey(wallet, '', chain);
+    });
   }
 
   function isBuyAction(action) {
@@ -1640,13 +2008,25 @@
     return location.href;
   }
 
-  function buildSignalWalletPayload(walletName) {
+  function buildSignalWalletPayload(walletName, walletAddress = '', chain = '') {
     const name = String(walletName || '').trim();
-    return {
+    const address = normalizeFocusAddress(walletAddress);
+    const focusMatch = getFocusWalletMatch(name, address, chain);
+    const alias = focusMatch
+      ? (focusMatch.meta?.alias || focusMatch.meta?.name || '')
+      : (typeof getSpeechWatchAlias === 'function' ? (getSpeechWatchAlias(name, address, chain) || '') : '');
+    const payload = {
       name,
-      address: '',
-      remark: getSpeechWatchAlias(name) || ''
+      address,
+      remark: alias
     };
+    if (focusMatch) {
+      payload.focusKey = focusMatch.key || '';
+      payload.focusType = focusMatch.type || '';
+      payload.isFocus = true;
+      payload.focusPushEnabled = focusMatch.meta?.focusPushEnabled !== false;
+    }
+    return payload;
   }
 
   function buildWalletTradeEventText(trade, action, walletPayload, amountUnit) {
@@ -1666,9 +2046,22 @@
     const symbol = String(trade.token || '').trim();
     if (!action || !chain || !ca || !symbol) return null;
 
-    const wallet = buildSignalWalletPayload(trade.wallet);
+    const wallet = buildSignalWalletPayload(trade.wallet, trade.walletAddress, chain);
     const amount = String(trade.amount || '').trim();
     const amountUnit = amount ? getWatchedTradeQuoteAsset(chain) : '';
+    const raw = {
+      from: `${getSignalEventSource()}-extension`,
+      stable_key: trade.stableKey || '',
+      inferred_time: !!trade.inferredTime,
+      original_action: String(trade.action || '').trim()
+    };
+    if (wallet.isFocus === true) {
+      raw.focus_wallet_hit = wallet.focusPushEnabled !== false;
+      raw.focus_wallet_key = wallet.focusKey || '';
+      raw.focus_wallet_type = wallet.focusType || '';
+      raw.focus_wallet_alias = wallet.remark || '';
+    }
+
     return {
       source: getSignalEventSource(),
       type: 'wallet_trade',
@@ -1684,12 +2077,7 @@
       mcap: normalizeSignalEventMcap(trade.mcap),
       text: buildWalletTradeEventText(trade, action, wallet, amountUnit),
       url: buildSignalEventUrl(trade.href, chain, ca),
-      raw: {
-        from: `${getSignalEventSource()}-extension`,
-        stable_key: trade.stableKey || '',
-        inferred_time: !!trade.inferredTime,
-        original_action: String(trade.action || '').trim()
-      }
+      raw
     };
   }
 
@@ -1700,6 +2088,24 @@
     const symbol = String(alert.token || '').trim();
     if (!chain || !ca || !symbol) return null;
 
+    const focusWallets = Array.isArray(alert.wallets)
+      ? alert.wallets
+          .map((wallet) => {
+            const name = String(wallet?.name || '').trim();
+            const address = normalizeFocusAddress(wallet?.address || '');
+            const focusMatch = getFocusWalletMatch(name, address, chain);
+            if (!focusMatch) return null;
+            if (focusMatch.meta?.focusPushEnabled === false) return null;
+            return {
+              name,
+              address,
+              focusKey: focusMatch.key || '',
+              focusType: focusMatch.type || '',
+              alias: focusMatch.meta?.alias || focusMatch.meta?.name || ''
+            };
+          })
+          .filter(Boolean)
+      : [];
     const effectiveCount = Number(alert.effectiveCount || alert.walletCount || 0);
     const closedCount = Number(alert.closedCount || 0);
     return {
@@ -1720,6 +2126,8 @@
         wallet_count: Number(alert.walletCount || effectiveCount),
         threshold: Number.isFinite(Number(extra.requiredWallets)) ? Number(extra.requiredWallets) : config.minWallets,
         priority_wallet_hit: extra.hasPriorityWallet === true,
+        focus_wallet_hit: focusWallets.length > 0,
+        focus_wallets: focusWallets,
         group_key: getAlertGroupKey(alert),
         wallets: Array.isArray(alert.wallets) ? alert.wallets.map((wallet) => wallet && wallet.name).filter(Boolean) : []
       }
@@ -1758,7 +2166,7 @@
 
   function buildWatchedTradeSpeechText(trade) {
     const rawWalletName = (trade && trade.wallet) ? trade.wallet.trim() : '';
-    const walletName = sanitizeSpeechName(getSpeechWatchAlias(rawWalletName))
+    const walletName = sanitizeSpeechName(getSpeechWatchAlias(rawWalletName, trade && trade.walletAddress, trade && trade.chain))
       || sanitizeSpeechName(rawWalletName)
       || '关注钱包';
     const verb = normalizeWatchedTradeVerb(trade);
@@ -2079,6 +2487,7 @@
     const chain = baseInfo.chain || getLocationChainHint();
     const mint = baseInfo.mint || '';
     const href = baseInfo.href || '';
+    const walletAddress = normalizeFocusAddress(baseInfo.walletAddress || '');
     const platform = detectPlatform(mint, chain, '');
     const stableFingerprint = `${wallet}|${action}|${headPart}`;
     const observedKey = buildObservedTradeKey({
@@ -2109,6 +2518,7 @@
 
     return {
       wallet,
+      walletAddress,
       walletAvatar,
       action,
       isBuy,
@@ -2129,6 +2539,7 @@
         mint,
         token: tokenSymbol,
         wallet,
+        walletAddress,
         action,
         amount,
         fingerprint: stableFingerprint,
@@ -2149,7 +2560,12 @@
     const href = tokenLink.href || a.getAttribute('href') || '';
     const chain = tokenLink.chain || getLocationChainHint();
     const mint = tokenLink.mint || '';
-    const fallbackInfo = { href, chain, mint };
+    const walletLink = anchors
+      .map((anchor) => parseGmgnAddressHref(anchor.getAttribute('href') || anchor.href || ''))
+      .find((candidate) => candidate.address && (!chain || !candidate.chain || candidate.chain === chain))
+      || { address: '' };
+    const walletAddress = walletLink.address || '';
+    const fallbackInfo = { href, chain, mint, walletAddress };
 
     // 钱包名：第一个 .text-yellow-100 的 AutoTruncateText
     const walletEl = a.querySelector('.text-yellow-100[data-sentry-component="AutoTruncateText"]')
@@ -2261,6 +2677,7 @@
 
     return {
       wallet,
+      walletAddress,
       walletAvatar,
       action,
       isBuy,
@@ -2281,6 +2698,7 @@
         mint,
         token: tokenSymbol,
         wallet,
+        walletAddress,
         action,
         amount,
         fingerprint: stableFingerprint,
@@ -2847,6 +3265,7 @@
     cleanOldRecords();
     schedulePublishSharedSnapshot();
     checkConvergence();
+    renderAlerts();
     flushWatchedTradeAnnouncements(watchedTradesToSpeak);
     watchedTradesPrimed = true;
     updateStatus();
@@ -3074,6 +3493,7 @@
           }
           seenKeys.add(key);
           buyRecords.push(trade);
+          void dispatchSignalEvent(buildWalletTradeSignalEvent(trade));
           added++;
           if (canAnnounceWatchedTrades && isTradeStarred(trade)) {
             watchedTradesToSpeak.push(trade);
@@ -3087,6 +3507,7 @@
           }
           seenClosedKeys.add(ck);
           closedRecords.push(trade);
+          void dispatchSignalEvent(buildWalletTradeSignalEvent(trade));
           added++;
           if (canAnnounceWatchedTrades && isTradeStarred(trade)) {
             watchedTradesToSpeak.push(trade);
@@ -3100,6 +3521,7 @@
           }
           seenSellKeys.add(sk);
           sellRecords.push(trade);
+          void dispatchSignalEvent(buildWalletTradeSignalEvent(trade));
           added++;
           if (canAnnounceWatchedTrades && isTradeStarred(trade)) {
             watchedTradesToSpeak.push(trade);
@@ -3147,6 +3569,7 @@
     cleanOldRecords();
     schedulePublishSharedSnapshot();
     checkConvergence();
+    renderAlerts();
     flushWatchedTradeAnnouncements(watchedTradesToSpeak);
     watchedTradesPrimed = true;
 
@@ -3208,7 +3631,15 @@
       }
       const g = groups[key];
       if (!g.wallets[r.wallet] || (r.timeMs || 0) > (g.wallets[r.wallet].timeMs || 0)) {
-        g.wallets[r.wallet] = { amount: r.amount, timeAgo: r.timeAgo, timeMs: r.timeMs, avatar: r.walletAvatar };
+        g.wallets[r.wallet] = {
+          amount: r.amount,
+          timeAgo: r.timeAgo,
+          timeMs: r.timeMs,
+          avatar: r.walletAvatar,
+          address: r.walletAddress || g.wallets[r.wallet]?.address || ''
+        };
+      } else if (r.walletAddress && !g.wallets[r.wallet].address) {
+        g.wallets[r.wallet].address = r.walletAddress;
       }
       if ((r.timeMs || 0) >= (g.latestTradeTimeMs || 0)) {
         g.latestTradeTimeMs = r.timeMs || g.latestTradeTimeMs || 0;
@@ -3230,7 +3661,11 @@
     for (const [groupKey, group] of Object.entries(groups)) {
       const becameVisibleAgain = releaseHiddenAlertIfNewBuy(groupKey, group.latestTradeTimeMs || 0);
       const walletNames = Object.keys(group.wallets);
-      const hasPriorityWallet = hasStarredWallet(walletNames);
+      const hasPriorityWallet = hasStarredWallet(walletNames.map((name) => ({
+        name,
+        address: group.wallets[name]?.address || '',
+        chain: group.chain
+      })), group.chain);
       const requiredWallets = hasPriorityWallet ? 1 : config.minWallets;
       if (walletNames.length < requiredWallets) continue;
       activeQualifyingGroupKeys.add(groupKey);
@@ -3248,6 +3683,7 @@
         );
         return {
           name: w,
+          address: wd.address || '',
           amount: wd.amount,
           timeAgo: wd.timeAgo,
           timeMs: wd.timeMs,
@@ -3271,7 +3707,9 @@
         const sameToken = (existing.token || '') === (group.token || '');
         const sameTokenLogo = (existing.tokenLogo || '') === (group.tokenLogo || '');
         const samePlatform = JSON.stringify(existing.platform || null) === JSON.stringify(group.platform || null);
-        if (sameCount && sameClose && sameMcap && sameLatestTrade && sameToken && sameTokenLogo && samePlatform) continue;
+        const sameWalletAddresses = JSON.stringify((existing.wallets || []).map((wallet) => wallet.address || ''))
+          === JSON.stringify(walletDetails.map((wallet) => wallet.address || ''));
+        if (sameCount && sameClose && sameMcap && sameLatestTrade && sameToken && sameTokenLogo && samePlatform && sameWalletAddresses) continue;
         const prevTier = existing.tier || calcTier(existing.effectiveCount || existing.walletCount);
         const crossedStandardThreshold = qualifiesStandardThreshold && existing.walletCount < config.minWallets;
         existing.walletCount = walletNames.length;
@@ -3283,7 +3721,15 @@
         } else {
           existing.dissolvedAt = null;
         }
-        existing.wallets = walletDetails;
+        const fomoWallets = (existing.fomoSignals || []).map((signal) => ({
+          name: `FOMO ${signal.traderCount} traders`,
+          amount: signal.amountText,
+          timeAgo: signal.displayTime,
+          address: '',
+          external: true,
+          stableKey: signal.stableKey
+        }));
+        existing.wallets = [...walletDetails, ...fomoWallets];
         existing.mcap = group.mcap || existing.mcap;
         existing.token = group.token || existing.token;
         existing.mint = group.mint || existing.mint;
@@ -3386,6 +3832,9 @@
     alerts = alerts.filter((alert) => {
       const key = getAlertGroupKey(alert);
       if (key && activeQualifyingGroupKeys.has(key)) return true;
+      if (alert.externalSource === 'fomo') {
+        return (now - Number(alert.updatedAt || alert.triggeredAt || 0)) < windowMs;
+      }
       return !!(alert.dissolvedAt && (now - alert.dissolvedAt) < DISSOLVED_KEEP_MS);
     });
     if (alerts.length !== alertsBeforePrune) {
@@ -3421,7 +3870,11 @@
   }
 
   // ===== 声音 =====
+  const AUDIO_UNLOCK_EVENTS = ['pointerdown', 'mousedown', 'keydown', 'touchstart'];
+  const PENDING_AUDIO_CUE_TTL_MS = 30000;
   let _audioCtx = null, _audioReady = false;
+  let pendingAggregateCue = null;
+  let pendingWatchedTradeSpeech = null;
   function ensureAudioCtx() {
     if (_audioReady) return _audioCtx;
     try {
@@ -3430,7 +3883,80 @@
       return _audioCtx;
     } catch (e) { return null; }
   }
-  document.addEventListener('click', () => { if (!_audioReady) ensureAudioCtx(); }, { once: true, capture: true });
+
+  async function resumeAudioCtx() {
+    const ctx = ensureAudioCtx();
+    if (!ctx) return false;
+    if (ctx.state !== 'suspended') return true;
+    try {
+      await ctx.resume();
+      return ctx.state !== 'suspended';
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function queuePendingAggregateCue(tier, chain) {
+    pendingAggregateCue = {
+      tier: tier || 1,
+      chain: chain || '',
+      queuedAt: Date.now()
+    };
+  }
+
+  function flushPendingAggregateCue() {
+    if (!pendingAggregateCue) return;
+    if ((Date.now() - pendingAggregateCue.queuedAt) > PENDING_AUDIO_CUE_TTL_MS) {
+      pendingAggregateCue = null;
+      return;
+    }
+
+    const cue = pendingAggregateCue;
+    pendingAggregateCue = null;
+    playSound(cue.tier, cue.chain);
+  }
+
+  function queuePendingWatchedTradeSpeech(text) {
+    pendingWatchedTradeSpeech = {
+      text,
+      queuedAt: Date.now()
+    };
+  }
+
+  function flushPendingWatchedTradeSpeech() {
+    if (!pendingWatchedTradeSpeech) return;
+    if ((Date.now() - pendingWatchedTradeSpeech.queuedAt) > PENDING_AUDIO_CUE_TTL_MS) {
+      pendingWatchedTradeSpeech = null;
+      return;
+    }
+
+    const item = pendingWatchedTradeSpeech;
+    pendingWatchedTradeSpeech = null;
+    void playWatchedTradeSpeech(item.text);
+  }
+
+  function isAutoplayBlockedError(error) {
+    const name = String(error && error.name || '');
+    const message = String(error && error.message || error || '');
+    return name === 'NotAllowedError'
+      || /user.*interact|autoplay|notallowed|play\(\) failed/i.test(message);
+  }
+
+  function handleAudioUnlockSignal() {
+    void resumeAudioCtx().then((ready) => {
+      if (!ready) return;
+      flushPendingAggregateCue();
+      flushPendingWatchedTradeSpeech();
+    });
+  }
+
+  for (const eventName of AUDIO_UNLOCK_EVENTS) {
+    document.addEventListener(eventName, handleAudioUnlockSignal, { capture: true, passive: true });
+  }
+  window.addEventListener('focus', handleAudioUnlockSignal);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') handleAudioUnlockSignal();
+  });
 
   function calcTier(walletCount) {
     if (!config.tieredAlerts) return 1;
@@ -3491,7 +4017,22 @@
     if (!config.soundEnabled) return;
     if (document.visibilityState === 'hidden') return;
     const ctx = ensureAudioCtx();
-    if (!ctx || ctx.state === 'suspended') return;
+    if (!ctx) return;
+    if (ctx.state === 'suspended') {
+      queuePendingAggregateCue(tier, chain);
+      void resumeAudioCtx().then((ready) => {
+        if (ready) flushPendingAggregateCue();
+      });
+      aggregateDebugLog('playSound deferred until audio context is unlocked.', {
+        tier: tier || 1,
+        chain: chain || ''
+      });
+      return;
+    }
+    playSoundWithContext(ctx, tier, chain);
+  }
+
+  function playSoundWithContext(ctx, tier, chain) {
     tier = tier || 1;
     const soundProfile = getAggregateChainSoundProfile(chain);
     const volumeScale = getConfiguredAudioVolume();
@@ -3628,6 +4169,13 @@
         URL.revokeObjectURL(objectUrl);
       }
     } catch (e) {
+      if (isAutoplayBlockedError(e)) {
+        queuePendingWatchedTradeSpeech(text);
+        aggregateDebugLog('watched trade TTS deferred until browser audio is unlocked.', {
+          text: text.slice(0, 80)
+        });
+        return;
+      }
       await fallbackNativeWatchedTradeTts(text);
     }
   }
@@ -3664,6 +4212,7 @@
           <span class="gcp-badge">0</span>
         </div>
         <div class="gcp-header-right">
+          <button class="gcp-icon-btn gcp-focus-speech-btn" title="Focus Wallet TTS">TTS</button>
           <button class="gcp-icon-btn gcp-tier-btn" title="${config.tieredAlerts ? '分级提醒：开（点击关闭）' : '分级提醒：关（点击开启）'}">${config.tieredAlerts ? '🔥' : '🌫️'}</button>
           <button class="gcp-icon-btn gcp-sound-btn" title="声音开关">🔔</button>
         </div>
@@ -3678,6 +4227,7 @@
             <option value="eth" ${config.chainFilter === 'eth' ? 'selected' : ''}>ETH</option>
             <option value="base" ${config.chainFilter === 'base' ? 'selected' : ''}>BASE</option>
             <option value="sol" ${config.chainFilter === 'sol' ? 'selected' : ''}>SOL</option>
+            <option value="robinhood" ${config.chainFilter === 'robinhood' ? 'selected' : ''}>Robinhood</option>
           </select>
         </label>
         <label>排序
@@ -3698,6 +4248,18 @@
       <span class="gcp-resize-handle gcp-resize-bottom-right" data-dir="bottom-right"></span>
     `;
     return el;
+  }
+
+  function updateFocusSpeechButtonState() {
+    const button = panelEl && panelEl.querySelector('.gcp-focus-speech-btn');
+    if (!button) return;
+    const enabled = audioSettings.ttsEnabled !== false;
+    button.classList.toggle('is-off', !enabled);
+    button.textContent = enabled ? 'TTS' : 'TTS-';
+    button.title = enabled
+      ? 'Focus Wallet TTS is ON. Click to turn it off.'
+      : 'Focus Wallet TTS is OFF. Click to turn it on.';
+    button.setAttribute('aria-label', button.title);
   }
 
   function bindPanelEvents() {
@@ -3723,6 +4285,20 @@
       soundBtn.textContent = config.soundEnabled ? '🔔' : '🔕';
       saveConfig();
     });
+
+    const focusSpeechBtn = panelEl.querySelector('.gcp-focus-speech-btn');
+    if (focusSpeechBtn) {
+      updateFocusSpeechButtonState();
+      focusSpeechBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        audioSettings = normalizeAudioSettings({
+          ...audioSettings,
+          ttsEnabled: audioSettings.ttsEnabled === false
+        });
+        updateFocusSpeechButtonState();
+        void persistAudioSettings();
+      });
+    }
 
     const tierBtn = panelEl.querySelector('.gcp-tier-btn');
     if (tierBtn) {
@@ -3851,7 +4427,8 @@
         const groupKey = getAlertGroupKey(a);
         const closedCount = a.closedCount || 0;
         const effective = (a.effectiveCount != null) ? a.effectiveCount : a.walletCount;
-        const tier = a.tier || calcTier(effective);
+        const fomoTraderCount = Math.max(0, ...(a.fomoSignals || []).map((signal) => Number(signal.traderCount || 0)));
+        const tier = Math.max(a.tier || calcTier(effective), fomoTraderCount ? calcTier(fomoTraderCount) : 0);
         const tierIcon = tier >= 4 ? ' 🚨' : tier >= 3 ? ' 🔥' : tier >= 2 ? ' ⚡' : '';
         const logoImg = a.tokenLogo
           ? `<img class="gcp-token-logo" src="${escHtml(a.tokenLogo)}" loading="lazy" referrerpolicy="no-referrer" />`
@@ -3864,17 +4441,28 @@
           ? `<button class="gcp-alert-hide-btn" data-group-key="${escHtml(groupKey)}" data-latest-trade-time="${escHtml(a.latestTradeTimeMs || 0)}" title="闅愯棌杩欐潯鎻愰啋锛岀洿鍒颁笅娆℃湁鏂颁拱鍏?">×</button>`
           : '';
         const requiredWallets = hasStar ? 1 : config.minWallets;
-        const isFaded = effective < requiredWallets;
+        const isFaded = effective < requiredWallets && fomoTraderCount === 0;
+        const countLabel = [
+          effective > 0 ? `${effective} wallets` : '',
+          fomoTraderCount > 0 ? `FOMO ${fomoTraderCount} traders` : ''
+        ].filter(Boolean).join(' · ');
         return `
         <div class="gcp-alert-item gcp-tier-${tier} ${a.isNew ? 'is-new' : ''} ${isFaded ? 'is-faded' : ''}" data-token="${escHtml(a.token)}">
           <div class="gcp-alert-token">
             <span class="gcp-alert-token-name gcp-token-link" data-mint="${escHtml(a.mint || '')}" data-chain="${escHtml(a.chain || '')}" data-token="${escHtml(a.token)}" title="跳转到 ${escHtml(a.token)}">${logoImg}${escHtml(a.token)} ↗</span>${a.mint ? `<span class="gcp-mint-tag" title="合约：${escHtml(a.mint)}（点击复制）" data-mint="${escHtml(a.mint)}">${escHtml(shortMint(a.mint))}</span>` : ''}${a.platform ? `<span class="gcp-plat-badge ${escHtml(a.platform.cls)}" title="${escHtml(a.platform.label)}">${escHtml(a.platform.tag)}</span>` : ''}${externalLinks}
-            <span class="gcp-alert-actions"><span class="gcp-alert-count">${effective} 个钱包${closedCount > 0 ? ` <span class="gcp-closed-tag">−${closedCount} 清仓</span>` : ''}${tierIcon}</span>${hideBtn}</span>
+            <span class="gcp-alert-actions"><span class="gcp-alert-count">${escHtml(countLabel)}${closedCount > 0 ? ` <span class="gcp-closed-tag">−${closedCount} 清仓</span>` : ''}${tierIcon}</span>${hideBtn}</span>
           </div>
           <div class="gcp-alert-time">${metaLine}</div>
           <div class="gcp-alert-wallets">
             ${a.wallets.map(w => {
-                const star = !!findSpeechWatchWalletKey(w.name);
+              if (w.external) {
+                return `<span class="gcp-alert-wallet-tag gcp-alert-wallet-tag-external" title="FOMO aggregate alert">
+                  <span class="gcp-wallet-name">${escHtml(w.name)}</span>
+                  <span class="gcp-wallet-amount">${escHtml(w.amount)}</span>
+                  ${w.timeAgo ? `<span style="color:#666">${escHtml(w.timeAgo)}</span>` : ''}
+                </span>`;
+              }
+                const star = !!findFocusWalletKey(w.name, w.address, a.chain);
               const blacklisted = isWalletBlacklisted(w.name);
               const av = w.avatar
                 ? `<img class="gcp-wallet-avatar" src="${escHtml(w.avatar)}" loading="lazy" referrerpolicy="no-referrer" />`
@@ -3922,7 +4510,9 @@
     });
     container.querySelectorAll('.gcp-mint-tag').forEach(el => {
       el.addEventListener('click', (e) => {
+        e.preventDefault();
         e.stopPropagation();
+        e.stopImmediatePropagation();
         const fullMint = el.dataset.mint || '';
         try {
           navigator.clipboard.writeText(fullMint);
@@ -3934,19 +4524,25 @@
     });
     container.querySelectorAll('.gcp-watch-toggle').forEach(el => {
       el.addEventListener('click', (e) => {
+        e.preventDefault();
         e.stopPropagation();
+        e.stopImmediatePropagation();
         toggleStar(el.dataset.wallet);
       });
     });
     container.querySelectorAll('.gcp-blacklist-toggle').forEach(el => {
       el.addEventListener('click', (e) => {
+        e.preventDefault();
         e.stopPropagation();
+        e.stopImmediatePropagation();
         toggleBlacklistWallet(el.dataset.wallet);
       });
     });
     container.querySelectorAll('.gcp-alert-hide-btn').forEach(el => {
       el.addEventListener('click', (e) => {
+        e.preventDefault();
         e.stopPropagation();
+        e.stopImmediatePropagation();
         hideAlertUntilNextBuy(el.dataset.groupKey || '', parseInt(el.dataset.latestTradeTime || '0', 10) || 0);
       });
     });
@@ -3968,7 +4564,54 @@
   }
 
   function isMonitorWindowPage() {
-    return FOLLOW_PATH_RE.test(location.pathname) || isDebotMonitorWindowPage();
+    return monitorScreenActive && (FOLLOW_PATH_RE.test(location.pathname) || isDebotMonitorWindowPage());
+  }
+
+  function sendRuntimeMessage(message) {
+    return new Promise((resolve) => {
+      if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) {
+        resolve(null);
+        return;
+      }
+
+      try {
+        chrome.runtime.sendMessage(message, (response) => {
+          if (chrome.runtime.lastError) {
+            resolve(null);
+            return;
+          }
+
+          resolve(response || null);
+        });
+      } catch (e) {
+        resolve(null);
+      }
+    });
+  }
+
+  async function refreshMonitorScreenActive() {
+    const response = await sendRuntimeMessage({
+      type: GET_MONITOR_SCREEN_STATUS_MESSAGE
+    });
+    monitorScreenActive = !!(response && response.ok && response.isMonitorScreen);
+    return monitorScreenActive;
+  }
+
+  function syncFollowModeFromMonitorState() {
+    void refreshMonitorScreenActive().then(() => {
+      syncFollowMode();
+    });
+  }
+
+  function watchMonitorScreenState() {
+    if (!canUseSharedStorage || !chrome.storage.onChanged) return;
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName !== 'local' || !changes[MONITOR_STATE_STORAGE_KEY]) {
+        return;
+      }
+
+      syncFollowModeFromMonitorState();
+    });
   }
 
   async function openPanelLinkInMainWindow(url) {
@@ -4039,6 +4682,7 @@
       injectStarsInList(list);
     }
   }
+
   function injectStarsInList(list) {
     const rowsRoot = list.children[0]?.children[0];
     if (!rowsRoot) return;
@@ -4477,7 +5121,7 @@
     if (routeWatcherInstalled) return;
     routeWatcherInstalled = true;
 
-    const syncAfterNavigation = () => queueMicrotask(syncFollowMode);
+    const syncAfterNavigation = () => queueMicrotask(syncFollowModeFromMonitorState);
     const nativePushState = history.pushState;
     const nativeReplaceState = history.replaceState;
 
@@ -4493,8 +5137,8 @@
       return result;
     };
 
-    window.addEventListener('popstate', syncFollowMode);
-    window.addEventListener('hashchange', syncFollowMode);
+    window.addEventListener('popstate', syncFollowModeFromMonitorState);
+    window.addEventListener('hashchange', syncFollowModeFromMonitorState);
   }
 
   const REPO = '0xuezhang985/wallet-convergence-alert';
@@ -4517,22 +5161,29 @@
     installPageDebugMessageBridge();
     installDebotNetworkMessageBridge();
     installRouteWatcher();
+    watchMonitorScreenState();
     ensureAudioSyncChannel();
     Promise.all([
       loadSpeechWatchlist(),
+      loadFocusAddresses(),
       loadBlacklistWallets(),
       loadAudioSettings(),
       loadTtsSettings()
     ]).catch(() => null).finally(() => {
-      const tryInit = () => {
-        if (syncFollowMode()) {
-          return true;
-        }
-        return false;
+      const tryInit = async () => {
+        await refreshMonitorScreenActive();
+        return syncFollowMode();
       };
-      if (tryInit()) return;
-      const w = setInterval(() => { if (tryInit()) clearInterval(w); }, 1500);
-      setTimeout(() => clearInterval(w), 60000);
+      startFocusAddressSync();
+      void tryInit().then((active) => {
+        if (active) return;
+        const w = setInterval(() => {
+          void tryInit().then((ok) => {
+            if (ok) clearInterval(w);
+          });
+        }, 1500);
+        setTimeout(() => clearInterval(w), 60000);
+      });
     });
   }
 
@@ -4548,6 +5199,7 @@
     sourceId,
     get audioSettings() { return audioSettings; },
     get speechWatchlist() { return speechWatchlist; },
+    get focusAddresses() { return focusAddresses; },
     get sharedSources() { return sharedSources; },
     get lastScanInfo() { return { ...lastScanInfo }; },
     get combinedBuyRecords() { return getCombinedBuyRecords(); },
