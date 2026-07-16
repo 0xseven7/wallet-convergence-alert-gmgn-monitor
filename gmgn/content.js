@@ -639,6 +639,8 @@
     const token = String(payload.symbol || '').trim() || shortAddress(mint);
     const side = String(payload.side || '').toLowerCase();
     const traderCount = Math.max(1, Number(payload.traderCount || 1));
+    const isTraderAlert = payload.alertKind === 'trader';
+    const traderName = String(payload.traderHandle || payload.traderName || '').trim();
     if (!chain || !mint || !token || side !== 'buy') {
       return { ok: false, skipped: true };
     }
@@ -650,6 +652,9 @@
     const fomoSignal = {
       stableKey,
       traderCount,
+      alertKind: isTraderAlert ? 'trader' : 'aggregate',
+      traderName,
+      traderAddress: String(payload.traderAddress || '').trim(),
       amountText: String(payload.amountText || ''),
       marketCapText: String(payload.marketCapText || ''),
       displayTime: String(payload.displayTime || ''),
@@ -663,10 +668,10 @@
       existing.wallets = [
         ...(existing.wallets || []).filter((wallet) => !wallet.external),
         ...existing.fomoSignals.map((signal) => ({
-          name: `FOMO ${signal.traderCount} traders`,
+          name: signal.alertKind === 'trader' ? `FOMO @${signal.traderName}` : `FOMO ${signal.traderCount} traders`,
           amount: signal.amountText,
           timeAgo: signal.displayTime,
-          address: '',
+          address: signal.traderAddress || '',
           external: true,
           stableKey: signal.stableKey
         }))
@@ -691,10 +696,10 @@
       effectiveCount: 0,
       closedCount: 0,
       wallets: [{
-        name: `FOMO ${traderCount} traders`,
+        name: isTraderAlert ? `FOMO @${traderName}` : `FOMO ${traderCount} traders`,
         amount: String(payload.amountText || ''),
         timeAgo: String(payload.displayTime || ''),
-        address: '',
+        address: String(payload.traderAddress || ''),
         external: true
       }],
       mcap: String(payload.marketCapText || ''),
@@ -3722,10 +3727,10 @@
           existing.dissolvedAt = null;
         }
         const fomoWallets = (existing.fomoSignals || []).map((signal) => ({
-          name: `FOMO ${signal.traderCount} traders`,
+          name: signal.alertKind === 'trader' ? `FOMO @${signal.traderName}` : `FOMO ${signal.traderCount} traders`,
           amount: signal.amountText,
           timeAgo: signal.displayTime,
-          address: '',
+          address: signal.traderAddress || '',
           external: true,
           stableKey: signal.stableKey
         }));
@@ -4428,6 +4433,8 @@
         const closedCount = a.closedCount || 0;
         const effective = (a.effectiveCount != null) ? a.effectiveCount : a.walletCount;
         const fomoTraderCount = Math.max(0, ...(a.fomoSignals || []).map((signal) => Number(signal.traderCount || 0)));
+        const fomoRealBuyerCount = new Set((a.fomoSignals || []).filter((signal) => signal.alertKind === 'trader').map((signal) => String(signal.traderAddress || signal.traderName || '').toLowerCase()).filter(Boolean)).size;
+        const fomoAggregateTraderCount = Math.max(0, ...(a.fomoSignals || []).filter((signal) => signal.alertKind !== 'trader').map((signal) => Number(signal.traderCount || 0)));
         const tier = Math.max(a.tier || calcTier(effective), fomoTraderCount ? calcTier(fomoTraderCount) : 0);
         const tierIcon = tier >= 4 ? ' 🚨' : tier >= 3 ? ' 🔥' : tier >= 2 ? ' ⚡' : '';
         const logoImg = a.tokenLogo
@@ -4441,10 +4448,11 @@
           ? `<button class="gcp-alert-hide-btn" data-group-key="${escHtml(groupKey)}" data-latest-trade-time="${escHtml(a.latestTradeTimeMs || 0)}" title="闅愯棌杩欐潯鎻愰啋锛岀洿鍒颁笅娆℃湁鏂颁拱鍏?">×</button>`
           : '';
         const requiredWallets = hasStar ? 1 : config.minWallets;
-        const isFaded = effective < requiredWallets && fomoTraderCount === 0;
+        const isFaded = effective < requiredWallets && fomoRealBuyerCount === 0 && fomoAggregateTraderCount === 0;
         const countLabel = [
           effective > 0 ? `${effective} wallets` : '',
-          fomoTraderCount > 0 ? `FOMO ${fomoTraderCount} traders` : ''
+          fomoRealBuyerCount > 0 ? `FOMO ${fomoRealBuyerCount} buyers` : '',
+          fomoAggregateTraderCount > 0 ? `FOMO ${fomoAggregateTraderCount} traders` : ''
         ].filter(Boolean).join(' · ');
         return `
         <div class="gcp-alert-item gcp-tier-${tier} ${a.isNew ? 'is-new' : ''} ${isFaded ? 'is-faded' : ''}" data-token="${escHtml(a.token)}">

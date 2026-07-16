@@ -1838,6 +1838,8 @@ async function handleFomoAggregateAlert(payload) {
   const contractAddress = String(payload.tokenAddress || '').trim();
   const symbol = String(payload.symbol || '').trim();
   const traderCount = Math.max(1, Number(payload.traderCount || 1));
+  const isTraderAlert = payload.alertKind === 'trader';
+  const traderName = String(payload.traderHandle || payload.traderName || '').trim();
   if (!chain || !contractAddress || !symbol || String(payload.side || '').toLowerCase() !== 'buy') {
     return { ok: false, skipped: true, error: 'Invalid FOMO buy alert.' };
   }
@@ -1862,7 +1864,8 @@ async function handleFomoAggregateAlert(payload) {
   const settings = normalizeGmgnTwitterTriggerHookSettings(stored[GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY]);
   const focusBuy = {
     id: `fomo|${String(payload.stableKey || '').trim()}`,
-    traderName: `FOMO ${traderCount} traders`,
+    traderName: isTraderAlert ? traderName : `FOMO ${traderCount} traders`,
+    traderAddress: isTraderAlert ? String(payload.traderAddress || '').trim() : '',
     tokenName: symbol,
     symbol,
     chainId: mapMarketWatchChainId(chain),
@@ -1871,9 +1874,10 @@ async function handleFomoAggregateAlert(payload) {
     marketCap: Number.isFinite(Number(payload.marketCapUsd)) ? Number(payload.marketCapUsd) : undefined,
     source: 'fomo-alert',
     txUrl: String(payload.url || '').trim(),
-    note: `FOMO ${traderCount} traders Buy ${payload.amountText || ''}`.trim(),
+    note: isTraderAlert ? `FOMO @${traderName} Buy ${payload.amountText || ''}`.trim() : `FOMO ${traderCount} traders Buy ${payload.amountText || ''}`.trim(),
     boughtAt: formatIsoTimestamp(payload.observedAt || Date.now()),
-    aggregateTraderCount: traderCount,
+    aggregateTraderCount: isTraderAlert ? undefined : traderCount,
+    fomoTraderHandle: isTraderAlert ? traderName : undefined,
     aggregateAmountUsd: Number.isFinite(Number(payload.amountUsd)) ? Number(payload.amountUsd) : undefined
   };
   const marketWatch = await dispatchFocusBuyToRelay(focusBuy, settings);

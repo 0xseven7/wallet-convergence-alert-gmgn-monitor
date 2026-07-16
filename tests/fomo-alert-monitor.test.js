@@ -22,6 +22,7 @@ const parsed = parseAlert(anchor);
 assert.ok(Number.isFinite(parsed.observedAt));
 delete parsed.observedAt;
 assert.deepEqual(parsed, {
+  alertKind: 'aggregate',
   stableKey: 'robinhood|0x6bca58e2ba84ace5a1aba25b793d198450722d28|buy|80|$197.4K|$834.7K',
   chain: 'robinhood',
   tokenAddress: '0x6bca58e2ba84ace5a1aba25b793d198450722d28',
@@ -36,12 +37,31 @@ assert.deepEqual(parsed, {
   url: 'https://fomo.family/tokens/robinhood/0x6bca58e2ba84ace5a1aba25b793d198450722d28'
 });
 
+const traderAnchor = {
+  textContent: 'BinkBinkBink Buy 1h VICECOIN $2.2K at $125.9K MC',
+  getAttribute(name) {
+    return name === 'href'
+      ? '/tokens/solana/ExCALBK63oJHxoDTgEPspKG7TFuhBcEgMv6YiyApump?tradeId=53359ee2-75ca-4a63-b67e-1be0b1cef3e5'
+      : '';
+  }
+};
+const traderParsed = parseAlert(traderAnchor);
+assert.equal(traderParsed.alertKind, 'trader');
+assert.equal(traderParsed.side, 'buy');
+assert.equal(traderParsed.traderName, 'BinkBinkBink');
+assert.equal(traderParsed.traderHandle, 'BinkBinkBink');
+assert.equal(traderParsed.traderAddress, 'F9Tv9FpKcaDwx7Ns6PvCJrc3SCeksw1qQdBVHpUbz6to');
+assert.equal(traderParsed.tradeId, '53359ee2-75ca-4a63-b67e-1be0b1cef3e5');
+assert.equal(traderParsed.stableKey, 'trade|53359ee2-75ca-4a63-b67e-1be0b1cef3e5|buy|$2.2K');
+assert.equal(traderParsed.symbol, 'VICECOIN');
+assert.equal(traderParsed.amountUsd, 2200);
+assert.equal(traderParsed.marketCapUsd, 125900);
 assert.match(backgroundSource, /chrome\.tabs\.sendMessage[\s\S]*FOMO_AGGREGATE_ALERT_EVENT/, 'FOMO alert should be sent to the monitor screen');
 assert.match(backgroundSource, /dispatchFocusBuyToRelay\(focusBuy, settings\)/, 'FOMO alert should also be persisted in Market Watch');
 assert.match(backgroundSource, /source:\s*'fomo-alert'/, 'Market Watch item should retain its FOMO source');
-assert.match(monitorSource, /fomoAggregateAlertSeenV1/, 'seen alerts should persist across hidden-tab reloads');
+assert.match(monitorSource, /fomoAlertSeenV2/, 'seen alerts should persist across hidden-tab reloads');
 assert.match(convergenceSource, /getAlertGroupKey\(\{ token, mint, chain \}\)/, 'FOMO should merge by the same token group key as GMGN');
 assert.match(convergenceSource, /existing\.wallets = \[\.\.\.walletDetails, \.\.\.fomoWallets\]/, 'GMGN wallet rows should preserve merged FOMO rows');
-assert.match(convergenceSource, /FOMO \$\{fomoTraderCount\} traders/, 'the fused card should expose FOMO aggregate trader count');
+assert.match(convergenceSource, /FOMO \$\{fomoAggregateTraderCount\} traders/, 'the fused card should expose FOMO aggregate trader count');
 
 console.log('fomo alert monitor tests passed');
