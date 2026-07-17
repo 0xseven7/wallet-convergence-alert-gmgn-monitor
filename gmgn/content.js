@@ -187,6 +187,20 @@
     ].join('|');
   }
 
+  function buildHeuristicTradeFingerprint(parts) {
+    parts = parts || {};
+    const timeMs = Number(parts.timeMs || 0);
+    const timeBucket = Number.isFinite(timeMs) && timeMs > 0
+      ? Math.floor(timeMs / 5000)
+      : 0;
+    return [
+      normalizeTradeKeyPart(parts.action).toLowerCase(),
+      normalizeTradeKeyPart(parts.amount).toLowerCase(),
+      normalizeTradeKeyPart(parts.token || parts.tokenSymbol).toLowerCase(),
+      timeBucket ? `t:${timeBucket}` : ''
+    ].join('|');
+  }
+
   function extractTradeSourceId(row) {
     if (!row || !row.querySelectorAll) return '';
     const nodes = [row, ...row.querySelectorAll('[data-tx-hash],[data-transaction-hash],[data-signature],[data-trade-id],a[href]')];
@@ -2176,6 +2190,7 @@
       identityConfidence: trade.identityConfidence || (trade.sourceTradeId ? 'exact' : 'heuristic'),
       source: getSignalEventSource(),
       type: 'wallet_trade',
+      positionAction: action,
       ts: trade.timeMs || Date.now(),
       chain,
       ca,
@@ -2614,7 +2629,6 @@
     const href = baseInfo.href || '';
     const walletAddress = normalizeFocusAddress(baseInfo.walletAddress || '');
     const platform = detectPlatform(mint, chain, '');
-    const stableFingerprint = `${action}|${headPart}`;
     const sourceTradeId = extractTradeSourceId(row);
     const observedKey = buildObservedTradeKey({
       chain,
@@ -2623,9 +2637,15 @@
       wallet,
       action,
       amount,
-      fingerprint: stableFingerprint
+      fingerprint: `${action}|${amount}|${tokenSymbol}`
     });
     const timeInfo = resolveTradeTimeInfo(timeAgo, observedKey);
+    const stableFingerprint = buildHeuristicTradeFingerprint({
+      action,
+      amount,
+      tokenSymbol,
+      timeMs: timeInfo.timeMs
+    });
     const walletAvatar = row.querySelector('img')?.src || '';
     let tokenLogo = '';
     row.querySelectorAll('img').forEach(img => {
@@ -2735,11 +2755,6 @@
       const tm = txt.match(/(\d+)\s*([smhdSMHD]|\u79d2|\u79d2\u949f|\u5206|\u5206\u949f|\u65f6|\u5c0f\u65f6|\u5929|\u65e5)(?=\s|$)/);
       if (tm) timeAgo = normalizeTradeAgeText(tm[0]);
     }
-    const line1StableText = getTextExcludingSvg(line1)
-      .replace(/\s+/g, ' ')
-      .replace(/(\d+)\s*([smhdSMHD]|\u79d2|\u79d2\u949f|\u5206|\u5206\u949f|\u65f6|\u5c0f\u65f6|\u5929|\u65e5)(?=\s|$)/g, '')
-      .trim();
-
     // line2: <amount><tokenSymbol><tradeAge> MC:$<mcap>
     const line2Text = getTextExcludingSvg(line2).replace(/\s+/g, ' ').trim();
     // 拆 MC:
@@ -2772,7 +2787,6 @@
 
     tokenSymbol = stripInlineSvgPrefixTokenText(tokenSymbol, line2);
     const platform = detectPlatform(mint, chain, '');
-    const stableFingerprint = `${action}|${line1StableText}|${headPart}`;
     const sourceTradeId = extractTradeSourceId(row);
     const observedKey = buildObservedTradeKey({
       chain,
@@ -2781,9 +2795,15 @@
       wallet,
       action,
       amount,
-      fingerprint: stableFingerprint
+      fingerprint: `${action}|${amount}|${tokenSymbol}`
     });
     const timeInfo = resolveTradeTimeInfo(timeAgo, observedKey);
+    const stableFingerprint = buildHeuristicTradeFingerprint({
+      action,
+      amount,
+      tokenSymbol,
+      timeMs: timeInfo.timeMs
+    });
 
     // 钱包头像 = line 1 里第一个 <img>
     const walletAvatar = line1.querySelector('img')?.src || '';

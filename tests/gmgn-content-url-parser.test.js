@@ -114,9 +114,10 @@ const tradeIdentitySandbox = { module: { exports: {} } };
 vm.runInNewContext(`
 ${extractFunction('normalizeTradeKeyPart')}
 ${extractFunction('buildStableTradeKey')}
-  module.exports = { buildStableTradeKey };
+${extractFunction('buildHeuristicTradeFingerprint')}
+  module.exports = { buildStableTradeKey, buildHeuristicTradeFingerprint };
 `, tradeIdentitySandbox);
-const { buildStableTradeKey } = tradeIdentitySandbox.module.exports;
+const { buildStableTradeKey, buildHeuristicTradeFingerprint } = tradeIdentitySandbox.module.exports;
 const repeatedTrade = {
   chain: 'base',
   mint: bscAddress,
@@ -129,6 +130,16 @@ const repeatedTrade = {
 assert.equal(buildStableTradeKey({ ...repeatedTrade, timeMs: 1784291100000 }), buildStableTradeKey({ ...repeatedTrade, timeMs: 1784291160000 }), 'relative scan time must not change trade identity');
 assert.notEqual(buildStableTradeKey(repeatedTrade), buildStableTradeKey({ ...repeatedTrade, sourceTradeId: '0xabc1234567890123' }), 'an explicit source transaction id must take precedence');
 assert.notEqual(buildStableTradeKey(repeatedTrade), buildStableTradeKey({ ...repeatedTrade, amount: '0.537', fingerprint: 'buy|0.537TSG' }), 'different trade content must remain distinct');
+assert.equal(
+  buildHeuristicTradeFingerprint({ action: 'reduce', amount: '0.12', tokenSymbol: 'APEMAN', timeMs: 1784291233000, volatileText: '7s MC:$16K' }),
+  buildHeuristicTradeFingerprint({ action: 'reduce', amount: '0.12', tokenSymbol: 'APEMAN', timeMs: 1784291234000, volatileText: '58s MC:$19K' }),
+  'volatile age, PnL and market-cap text must not change heuristic trade identity'
+);
+assert.notEqual(
+  buildHeuristicTradeFingerprint({ action: 'reduce', amount: '0.12', tokenSymbol: 'APEMAN', timeMs: 1784291233000 }),
+  buildHeuristicTradeFingerprint({ action: 'reduce', amount: '0.12', tokenSymbol: 'APEMAN', timeMs: 1784291240000 }),
+  'a later same-amount trade must remain distinguishable'
+);
 
 assert.deepEqual(JSON.parse(JSON.stringify(parseDebotTokenHref(`/token/solana/274997_${solMint}`))), {
   href: `/token/solana/274997_${solMint}`,
@@ -371,6 +382,7 @@ assert.deepEqual(plain(buildWalletTradeSignalEvent({
   identityConfidence: 'heuristic',
   source: 'gmgn',
   type: 'wallet_trade',
+  positionAction: 'buy',
   ts: 1780000000000,
   chain: 'bsc',
   ca: bscAddress,

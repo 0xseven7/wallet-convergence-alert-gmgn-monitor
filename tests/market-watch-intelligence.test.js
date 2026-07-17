@@ -17,6 +17,8 @@ assert.match(background, /gmgn-wallet-snapshot/, 'every GMGN aggregate wallet sh
 assert.match(background, /kind: 'snapshot'/, 'aggregate wallet snapshots must not masquerade as trades');
 assert.doesNotMatch(background, /type !== 'wallet_trade' \|\| raw\.focus_wallet_hit !== true/, 'all direct GMGN wallet trades should be forwarded, not only Focus wallets');
 assert.match(background, /tradeId: String\(payload\.tradeId \|\| raw\.trade_id \|\| raw\.stable_key/, 'direct trades should carry a stable trade id');
+assert.match(background, /positionAction: String\(payload\.positionAction \|\| action \|\| raw\.original_action/, 'direct trades should preserve reduce versus close semantics');
+assert.match(background, /positionAction: wallet\.closed === true \? 'close' : 'buy'/, 'sold aggregate snapshots should be marked as closed positions');
 assert.doesNotMatch(background, /function buildConvergenceAlertFocusBuyPayload/, 'aggregate snapshots must not enter the legacy Focus Buy financial stream');
 assert.match(background, /actorImage: String\(wallet\.avatar/, 'GMGN wallet avatars should be forwarded');
 assert.match(background, /return \{ items: \[aggregateEvent, \.\.\.walletEvents\] \}/, 'aggregate and wallet events should be sent in one batch');
