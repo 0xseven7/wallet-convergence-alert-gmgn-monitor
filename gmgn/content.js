@@ -2120,6 +2120,7 @@
       chain,
       ca,
       symbol,
+      image: String(alert.tokenLogo || '').trim(),
       action: 'alert',
       mcap: normalizeSignalEventMcap(alert.mcap),
       text: `${symbol} ${effectiveCount} 个关注钱包聚合买入`,
@@ -2134,7 +2135,18 @@
         focus_wallet_hit: focusWallets.length > 0,
         focus_wallets: focusWallets,
         group_key: getAlertGroupKey(alert),
-        wallets: Array.isArray(alert.wallets) ? alert.wallets.map((wallet) => wallet && wallet.name).filter(Boolean) : []
+        wallets: Array.isArray(alert.wallets)
+          ? alert.wallets.map((wallet) => ({
+              name: String(wallet?.name || '').trim(),
+              address: normalizeFocusAddress(wallet?.address || ''),
+              amount: String(wallet?.amount || '').trim(),
+              timeAgo: String(wallet?.timeAgo || '').trim(),
+              timeMs: Number(wallet?.timeMs || 0),
+              avatar: String(wallet?.avatar || '').trim(),
+              closed: wallet?.closed === true,
+              closedAt: Number(wallet?.closedAt || 0)
+            })).filter((wallet) => wallet.name || wallet.address)
+          : []
       }
     };
   }
@@ -3635,16 +3647,21 @@
         };
       }
       const g = groups[key];
-      if (!g.wallets[r.wallet] || (r.timeMs || 0) > (g.wallets[r.wallet].timeMs || 0)) {
-        g.wallets[r.wallet] = {
+      const normalizedWalletAddress = normalizeFocusAddress(r.walletAddress || '');
+      const walletKey = normalizedWalletAddress
+        ? `${String(r.chain || '').toLowerCase()}:${normalizedWalletAddress.toLowerCase()}`
+        : `name:${String(r.wallet || '').trim().toLowerCase()}`;
+      if (!g.wallets[walletKey] || (r.timeMs || 0) > (g.wallets[walletKey].timeMs || 0)) {
+        g.wallets[walletKey] = {
+          name: r.wallet,
           amount: r.amount,
           timeAgo: r.timeAgo,
           timeMs: r.timeMs,
           avatar: r.walletAvatar,
-          address: r.walletAddress || g.wallets[r.wallet]?.address || ''
+          address: normalizedWalletAddress || g.wallets[walletKey]?.address || ''
         };
-      } else if (r.walletAddress && !g.wallets[r.wallet].address) {
-        g.wallets[r.wallet].address = r.walletAddress;
+      } else if (normalizedWalletAddress && !g.wallets[walletKey].address) {
+        g.wallets[walletKey].address = normalizedWalletAddress;
       }
       if ((r.timeMs || 0) >= (g.latestTradeTimeMs || 0)) {
         g.latestTradeTimeMs = r.timeMs || g.latestTradeTimeMs || 0;
@@ -3666,9 +3683,9 @@
     for (const [groupKey, group] of Object.entries(groups)) {
       const becameVisibleAgain = releaseHiddenAlertIfNewBuy(groupKey, group.latestTradeTimeMs || 0);
       const walletNames = Object.keys(group.wallets);
-      const hasPriorityWallet = hasStarredWallet(walletNames.map((name) => ({
-        name,
-        address: group.wallets[name]?.address || '',
+      const hasPriorityWallet = hasStarredWallet(walletNames.map((walletKey) => ({
+        name: group.wallets[walletKey]?.name || walletKey,
+        address: group.wallets[walletKey]?.address || '',
         chain: group.chain
       })), group.chain);
       const requiredWallets = hasPriorityWallet ? 1 : config.minWallets;
@@ -3677,17 +3694,19 @@
       qualifyingGroupCount += 1;
       const qualifiesStandardThreshold = walletNames.length >= config.minWallets;
 
-      const walletDetails = walletNames.map(w => {
-        const wd = group.wallets[w];
+      const walletDetails = walletNames.map((walletKey) => {
+        const wd = group.wallets[walletKey];
+        const walletName = wd.name || walletKey;
+        const walletAddress = normalizeFocusAddress(wd.address || '');
         const closeMatch = combinedClosedRecords.find(c =>
-          c.wallet === w &&
+          ((walletAddress && normalizeFocusAddress(c.walletAddress || '') === walletAddress) || (!walletAddress && c.wallet === walletName)) &&
           (c.chain || '') === (group.chain || '') &&
           ((group.mint && c.mint === group.mint) ||
            (!group.mint && !c.mint && c.token === group.token)) &&
           c.timeMs > wd.timeMs
         );
         return {
-          name: w,
+          name: walletName,
           address: wd.address || '',
           amount: wd.amount,
           timeAgo: wd.timeAgo,

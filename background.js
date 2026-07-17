@@ -637,32 +637,74 @@ async function dispatchMarketWatchIntelligenceEvent(payload) {
   if (!requestUrl) {
     return { ok: false, skipped: true, error: 'Relay Base URL is invalid.' };
   }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), Math.min(settings.timeoutMs, 5000));
-  try {
-    const response = await fetch(requestUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-gmgn-hook-source': 'wallet-convergence-alert-gmgn-monitor',
-        'x-gmgn-hook-event': 'intelligence-event',
-        ...(settings.eventApiToken ? { Authorization: `Bearer ${settings.eventApiToken}` } : {})
-      },
-      body: JSON.stringify({ source: 'gmgn-monitor-extension', payload: event }),
-      signal: controller.signal
-    });
-    const responseText = await response.text().catch(() => '');
-    return { ok: response.ok, status: response.status, statusText: response.statusText, body: responseText.slice(0, 500) };
-  } catch (error) {
-    return {
-      ok: false,
-      error: error && error.name === 'AbortError'
-        ? `Intelligence event request timed out after ${Math.min(settings.timeoutMs, 5000)}ms.`
-        : (error && error.message ? error.message : String(error))
-    };
-  } finally {
-    clearTimeout(timer);
+  const allItems = Array.isArray(event.items) ? event.items : [event];
+  const batches = [];
+  for (let index = 0; index < allItems.length; index += 200) {
+    batches.push(allItems.slice(index, index + 200));
   }
+
+  let itemsSent = 0;
+  for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
+    const items = batches[batchIndex];
+    let lastResult = null;
+
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const controller = new AbortController();
+      const timeoutMs = Math.min(settings.timeoutMs, 5000);
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetch(requestUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-gmgn-hook-source': 'wallet-convergence-alert-gmgn-monitor',
+            'x-gmgn-hook-event': 'intelligence-event',
+            ...(settings.eventApiToken ? { Authorization: `Bearer ${settings.eventApiToken}` } : {})
+          },
+          body: JSON.stringify({ source: 'gmgn-monitor-extension', payload: { items } }),
+          signal: controller.signal
+        });
+        const responseText = await response.text().catch(() => '');
+        lastResult = {
+          ok: response.ok,
+          status: response.status,
+          statusText: response.statusText,
+          body: responseText.slice(0, 500),
+          attempt
+        };
+      } catch (error) {
+        lastResult = {
+          ok: false,
+          error: error && error.name === 'AbortError'
+            ? `Intelligence event request timed out after ${timeoutMs}ms.`
+            : (error && error.message ? error.message : String(error)),
+          attempt
+        };
+      } finally {
+        clearTimeout(timer);
+      }
+
+      if (lastResult.ok || (lastResult.status && lastResult.status < 500)) {
+        break;
+      }
+      if (attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 250));
+      }
+    }
+
+    if (!lastResult?.ok) {
+      return {
+        ...lastResult,
+        failedBatch: batchIndex + 1,
+        completedBatches: batchIndex,
+        totalBatches: batches.length,
+        itemsSent
+      };
+    }
+    itemsSent += items.length;
+  }
+
+  return { ok: true, status: 200, batches: batches.length, items: allItems.length };
 }
 
 async function dispatchGmgnEventApi(payload) {
@@ -907,6 +949,7 @@ function buildConvergenceAlertFocusBuyPayload(payload) {
     chainId: mapMarketWatchChainId(payload.chain),
     contractAddress: ca,
     marketCap: parseHumanMoneyValue(payload.mcap),
+    image: String(payload.image || raw.token_image || '').trim(),
     source: `${String(payload.source || 'gmgn').trim() || 'gmgn'}-plugin`,
     txUrl: String(payload.url || '').trim(),
     boughtAt: formatIsoTimestamp(payload.ts)
@@ -936,7 +979,7 @@ function buildMarketWatchIntelligenceEvent(payload) {
     const ca = String(payload.ca || '').trim();
     const symbol = String(payload.symbol || '').trim();
     if (!ca && !symbol) return null;
-    return removeEmptyFields({
+    const aggregateEvent = removeEmptyFields({
       id: `gmgn-aggregate|${String(raw.group_key || '').trim()}|${formatIsoTimestamp(payload.ts)}|${Number(raw.buy_wallet_count || 0)}|${Number(raw.sell_wallet_count || 0)}`,
       kind: 'aggregate',
       type,
@@ -948,11 +991,58 @@ function buildMarketWatchIntelligenceEvent(payload) {
       sellCount: Number(raw.sell_wallet_count || raw.closed_wallet_count || 0),
       traderCount: Number(raw.wallet_count || raw.buy_wallet_count || 0),
       marketCap: parseHumanMoneyValue(payload.mcap),
+      image: String(payload.image || raw.token_image || '').trim(),
       text: String(payload.text || '').trim(),
       url: String(payload.url || '').trim(),
       source: `${String(payload.source || 'gmgn').trim() || 'gmgn'}-plugin`,
       occurredAt: formatIsoTimestamp(payload.ts)
     });
+    const walletEvents = (Array.isArray(raw.wallets) ? raw.wallets : [])
+      .filter((wallet) => wallet && typeof wallet === 'object')
+      .flatMap((wallet, index) => {
+        const actorName = String(wallet.name || '').trim();
+        const actorAddress = String(wallet.address || '').trim();
+        if (!actorName && !actorAddress) return [];
+        const stableWallet = actorAddress.toLowerCase() || actorName.toLowerCase() || String(index);
+        const buyAt = formatIsoTimestamp(wallet.timeMs || payload.ts);
+        const common = {
+          kind: 'trade',
+          type: 'wallet_trade',
+          chainId: mapMarketWatchChainId(payload.chain),
+          contractAddress: ca,
+          tokenName: String(payload.token_name || symbol).trim(),
+          symbol,
+          actorName,
+          actorAddress,
+          actorImage: String(wallet.avatar || '').trim(),
+          nativeAmount: parseHumanMoneyValue(wallet.amount),
+          nativeSymbol: marketWatchNativeSymbol(payload.chain),
+          marketCap: parseHumanMoneyValue(payload.mcap),
+          image: String(payload.image || raw.token_image || '').trim(),
+          url: String(payload.url || '').trim(),
+          source: `${String(payload.source || 'gmgn').trim() || 'gmgn'}-plugin`
+        };
+        const events = [removeEmptyFields({
+          ...common,
+          id: `gmgn-wallet-buy|${String(raw.group_key || '').trim()}|${stableWallet}|${buyAt}`,
+          side: 'buy',
+          text: `${actorName || actorAddress} buy ${symbol}`,
+          occurredAt: buyAt
+        })];
+        if (wallet.closed === true && Number(wallet.closedAt || 0) > 0) {
+          const soldAt = formatIsoTimestamp(wallet.closedAt);
+          events.push(removeEmptyFields({
+            ...common,
+            id: `gmgn-wallet-sell|${String(raw.group_key || '').trim()}|${stableWallet}|${soldAt}`,
+            side: 'sell',
+            nativeAmount: undefined,
+            text: `${actorName || actorAddress} sell ${symbol}`,
+            occurredAt: soldAt
+          }));
+        }
+        return events;
+      });
+    return { items: [aggregateEvent, ...walletEvents] };
   }
   if (type !== 'wallet_trade' || raw.focus_wallet_hit !== true) return null;
   const action = String(payload.action || '').trim().toLowerCase();

@@ -392,6 +392,7 @@ assert.deepEqual(plain(buildConvergenceAlertSignalEvent({
   chain: 'bsc',
   ca: bscAddress,
   symbol: 'PEPE',
+  image: '',
   action: 'alert',
   mcap: '120K',
   text: 'PEPE 5 个关注钱包聚合买入',
@@ -406,7 +407,11 @@ assert.deepEqual(plain(buildConvergenceAlertSignalEvent({
     focus_wallet_hit: false,
     focus_wallets: [],
     group_key: `bsc|${bscAddress}`,
-    wallets: ['西瓜', '土豆', '香蕉']
+    wallets: [
+      { name: '西瓜', address: '', amount: '', timeAgo: '', timeMs: 0, avatar: '', closed: false, closedAt: 0 },
+      { name: '土豆', address: '', amount: '', timeAgo: '', timeMs: 0, avatar: '', closed: false, closedAt: 0 },
+      { name: '香蕉', address: '', amount: '', timeAgo: '', timeMs: 0, avatar: '', closed: false, closedAt: 0 }
+    ]
   }
 });
 

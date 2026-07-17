@@ -13,5 +13,12 @@ assert.match(background, /side === 'buy' && isTraderAlert/, 'only real FOMO trad
 assert.match(background, /kind: isTraderAlert \? 'trade' : 'aggregate'/, 'FOMO aggregate alerts should not be represented as fake people');
 assert.match(background, /function buildGmgnTwitterIntelligenceEvent\(/, 'GMGN Twitter triggers should be normalized for Market Watch');
 assert.match(background, /source: 'gmgn-twitter-trigger'/, 'Twitter intelligence should retain its source identity');
+assert.match(background, /gmgn-wallet-buy/, 'every GMGN aggregate wallet should become an individual buy event');
+assert.match(background, /actorImage: String\(wallet\.avatar/, 'GMGN wallet avatars should be forwarded');
+assert.match(background, /return \{ items: \[aggregateEvent, \.\.\.walletEvents\] \}/, 'aggregate and wallet events should be sent in one batch');
+assert.match(background, /index \+= 200/, 'large wallet lists should be split without dropping wallets');
+assert.match(background, /for \(let batchIndex = 0; batchIndex < batches\.length; batchIndex \+= 1\)/, 'wallet batches should be sent sequentially');
+assert.match(background, /for \(let attempt = 1; attempt <= 3; attempt \+= 1\)/, 'transient Market Watch failures should be retried');
+assert.match(background, /failedBatch: batchIndex \+ 1/, 'partial batch failures should report progress');
 
 console.log('market-watch-intelligence.test.js passed');
