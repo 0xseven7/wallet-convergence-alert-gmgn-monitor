@@ -13,6 +13,13 @@ const GMGN_FOCUS_ADDRESS_RELAY_REQUEST_MESSAGE = 'gmgn-focus-address-relay-reque
 const DEFAULT_MARKET_WATCH_DESK_BASE_URL = 'http://127.0.0.1:17387';
 const DEFAULT_MAIN_SCREEN_RELAY_BASE_URL = 'https://market-watch.macmini.lan';
 const FOMO_AGGREGATE_ALERT_EVENT = 'fomo-aggregate-alert';
+const FOMO_MONITOR_HEARTBEAT_EVENT = 'fomo-monitor-heartbeat';
+const FOMO_MONITOR_PING_EVENT = 'fomo-monitor-ping';
+const FOMO_MONITOR_ALARM = 'fomo-monitor-health-check';
+const FOMO_MONITOR_HEALTH_STORAGE_KEY = 'fomoMonitorHealthV1';
+const FOMO_MONITOR_CHECK_MINUTES = 1;
+const FOMO_MONITOR_QUIET_RELOAD_MS = 15 * 60 * 1000;
+const FOMO_MONITOR_RELOAD_COOLDOWN_MS = 2 * 60 * 1000;
 const LEGACY_MAIN_SCREEN_RELAY_BASE_URL = 'http://127.0.0.1:17390';
 const DEFAULT_TTS_API = 'http://tts.macmini.lan/tts/v3-task';
 const MONITOR_STATE_STORAGE_KEY = 'monitorState';
@@ -77,6 +84,7 @@ let monitorState = {
   allowedNavigationUrl: null,
   suppressNextRedirect: false
 };
+const fomoMonitorHealth = new Map();
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !message.type) {
@@ -120,6 +128,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     handleFomoAggregateAlert(message.payload)
       .then((result) => sendResponse(result))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message.type === FOMO_MONITOR_HEARTBEAT_EVENT && sender.tab?.id) {
+    restoreFomoMonitorHealth()
+      .then(() => updateFomoMonitorHealth(sender.tab.id, message.payload))
+      .then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false }));
     return true;
   }
 
@@ -191,6 +207,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  if (isFomoTokenUrl(tab?.url || changeInfo.url)) {
+    await restoreFomoMonitorHealth();
+    await chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => null);
+    if (changeInfo.status === 'complete') {
+      updateFomoMonitorHealth(tabId, { loadedAt: Date.now(), lastScanAt: Date.now() });
+    }
+  }
   await ensureMonitorState();
   await refreshActionBadges();
 
@@ -275,6 +298,7 @@ chrome.tabs.onDetached.addListener(() => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId, removeInfo = {}) => {
+  void removeFomoMonitorHealth(tabId);
   if (tabId === monitorState.tabId) {
     if (removeInfo.isWindowClosing) {
       monitorState = {
@@ -312,11 +336,108 @@ chrome.runtime.onInstalled.addListener(() => {
   void initializeExtensionState();
 });
 
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === FOMO_MONITOR_ALARM) {
+    void (async () => {
+      await restoreFomoMonitorHealth();
+      await superviseFomoMonitorTabs();
+    })();
+  }
+});
+
 async function initializeExtensionState() {
   await ensureMonitorState();
   await ensureTwitterAudioDefaults();
   await ensureGmgnTwitterTriggerHookDefaults();
   await refreshActionBadges();
+  await restoreFomoMonitorHealth();
+  await ensureFomoMonitorAlarm();
+  await superviseFomoMonitorTabs();
+}
+
+function isFomoTokenUrl(rawUrl) {
+  try {
+    const parsed = new URL(String(rawUrl || ''));
+    return parsed.protocol === 'https:'
+      && (parsed.hostname === 'fomo.family' || parsed.hostname.endsWith('.fomo.family'))
+      && parsed.pathname.startsWith('/tokens/');
+  } catch (_error) {
+    return false;
+  }
+}
+
+function updateFomoMonitorHealth(tabId, payload = {}) {
+  if (!Number.isInteger(tabId)) return;
+  const current = fomoMonitorHealth.get(tabId) || {};
+  fomoMonitorHealth.set(tabId, {
+    ...current,
+    ...payload,
+    heartbeatAt: Date.now()
+  });
+  void persistFomoMonitorHealth();
+}
+
+async function restoreFomoMonitorHealth() {
+  const stored = await chrome.storage.session.get(FOMO_MONITOR_HEALTH_STORAGE_KEY).catch(() => ({}));
+  const entries = stored?.[FOMO_MONITOR_HEALTH_STORAGE_KEY];
+  if (!entries || typeof entries !== 'object') return;
+  for (const [tabId, health] of Object.entries(entries)) {
+    const numericTabId = Number(tabId);
+    if (Number.isInteger(numericTabId) && health && typeof health === 'object') {
+      fomoMonitorHealth.set(numericTabId, health);
+    }
+  }
+}
+
+async function persistFomoMonitorHealth() {
+  const entries = Object.fromEntries(Array.from(fomoMonitorHealth.entries()).map(([tabId, health]) => [String(tabId), health]));
+  await chrome.storage.session.set({ [FOMO_MONITOR_HEALTH_STORAGE_KEY]: entries }).catch(() => null);
+}
+
+async function removeFomoMonitorHealth(tabId) {
+  await restoreFomoMonitorHealth();
+  fomoMonitorHealth.delete(tabId);
+  await persistFomoMonitorHealth();
+}
+
+async function ensureFomoMonitorAlarm() {
+  const existing = await chrome.alarms.get(FOMO_MONITOR_ALARM).catch(() => null);
+  if (!existing) {
+    await chrome.alarms.create(FOMO_MONITOR_ALARM, { periodInMinutes: FOMO_MONITOR_CHECK_MINUTES });
+  }
+}
+
+async function superviseFomoMonitorTabs() {
+  const tabs = await chrome.tabs.query({ url: [
+    'https://fomo.family/tokens/*',
+    'https://www.fomo.family/tokens/*',
+    'https://*.fomo.family/tokens/*'
+  ] }).catch(() => []);
+  const now = Date.now();
+  for (const tab of tabs) {
+    if (!Number.isInteger(tab.id) || !isFomoTokenUrl(tab.url)) continue;
+    await chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => null);
+    const health = fomoMonitorHealth.get(tab.id) || {};
+    const ping = tab.discarded ? null : await chrome.tabs.sendMessage(tab.id, {
+      type: FOMO_MONITOR_PING_EVENT,
+      requestedAt: now
+    }).catch(() => null);
+    if (ping?.ok) updateFomoMonitorHealth(tab.id, { loadedAt: health.loadedAt || ping.status?.pageStartedAt || now, ...(ping.status || {}) });
+
+    const refreshedHealth = fomoMonitorHealth.get(tab.id) || health;
+    const lastReloadAt = Number(refreshedHealth.lastReloadAt || 0);
+    const ownerWindow = Number.isInteger(tab.windowId)
+      ? await chrome.windows.get(tab.windowId).catch(() => null)
+      : null;
+    const isForegroundVisible = tab.active && ownerWindow?.focused === true;
+    const quietReloadDue = !isForegroundVisible && now - Number(refreshedHealth.loadedAt || now) >= FOMO_MONITOR_QUIET_RELOAD_MS;
+    const mustRecover = tab.discarded || !ping?.ok;
+    if ((mustRecover || quietReloadDue) && now - lastReloadAt >= FOMO_MONITOR_RELOAD_COOLDOWN_MS) {
+      fomoMonitorHealth.set(tab.id, { ...refreshedHealth, lastReloadAt: now, loadedAt: now });
+      await persistFomoMonitorHealth();
+      await chrome.tabs.reload(tab.id).catch(() => null);
+    }
+  }
 }
 
 async function openSettingsPageInWindow(preferredWindowId) {

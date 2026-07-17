@@ -663,6 +663,21 @@
     return false;
   });
 
+  function mapFomoSignalToWallet(signal) {
+    const side = signal.side === 'sell' ? 'sell' : 'buy';
+    return {
+      name: signal.alertKind === 'trader'
+        ? `FOMO @${signal.traderName} ${side.toUpperCase()}`
+        : `FOMO ${signal.traderCount} ${side.toUpperCase()}`,
+      amount: signal.amountText,
+      timeAgo: signal.displayTime,
+      address: signal.traderAddress || '',
+      external: true,
+      side,
+      stableKey: signal.stableKey
+    };
+  }
+
   function ingestFomoAggregateAlert(payload) {
     const chain = normalizeChainName(payload.chain);
     const mint = String(payload.tokenAddress || '').trim();
@@ -671,7 +686,7 @@
     const traderCount = Math.max(1, Number(payload.traderCount || 1));
     const isTraderAlert = payload.alertKind === 'trader';
     const traderName = String(payload.traderHandle || payload.traderName || '').trim();
-    if (!chain || !mint || !token || side !== 'buy') {
+    if (!chain || !mint || !token || !['buy', 'sell'].includes(side)) {
       return { ok: false, skipped: true };
     }
     const stableKey = String(payload.stableKey || [chain, mint.toLowerCase(), side, traderCount, payload.amountText, payload.marketCapText].join('|'));
@@ -681,6 +696,7 @@
     const observedAt = Number(payload.observedAt || Date.now());
     const fomoSignal = {
       stableKey,
+      side,
       traderCount,
       alertKind: isTraderAlert ? 'trader' : 'aggregate',
       traderName,
@@ -697,14 +713,7 @@
       existing.fomoSignals = [...(existing.fomoSignals || []), fomoSignal].slice(-5);
       existing.wallets = [
         ...(existing.wallets || []).filter((wallet) => !wallet.external),
-        ...existing.fomoSignals.map((signal) => ({
-          name: signal.alertKind === 'trader' ? `FOMO @${signal.traderName}` : `FOMO ${signal.traderCount} traders`,
-          amount: signal.amountText,
-          timeAgo: signal.displayTime,
-          address: signal.traderAddress || '',
-          external: true,
-          stableKey: signal.stableKey
-        }))
+        ...existing.fomoSignals.map(mapFomoSignalToWallet)
       ];
       existing.externalStableKey = stableKey;
       existing.externalSource = 'fomo';
@@ -712,7 +721,7 @@
       existing.updatedAt = Date.now();
       existing.isNew = true;
       renderAlerts();
-      if (config.soundEnabled) { playSound(Math.max(existing.tier || 1, calcTier(traderCount)), chain); flashBadge(); }
+      if (config.soundEnabled) { playSound(side === 'buy' ? Math.max(existing.tier || 1, calcTier(traderCount)) : 1, chain); flashBadge(); }
       setTimeout(() => { existing.isNew = false; renderAlerts(); }, 1500);
       return { ok: true, merged: true };
     }
@@ -726,15 +735,16 @@
       effectiveCount: 0,
       closedCount: 0,
       wallets: [{
-        name: isTraderAlert ? `FOMO @${traderName}` : `FOMO ${traderCount} traders`,
+        name: isTraderAlert ? `FOMO @${traderName} ${side.toUpperCase()}` : `FOMO ${traderCount} ${side.toUpperCase()}`,
         amount: String(payload.amountText || ''),
         timeAgo: String(payload.displayTime || ''),
         address: String(payload.traderAddress || ''),
-        external: true
+        external: true,
+        side
       }],
       mcap: String(payload.marketCapText || ''),
       latestTradeTimeMs: observedAt,
-      tier: calcTier(traderCount),
+      tier: side === 'buy' ? calcTier(traderCount) : 1,
       triggeredAt: Date.now(),
       updatedAt: Date.now(),
       isNew: true,
@@ -3859,14 +3869,7 @@
         } else {
           existing.dissolvedAt = null;
         }
-        const fomoWallets = (existing.fomoSignals || []).map((signal) => ({
-          name: signal.alertKind === 'trader' ? `FOMO @${signal.traderName}` : `FOMO ${signal.traderCount} traders`,
-          amount: signal.amountText,
-          timeAgo: signal.displayTime,
-          address: signal.traderAddress || '',
-          external: true,
-          stableKey: signal.stableKey
-        }));
+        const fomoWallets = (existing.fomoSignals || []).map(mapFomoSignalToWallet);
         existing.wallets = [...walletDetails, ...fomoWallets];
         existing.mcap = group.mcap || existing.mcap;
         existing.token = group.token || existing.token;
@@ -4684,10 +4687,14 @@
         const groupKey = getAlertGroupKey(a);
         const closedCount = a.closedCount || 0;
         const effective = (a.effectiveCount != null) ? a.effectiveCount : a.walletCount;
-        const fomoTraderCount = Math.max(0, ...(a.fomoSignals || []).map((signal) => Number(signal.traderCount || 0)));
-        const fomoRealBuyerCount = new Set((a.fomoSignals || []).filter((signal) => signal.alertKind === 'trader').map((signal) => String(signal.traderAddress || signal.traderName || '').toLowerCase()).filter(Boolean)).size;
-        const fomoAggregateTraderCount = Math.max(0, ...(a.fomoSignals || []).filter((signal) => signal.alertKind !== 'trader').map((signal) => Number(signal.traderCount || 0)));
-        const tier = Math.max(a.tier || calcTier(effective), fomoTraderCount ? calcTier(fomoTraderCount) : 0);
+        const fomoBuySignals = (a.fomoSignals || []).filter((signal) => signal.side !== 'sell');
+        const fomoSellSignals = (a.fomoSignals || []).filter((signal) => signal.side === 'sell');
+        const fomoBuyTraderCount = Math.max(0, ...fomoBuySignals.map((signal) => Number(signal.traderCount || 0)));
+        const fomoRealBuyerCount = new Set(fomoBuySignals.filter((signal) => signal.alertKind === 'trader').map((signal) => String(signal.traderAddress || signal.traderName || '').toLowerCase()).filter(Boolean)).size;
+        const fomoRealSellerCount = new Set(fomoSellSignals.filter((signal) => signal.alertKind === 'trader').map((signal) => String(signal.traderAddress || signal.traderName || '').toLowerCase()).filter(Boolean)).size;
+        const fomoAggregateTraderCount = Math.max(0, ...fomoBuySignals.filter((signal) => signal.alertKind !== 'trader').map((signal) => Number(signal.traderCount || 0)));
+        const fomoAggregateSellerCount = Math.max(0, ...fomoSellSignals.filter((signal) => signal.alertKind !== 'trader').map((signal) => Number(signal.traderCount || 0)));
+        const tier = Math.max(a.tier || calcTier(effective), fomoBuyTraderCount ? calcTier(fomoBuyTraderCount) : 0);
         const tierIcon = tier >= 4 ? ' 🚨' : tier >= 3 ? ' 🔥' : tier >= 2 ? ' ⚡' : '';
         const logoImg = a.tokenLogo
           ? `<img class="gcp-token-logo" src="${escHtml(a.tokenLogo)}" loading="lazy" referrerpolicy="no-referrer" />`
@@ -4700,11 +4707,17 @@
           ? `<button class="gcp-alert-hide-btn" data-group-key="${escHtml(groupKey)}" data-latest-trade-time="${escHtml(a.latestTradeTimeMs || 0)}" title="闅愯棌杩欐潯鎻愰啋锛岀洿鍒颁笅娆℃湁鏂颁拱鍏?">×</button>`
           : '';
         const requiredWallets = hasStar ? 1 : config.minWallets;
-        const isFaded = effective < requiredWallets && fomoRealBuyerCount === 0 && fomoAggregateTraderCount === 0;
+        const isFaded = effective < requiredWallets
+          && fomoRealBuyerCount === 0
+          && fomoAggregateTraderCount === 0
+          && fomoRealSellerCount === 0
+          && fomoAggregateSellerCount === 0;
         const countLabel = [
           effective > 0 ? `${effective} wallets` : '',
           fomoRealBuyerCount > 0 ? `FOMO ${fomoRealBuyerCount} buyers` : '',
-          fomoAggregateTraderCount > 0 ? `FOMO ${fomoAggregateTraderCount} traders` : ''
+          fomoAggregateTraderCount > 0 ? `FOMO ${fomoAggregateTraderCount} buyers` : '',
+          fomoRealSellerCount > 0 ? `FOMO ${fomoRealSellerCount} sellers` : '',
+          fomoAggregateSellerCount > 0 ? `FOMO ${fomoAggregateSellerCount} sellers` : ''
         ].filter(Boolean).join(' · ');
         return `
         <div class="gcp-alert-item gcp-tier-${tier} ${a.isNew ? 'is-new' : ''} ${isFaded ? 'is-faded' : ''}" data-token="${escHtml(a.token)}">
@@ -4716,7 +4729,7 @@
           <div class="gcp-alert-wallets">
             ${a.wallets.map(w => {
               if (w.external) {
-                return `<span class="gcp-alert-wallet-tag gcp-alert-wallet-tag-external" title="FOMO aggregate alert">
+                return `<span class="gcp-alert-wallet-tag gcp-alert-wallet-tag-external ${w.side === 'sell' ? 'is-sell' : 'is-buy'}" title="FOMO ${escHtml(w.side || 'buy')} alert">
                   <span class="gcp-wallet-name">${escHtml(w.name)}</span>
                   <span class="gcp-wallet-amount">${escHtml(w.amount)}</span>
                   ${w.timeAgo ? `<span style="color:#666">${escHtml(w.timeAgo)}</span>` : ''}

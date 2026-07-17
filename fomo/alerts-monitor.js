@@ -1,10 +1,16 @@
 (() => {
   'use strict';
   const MESSAGE_TYPE = 'fomo-aggregate-alert';
+  const HEARTBEAT_MESSAGE_TYPE = 'fomo-monitor-heartbeat';
+  const PING_MESSAGE_TYPE = 'fomo-monitor-ping';
   const SEEN_STORAGE_KEY = 'fomoAlertSeenV2';
   const seen = new Set();
   let primed = false;
   let scanTimer = null;
+  let lastScanAt = 0;
+  let lastMutationAt = 0;
+  let latestStableKey = '';
+  const pageStartedAt = Date.now();
   const FOLLOWED_TRADERS = new Map([
     ['user', ['user1941','G6hs15YatNqTK6MdXo2V32kHp2ukrpvARMZkv52V6ix3','0x10d4111e2d9443dde96da86bd5a2a1b82dab6e12']],
     ['helixyy', ['helixyy','7DZtFjFgcDbMSWzbyrCBSGV45weudKwQxEn1Cfm1akuZ','0x3cd9c07b9d204c2a2e681e2be2db2aeee0d7175c']],
@@ -92,10 +98,12 @@
   function scan() {
     scanTimer = null;
     const alerts = Array.from(document.querySelectorAll('a[href^="/tokens/"]')).map(parseAlert).filter(Boolean);
+    lastScanAt = Date.now();
+    latestStableKey = alerts[0]?.stableKey || latestStableKey;
     for (const alert of alerts) {
       if (seen.has(alert.stableKey)) continue;
       seen.add(alert.stableKey);
-      if (primed && alert.side === 'buy') chrome.runtime.sendMessage({ type: MESSAGE_TYPE, payload: alert }).catch(() => {});
+      if (primed && ['buy', 'sell'].includes(alert.side)) chrome.runtime.sendMessage({ type: MESSAGE_TYPE, payload: alert }).catch(() => {});
     }
     primed = true;
     if (seen.size > 2000) {
@@ -104,17 +112,49 @@
     chrome.storage.local.set({
       [SEEN_STORAGE_KEY]: { initialized: true, keys: Array.from(seen).slice(-1000) }
     }).catch(() => {});
+    sendHeartbeat(alerts.length);
   }
   function scheduleScan() { if (!scanTimer) scanTimer = setTimeout(scan, 120); }
+  function getStatus(alertCount) {
+    return {
+      pageStartedAt,
+      lastScanAt,
+      lastMutationAt,
+      latestStableKey,
+      alertCount: Number(alertCount || 0),
+      visibilityState: document.visibilityState,
+      url: location.href
+    };
+  }
+  function sendHeartbeat(alertCount) {
+    chrome.runtime.sendMessage({ type: HEARTBEAT_MESSAGE_TYPE, payload: getStatus(alertCount) }).catch(() => {});
+  }
   if (typeof module !== 'undefined' && module.exports) { module.exports = { compactText, parseAmount, parseAlert }; return; }
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type !== PING_MESSAGE_TYPE) return false;
+    scan();
+    sendResponse({ ok: true, status: getStatus(document.querySelectorAll('a[href^="/tokens/"]').length) });
+    return false;
+  });
+  const observer = new MutationObserver(() => {
+    lastMutationAt = Date.now();
+    scheduleScan();
+  });
+  function startObserver() {
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    setInterval(() => sendHeartbeat(document.querySelectorAll('a[href^="/tokens/"]').length), 30000);
+    for (const eventName of ['visibilitychange', 'pageshow', 'online']) {
+      addEventListener(eventName, scheduleScan);
+    }
+  }
   chrome.storage.local.get(SEEN_STORAGE_KEY).then((stored) => {
     const state = stored?.[SEEN_STORAGE_KEY];
     if (Array.isArray(state?.keys)) state.keys.forEach((key) => seen.add(String(key)));
     primed = state?.initialized === true;
     scan();
-    new MutationObserver(scheduleScan).observe(document.documentElement, { childList: true, subtree: true });
+    startObserver();
   }).catch(() => {
     scan();
-    new MutationObserver(scheduleScan).observe(document.documentElement, { childList: true, subtree: true });
+    startObserver();
   });
 })();

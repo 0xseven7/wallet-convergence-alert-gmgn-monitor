@@ -460,6 +460,20 @@
   gap: 3px;
 }
 
+.gcp-alert-wallet-tag-external.is-buy {
+  border: 1px solid rgba(76, 209, 55, 0.28);
+  background: rgba(76, 209, 55, 0.08);
+}
+
+.gcp-alert-wallet-tag-external.is-sell {
+  border: 1px solid rgba(255, 71, 87, 0.35);
+  background: rgba(255, 71, 87, 0.1);
+}
+
+.gcp-alert-wallet-tag-external.is-sell .gcp-wallet-amount {
+  color: #ff6b81;
+}
+
 .gcp-wallet-amount {
   color: #4cd137;
   font-weight: 600;

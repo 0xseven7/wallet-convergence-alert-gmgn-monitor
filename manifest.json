@@ -3,7 +3,7 @@
   "name": "Wallet Convergence Alert",
   "version": "1.9.6",
   "description": "Monitor xxyy.io and gmgn.ai wallet tracking panels, alert on wallet convergence, and redirect GMGN monitor links to the main window.",
-  "permissions": ["storage", "tabs", "windows", "unlimitedStorage"],
+  "permissions": ["storage", "tabs", "windows", "alarms", "unlimitedStorage"],
   "host_permissions": [
     "http://*/*",
     "https://*/*",
