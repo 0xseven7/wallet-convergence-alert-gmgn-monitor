@@ -511,6 +511,7 @@ async function dispatchGmgnTwitterTriggerHook(payload) {
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), settings.timeoutMs);
+  const intelligencePromise = dispatchMarketWatchIntelligenceEvent(buildGmgnTwitterIntelligenceEvent(payload));
   const headers = {
     'Content-Type': 'application/json',
     'x-gmgn-hook-source': 'wallet-convergence-alert-gmgn-monitor',
@@ -533,22 +534,52 @@ async function dispatchGmgnTwitterTriggerHook(payload) {
     });
 
     const responseText = await response.text().catch(() => '');
+    const intelligence = await intelligencePromise;
     return {
       ok: response.ok,
       status: response.status,
       statusText: response.statusText,
-      body: responseText.slice(0, 500)
+      body: responseText.slice(0, 500),
+      intelligence
     };
   } catch (error) {
+    const intelligence = await intelligencePromise;
     return {
       ok: false,
       error: error && error.name === 'AbortError'
         ? `Webhook request timed out after ${settings.timeoutMs}ms.`
-        : (error && error.message ? error.message : String(error))
+        : (error && error.message ? error.message : String(error)),
+      intelligence
     };
   } finally {
     clearTimeout(timer);
   }
+}
+
+function buildGmgnTwitterIntelligenceEvent(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  const rule = payload.rule && typeof payload.rule === 'object' ? payload.rule : {};
+  const trigger = payload.trigger && typeof payload.trigger === 'object' ? payload.trigger : {};
+  const actorHandle = String(trigger.username || trigger.twitterId || '').trim().replace(/^@/, '');
+  const actorName = String(trigger.remark || trigger.name || actorHandle).trim();
+  const contractAddress = String(rule.ca || '').trim();
+  const symbol = String(rule.tokenSymbol || '').trim();
+  if (!actorHandle && !actorName) return null;
+  return removeEmptyFields({
+    id: `gmgn-twitter|${String(payload.signalId || trigger.tweetId || '').trim()}|${actorHandle}`,
+    kind: 'twitter',
+    type: 'gmgn_twitter_trigger',
+    chainId: mapMarketWatchChainId(rule.chain),
+    contractAddress,
+    symbol,
+    tokenName: symbol,
+    actorName,
+    actorHandle,
+    text: String(trigger.text || `${actorName} ${trigger.eventType || 'posted'}`).trim(),
+    url: String(trigger.url || '').trim(),
+    source: 'gmgn-twitter-trigger',
+    occurredAt: formatIsoTimestamp(trigger.ts || payload.triggeredAt || Date.now())
+  });
 }
 
 async function dispatchGmgnSignalEvent(payload) {
