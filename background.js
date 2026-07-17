@@ -614,7 +614,8 @@ async function dispatchMarketWatchIntelligenceEvent(payload) {
       headers: {
         'Content-Type': 'application/json',
         'x-gmgn-hook-source': 'wallet-convergence-alert-gmgn-monitor',
-        'x-gmgn-hook-event': 'intelligence-event'
+        'x-gmgn-hook-event': 'intelligence-event',
+        ...(settings.eventApiToken ? { Authorization: `Bearer ${settings.eventApiToken}` } : {})
       },
       body: JSON.stringify({ source: 'gmgn-monitor-extension', payload: event }),
       signal: controller.signal
