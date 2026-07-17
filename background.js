@@ -1321,6 +1321,11 @@ function normalizeFocusAddressEntries(raw) {
       addressKey: normalizeFocusAddressKey(address),
       alias: String(entry.alias || '').trim(),
       name: String(entry.name || '').trim(),
+      personId: String(entry.personId || '').trim(),
+      twitterHandle: String(entry.twitterHandle || '').trim().replace(/^@/, ''),
+      profileImage: String(entry.profileImage || '').trim(),
+      evmAddress: String(entry.evmAddress || '').trim(),
+      solanaAddress: String(entry.solanaAddress || '').trim(),
       focusPushEnabled: entry.focusPushEnabled !== false,
       source: String(entry.source || '').trim(),
       sourceUrl: String(entry.sourceUrl || '').trim(),
@@ -1377,11 +1382,16 @@ async function quickAddGmgnFocusAddress(payload, action = 'add') {
   if (normalizedAction === 'remove' || normalizedAction === 'delete') {
     delete focusAddressEntries[item.key];
     await chrome.storage.local.set({ [GMGN_FOCUS_ADDRESSES_KEY]: focusAddressEntries });
+    const relay = await deleteFocusAddressFromRelay(item).catch((error) => ({
+      ok: false,
+      error: error && error.message ? error.message : String(error)
+    }));
     return {
       ok: true,
       action: 'remove',
       focus: false,
-      key: item.key
+      key: item.key,
+      relay
     };
   }
 
@@ -1454,6 +1464,20 @@ async function postFocusAddressToRelay(item) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function deleteFocusAddressFromRelay(item) {
+  if (!/^(sol|eth|bsc|base|tron|blast|robinhood)$/.test(item.chain)) {
+    return { ok: false, skipped: true, reason: 'relay-chain-unsupported' };
+  }
+  const stored = await chrome.storage.local.get(GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY);
+  const settings = normalizeGmgnTwitterTriggerHookSettings(stored[GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY]);
+  const baseUrl = buildMainScreenRelayUrl(settings.mainScreenRelayBaseUrl, '/focus-addresses');
+  if (!baseUrl) return { ok: false, skipped: true, reason: 'relay-url-invalid' };
+  const requestUrl = `${baseUrl}?chain=${encodeURIComponent(item.chain)}&address=${encodeURIComponent(item.address)}`;
+  const response = await fetch(requestUrl, { method: 'DELETE' });
+  const body = await response.json().catch(() => null);
+  return { ok: response.ok, status: response.status, json: body };
 }
 
 function normalizeHttpBaseUrl(value, defaultValue = '') {

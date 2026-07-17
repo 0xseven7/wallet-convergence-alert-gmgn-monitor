@@ -46,6 +46,9 @@
   let blacklistWallets = new Set();
   let focusAddressSyncInterval = null;
   let focusAddressSyncInFlight = false;
+  let focusAddressMigrationAttempted = false;
+  const focusAddressPromotionInFlight = new Set();
+  let focusManagerEl = null;
 
   // 特别关注的钱包名
   let starred = new Set();
@@ -627,12 +630,14 @@
     }
     if (changes[GMGN_SPEECH_WATCHLIST_KEY]) {
       applySpeechWatchlist(changes[GMGN_SPEECH_WATCHLIST_KEY].newValue || {});
+      renderFocusManager();
       lastRenderState = '';
       renderAlerts();
       injectOrigStars();
     }
     if (changes[GMGN_FOCUS_ADDRESSES_KEY]) {
       applyFocusAddresses(changes[GMGN_FOCUS_ADDRESSES_KEY].newValue || {});
+      renderFocusManager();
       lastRenderState = '';
       renderAlerts();
       injectOrigStars();
@@ -1659,6 +1664,11 @@
         addressKey: normalizeFocusAddressKey(address),
         alias: typeof item.alias === 'string' ? item.alias.trim() : '',
         name: typeof item.name === 'string' ? item.name.trim() : '',
+        personId: typeof item.personId === 'string' ? item.personId.trim() : '',
+        twitterHandle: typeof item.twitterHandle === 'string' ? item.twitterHandle.trim().replace(/^@/, '') : '',
+        profileImage: typeof item.profileImage === 'string' ? item.profileImage.trim() : '',
+        evmAddress: typeof item.evmAddress === 'string' ? item.evmAddress.trim() : '',
+        solanaAddress: typeof item.solanaAddress === 'string' ? item.solanaAddress.trim() : '',
         focusPushEnabled: typeof item.focusPushEnabled === 'boolean'
           ? item.focusPushEnabled
           : true,
@@ -1686,7 +1696,7 @@
     const relayEntries = normalizeFocusAddressEntries(relayItems);
     for (const entry of Object.values(focusAddresses)) {
       if (!entry || !entry.key || !isLocalFocusAddressEntry(entry)) continue;
-      relayEntries[entry.key] = entry;
+      if (!relayEntries[entry.key]) relayEntries[entry.key] = entry;
     }
     return relayEntries;
   }
@@ -1707,6 +1717,60 @@
   function persistFocusAddresses() {
     if (!canUseSharedStorage) return Promise.resolve();
     return chrome.storage.local.set({ [GMGN_FOCUS_ADDRESSES_KEY]: focusAddresses }).catch(() => {});
+  }
+
+  async function relayFocusAddressRequest(pathname, options = {}) {
+    const relayBaseUrl = await getConfiguredRelayBaseUrl();
+    const requestUrl = buildRelayUrl(relayBaseUrl, pathname);
+    if (!requestUrl) throw new Error('Relay URL is invalid.');
+    const response = await fetch(requestUrl, {
+      method: options.method || 'GET',
+      headers: options.body ? { 'Content-Type': 'application/json' } : undefined,
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      cache: 'no-store'
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || body?.ok === false) throw new Error(body?.error || `${response.status} ${response.statusText}`);
+    return body;
+  }
+
+  async function upsertFocusAddress(item) {
+    const normalized = Object.values(normalizeFocusAddressEntries([item]))[0];
+    if (!normalized) throw new Error('Valid Focus chain and address are required.');
+    const result = await relayFocusAddressRequest('/focus-addresses', { method: 'POST', body: normalized });
+    focusAddresses[result.item.key] = result.item;
+    await persistFocusAddresses();
+    renderFocusManager();
+    lastRenderState = '';
+    renderAlerts();
+    injectOrigStars();
+    return result.item;
+  }
+
+  async function deleteFocusAddress(item) {
+    const key = buildFocusAddressKey(item?.chain, item?.address);
+    if (!key) throw new Error('Valid Focus chain and address are required.');
+    await relayFocusAddressRequest(`/focus-addresses?chain=${encodeURIComponent(item.chain)}&address=${encodeURIComponent(item.address)}`, { method: 'DELETE' });
+    delete focusAddresses[key];
+    await persistFocusAddresses();
+    renderFocusManager();
+    lastRenderState = '';
+    renderAlerts();
+    injectOrigStars();
+  }
+
+  async function migrateLocalFocusAddressesToRelay() {
+    if (focusAddressMigrationAttempted) return;
+    const items = Object.values(focusAddresses).filter((entry) => entry && entry.key && isLocalFocusAddressEntry(entry));
+    if (!items.length) {
+      focusAddressMigrationAttempted = true;
+      return;
+    }
+    await relayFocusAddressRequest('/focus-addresses/sync', {
+      method: 'POST',
+      body: { source: 'gmgn-monitor-extension', items }
+    });
+    focusAddressMigrationAttempted = true;
   }
 
   function findFocusAddressKey(walletAddress, chain) {
@@ -1795,6 +1859,7 @@
     if (!canUseSharedStorage || focusAddressSyncInFlight) return;
     focusAddressSyncInFlight = true;
     try {
+      await migrateLocalFocusAddressesToRelay().catch(() => {});
       const relayBaseUrl = await getConfiguredRelayBaseUrl();
       const requestUrl = buildRelayUrl(relayBaseUrl, '/focus-addresses');
       if (!requestUrl) return;
@@ -1804,6 +1869,7 @@
       if (!body?.ok || !Array.isArray(body.items)) return;
       focusAddresses = mergeRelayFocusAddressesWithLocal(body.items);
       await persistFocusAddresses();
+      renderFocusManager();
       lastRenderState = '';
       renderAlerts();
       injectOrigStars();
@@ -1905,9 +1971,27 @@
     return chrome.storage.local.set({ [GMGN_BLACKLIST_WALLETS_KEY]: nextState }).catch(() => {});
   }
 
-  function toggleStar(walletName) {
+  function toggleStar(walletName, walletAddress = '', chain = '') {
     const normalizedWallet = normalizeSpeechWatchWallet(walletName);
     if (!normalizedWallet) return;
+    const addressKey = buildFocusAddressKey(chain, walletAddress);
+    if (addressKey) {
+      const existingAddress = focusAddresses[addressKey];
+      if (existingAddress) {
+        void deleteFocusAddress(existingAddress).catch(() => {});
+      } else {
+        void upsertFocusAddress({
+          chain,
+          address: walletAddress,
+          alias: normalizedWallet,
+          name: normalizedWallet,
+          focusPushEnabled: true,
+          source: 'gmgn-monitor-extension',
+          sourceUrl: location.href
+        }).catch(() => {});
+      }
+      return;
+    }
     const existingWallet = findSpeechWatchWalletKey(normalizedWallet);
     if (existingWallet) {
       delete speechWatchlist[existingWallet];
@@ -1919,6 +2003,34 @@
     lastRenderState = '';
     renderAlerts();
     injectOrigStars();
+  }
+
+  function promoteSpeechFocusToAddress(walletName, walletAddress, chain) {
+    const speechKey = findSpeechWatchWalletKey(walletName);
+    const addressKey = buildFocusAddressKey(chain, walletAddress);
+    if (!speechKey || !addressKey || focusAddressPromotionInFlight.has(addressKey)) return;
+    if (focusAddresses[addressKey]) {
+      delete speechWatchlist[speechKey];
+      applySpeechWatchlist(speechWatchlist);
+      void persistSpeechWatchlist();
+      renderFocusManager();
+      return;
+    }
+    focusAddressPromotionInFlight.add(addressKey);
+    const meta = speechWatchlist[speechKey] || {};
+    void upsertFocusAddress({
+      chain,
+      address: walletAddress,
+      alias: meta.alias || speechKey,
+      name: speechKey,
+      focusPushEnabled: meta.focusPushEnabled !== false,
+      source: 'gmgn-speech-watchlist-migration',
+      sourceUrl: location.href
+    }).then(() => {
+      delete speechWatchlist[speechKey];
+      applySpeechWatchlist(speechWatchlist);
+      return persistSpeechWatchlist();
+    }).catch(() => {}).finally(() => focusAddressPromotionInFlight.delete(addressKey));
   }
 
   function toggleBlacklistWallet(walletName) {
@@ -2044,6 +2156,7 @@
     const name = String(walletName || '').trim();
     const address = normalizeFocusAddress(walletAddress);
     const focusMatch = getFocusWalletMatch(name, address, chain);
+    if (focusMatch?.type === 'name' && address) promoteSpeechFocusToAddress(name, address, chain);
     const alias = focusMatch
       ? (focusMatch.meta?.alias || focusMatch.meta?.name || '')
       : (typeof getSpeechWatchAlias === 'function' ? (getSpeechWatchAlias(name, address, chain) || '') : '');
@@ -4274,6 +4387,115 @@
   }
 
   // ===== 面板 =====
+  function updateFocusManagerButton() {
+    const button = panelEl?.querySelector('.gcp-focus-manager-btn');
+    if (!button) return;
+    const count = Object.keys(focusAddresses).length + Object.keys(speechWatchlist).length;
+    button.textContent = `★${count}`;
+    button.title = `Focus List (${count})`;
+  }
+
+  function closeFocusManager() {
+    if (focusManagerEl) focusManagerEl.classList.remove('is-open');
+  }
+
+  function openFocusManager() {
+    if (!focusManagerEl) {
+      focusManagerEl = document.createElement('div');
+      focusManagerEl.id = 'gcp-focus-manager';
+      document.body.appendChild(focusManagerEl);
+    }
+    renderFocusManager();
+    focusManagerEl.classList.add('is-open');
+  }
+
+  function renderFocusManager() {
+    updateFocusManagerButton();
+    if (!focusManagerEl) return;
+    const items = Object.values(focusAddresses).sort((left, right) => String(left.alias || left.name || left.address).localeCompare(String(right.alias || right.name || right.address)));
+    const pendingNames = Object.entries(speechWatchlist);
+    focusManagerEl.innerHTML = `
+      <div class="gcp-focus-manager-card">
+        <header><div><strong>★ Focus List</strong><span>Relay synced · ${items.length} addresses</span></div><button type="button" class="gcp-focus-manager-close">×</button></header>
+        <form class="gcp-focus-manager-form">
+          <input type="hidden" name="editingKey" value="">
+          <select name="chain"><option value="sol">Solana</option><option value="eth">Ethereum</option><option value="bsc">BSC</option><option value="base">Base</option><option value="robinhood">Robinhood</option><option value="tron">Tron</option><option value="blast">Blast</option></select>
+          <input name="alias" placeholder="Name / alias">
+          <input name="twitterHandle" placeholder="Twitter @handle">
+          <input name="address" placeholder="Wallet address" required>
+          <input name="profileImage" placeholder="Avatar URL (optional)">
+          <label><input name="focusPushEnabled" type="checkbox" checked> Focus alerts</label>
+          <div><button type="submit">Save & sync</button><button type="button" class="gcp-focus-manager-cancel">Cancel edit</button></div>
+        </form>
+        <div class="gcp-focus-manager-list">${items.map((item) => `
+          <div class="gcp-focus-manager-item ${item.focusPushEnabled === false ? 'is-disabled' : ''}" data-key="${escHtml(item.key)}">
+            ${item.profileImage ? `<img src="${escHtml(item.profileImage)}" referrerpolicy="no-referrer">` : '<i>★</i>'}
+            <span><strong>${escHtml(item.alias || item.name || shortAddress(item.address))}</strong><small>${escHtml(item.chain)} · ${escHtml(shortAddress(item.address))}${item.twitterHandle ? ` · @${escHtml(item.twitterHandle)}` : ''}</small></span>
+            <button type="button" data-action="toggle" title="${item.focusPushEnabled === false ? 'Enable' : 'Pause'}">★</button>
+            <button type="button" data-action="edit" title="Edit">✎</button>
+            <button type="button" data-action="delete" title="Delete">×</button>
+          </div>`).join('') || '<div class="gcp-focus-manager-empty">No Relay Focus addresses yet.</div>'}</div>
+        ${pendingNames.length ? `<section class="gcp-focus-pending"><strong>Pending legacy name watches</strong><span>They migrate automatically when an address appears.</span>${pendingNames.map(([name, meta]) => `<div data-name="${escHtml(name)}"><b>${escHtml(meta.alias || name)}</b><button type="button">Remove</button></div>`).join('')}</section>` : ''}
+      </div>`;
+    const form = focusManagerEl.querySelector('.gcp-focus-manager-form');
+    const cancel = () => {
+      form.reset();
+      form.elements.editingKey.value = '';
+      form.elements.chain.disabled = false;
+      form.elements.address.disabled = false;
+      form.elements.focusPushEnabled.checked = true;
+    };
+    focusManagerEl.querySelector('.gcp-focus-manager-close')?.addEventListener('click', closeFocusManager);
+    focusManagerEl.querySelector('.gcp-focus-manager-cancel')?.addEventListener('click', cancel);
+    form?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const payload = {
+        chain: form.elements.chain.value,
+        address: form.elements.address.value.trim(),
+        alias: form.elements.alias.value.trim(),
+        twitterHandle: form.elements.twitterHandle.value.trim().replace(/^@/, ''),
+        profileImage: form.elements.profileImage.value.trim(),
+        personId: form.elements.twitterHandle.value.trim().replace(/^@/, '') || form.elements.alias.value.trim(),
+        focusPushEnabled: form.elements.focusPushEnabled.checked,
+        source: 'gmgn-monitor-extension',
+        sourceUrl: location.href
+      };
+      void upsertFocusAddress(payload).then(cancel).catch((error) => window.alert(`Focus save failed: ${error.message || error}`));
+    });
+    focusManagerEl.querySelectorAll('.gcp-focus-manager-item').forEach((row) => {
+      const item = focusAddresses[row.dataset.key];
+      row.querySelector('[data-action="edit"]')?.addEventListener('click', () => {
+        if (!item) return;
+        form.elements.editingKey.value = item.key;
+        form.elements.chain.value = item.chain;
+        form.elements.chain.disabled = true;
+        form.elements.address.value = item.address;
+        form.elements.address.disabled = true;
+        form.elements.alias.value = item.alias || item.name || '';
+        form.elements.twitterHandle.value = item.twitterHandle || '';
+        form.elements.profileImage.value = item.profileImage || '';
+        form.elements.focusPushEnabled.checked = item.focusPushEnabled !== false;
+        form.elements.alias.focus();
+      });
+      row.querySelector('[data-action="toggle"]')?.addEventListener('click', () => {
+        if (item) void upsertFocusAddress({ ...item, focusPushEnabled: item.focusPushEnabled === false, source: 'gmgn-monitor-extension' }).catch(() => {});
+      });
+      row.querySelector('[data-action="delete"]')?.addEventListener('click', () => {
+        if (item) void deleteFocusAddress(item).catch((error) => window.alert(`Focus delete failed: ${error.message || error}`));
+      });
+    });
+    focusManagerEl.querySelectorAll('.gcp-focus-pending [data-name]').forEach((row) => row.querySelector('button')?.addEventListener('click', () => {
+      const name = row.dataset.name;
+      delete speechWatchlist[name];
+      applySpeechWatchlist(speechWatchlist);
+      void persistSpeechWatchlist();
+      renderFocusManager();
+      lastRenderState = '';
+      renderAlerts();
+      injectOrigStars();
+    }));
+  }
+
   function createPanel() {
     const el = document.createElement('div');
     el.className = 'gcp-inline' + (config.collapsed ? ' collapsed' : '');
@@ -4286,6 +4508,7 @@
           <span class="gcp-badge">0</span>
         </div>
         <div class="gcp-header-right">
+          <button class="gcp-icon-btn gcp-focus-manager-btn" title="Focus List">★0</button>
           <button class="gcp-icon-btn gcp-focus-speech-btn" title="Focus Wallet TTS">TTS</button>
           <button class="gcp-icon-btn gcp-tier-btn" title="${config.tieredAlerts ? '分级提醒：开（点击关闭）' : '分级提醒：关（点击开启）'}">${config.tieredAlerts ? '🔥' : '🌫️'}</button>
           <button class="gcp-icon-btn gcp-sound-btn" title="声音开关">🔔</button>
@@ -4359,6 +4582,15 @@
       soundBtn.textContent = config.soundEnabled ? '🔔' : '🔕';
       saveConfig();
     });
+
+    const focusManagerBtn = panelEl.querySelector('.gcp-focus-manager-btn');
+    if (focusManagerBtn) {
+      updateFocusManagerButton();
+      focusManagerBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        openFocusManager();
+      });
+    }
 
     const focusSpeechBtn = panelEl.querySelector('.gcp-focus-speech-btn');
     if (focusSpeechBtn) {
@@ -4546,7 +4778,7 @@
                 : '';
               return `
               <span class="gcp-alert-wallet-tag ${star ? 'is-starred' : ''} ${blacklisted ? 'is-blacklisted' : ''} ${w.closed ? 'is-closed' : ''}" title="${w.closed ? '已清仓' : ''}">
-                <span class="gcp-watch-toggle ${star ? 'on' : ''}" data-wallet="${escHtml(w.name)}" title="${star ? '取消语音特别关注' : '加入语音特别关注'}">${star ? '★' : '☆'}</span>
+                <span class="gcp-watch-toggle ${star ? 'on' : ''}" data-wallet="${escHtml(w.name)}" data-wallet-address="${escHtml(w.address || '')}" data-chain="${escHtml(a.chain || '')}" title="${star ? '取消特别关注' : '加入特别关注'}">${star ? '★' : '☆'}</span>
                 ${av}<span class="gcp-wallet-name">${escHtml(w.name)}</span>
                 <span class="gcp-blacklist-toggle ${blacklisted ? 'on' : ''}" data-wallet="${escHtml(w.name)}" title="${blacklisted ? '移出黑名单钱包' : '加入黑名单钱包'}">!</span>
                 <span class="gcp-wallet-amount">${escHtml(w.amount)}</span>
@@ -4604,7 +4836,7 @@
         e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation();
-        toggleStar(el.dataset.wallet);
+        toggleStar(el.dataset.wallet, el.dataset.walletAddress, el.dataset.chain);
       });
     });
     container.querySelectorAll('.gcp-blacklist-toggle').forEach(el => {
@@ -4768,7 +5000,8 @@
         || row.querySelector('[data-sentry-component="AutoTruncateText"]');
       if (!walletEl) continue;
       const wallet = getTextExcludingSvg(walletEl).trim();
-      const isStar = !!findSpeechWatchWalletKey(wallet);
+      const focusTrade = parseTradeRow(row);
+      const isStar = !!findFocusWalletKey(wallet, focusTrade?.walletAddress, focusTrade?.chain);
       const isBlacklisted = isWalletBlacklisted(wallet);
 
       row.classList.toggle('gcp-orig-starred', isStar);
@@ -4781,7 +5014,8 @@
           e.stopPropagation();
           e.preventDefault();
           const w = (row.querySelector('.text-yellow-100[data-sentry-component="AutoTruncateText"]') || row.querySelector('[data-sentry-component="AutoTruncateText"]'))?.textContent.trim();
-          if (w) toggleStar(w);
+          const trade = parseTradeRow(row);
+          if (w) toggleStar(w, trade?.walletAddress, trade?.chain);
         });
         // 往上找最近的横向 flex 容器（避免插到 flex-col 父级导致换行撑高）
         let anchor = walletEl.parentElement;
@@ -5183,6 +5417,8 @@
     if (panelEl && panelEl.isConnected) {
       panelEl.remove();
     }
+    if (focusManagerEl && focusManagerEl.isConnected) focusManagerEl.remove();
+    focusManagerEl = null;
     void removeSharedSnapshot();
   }
 
