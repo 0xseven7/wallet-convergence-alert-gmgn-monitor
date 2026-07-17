@@ -896,9 +896,6 @@ async function dispatchFocusBuyToRelay(focusBuy, settings) {
 
 function buildFocusBuyPayload(payload) {
   if (!payload) return null;
-  if (payload.type === 'convergence_alert') {
-    return buildConvergenceAlertFocusBuyPayload(payload);
-  }
   if (payload.type !== 'wallet_trade') return null;
   const action = String(payload.action || '').trim().toLowerCase();
   if (action !== 'buy' && action !== 'open' && action !== 'add') return null;
@@ -918,6 +915,11 @@ function buildFocusBuyPayload(payload) {
   const boughtAt = formatIsoTimestamp(payload.ts);
 
   return removeEmptyFields({
+    schemaVersion: 2,
+    kind: 'trade',
+    side: 'buy',
+    tradeId: String(payload.tradeId || raw.trade_id || raw.stable_key || '').trim(),
+    identityConfidence: String(payload.identityConfidence || raw.identity_confidence || 'heuristic').trim(),
     traderName,
     traderAddress,
     tokenName: String(payload.token_name || symbol || '').trim(),
@@ -934,43 +936,9 @@ function buildFocusBuyPayload(payload) {
   });
 }
 
-function buildConvergenceAlertFocusBuyPayload(payload) {
-  const raw = payload.raw && typeof payload.raw === 'object' ? payload.raw : {};
-  const focusWallets = Array.isArray(raw.focus_wallets) ? raw.focus_wallets : [];
-  if (focusWallets.length === 0) return null;
-
-  const ca = String(payload.ca || '').trim();
-  const symbol = String(payload.symbol || '').trim();
-  if (!ca && !symbol) return null;
-
-  const baseItem = {
-    tokenName: String(payload.token_name || symbol || '').trim(),
-    symbol,
-    chainId: mapMarketWatchChainId(payload.chain),
-    contractAddress: ca,
-    marketCap: parseHumanMoneyValue(payload.mcap),
-    image: String(payload.image || raw.token_image || '').trim(),
-    source: `${String(payload.source || 'gmgn').trim() || 'gmgn'}-plugin`,
-    txUrl: String(payload.url || '').trim(),
-    boughtAt: formatIsoTimestamp(payload.ts)
-  };
-
-  const items = focusWallets
-    .map((wallet) => removeEmptyFields({
-      ...baseItem,
-      traderName: String(wallet?.alias || wallet?.name || wallet?.focusKey || '').trim(),
-      traderAddress: String(wallet?.address || '').trim(),
-      note: String(wallet?.alias || wallet?.focusKey || wallet?.name || payload.text || '').trim()
-    }))
-    .filter((item) => item.traderName || item.contractAddress || item.symbol);
-
-  if (items.length === 0) return null;
-  return { items };
-}
-
 function buildMarketWatchIntelligenceEvent(payload) {
   if (!payload || typeof payload !== 'object') return null;
-  if (['trade', 'aggregate', 'twitter'].includes(String(payload.kind || '').trim().toLowerCase())) {
+  if (['trade', 'snapshot', 'aggregate', 'twitter'].includes(String(payload.kind || '').trim().toLowerCase())) {
     return payload;
   }
   const raw = payload.raw && typeof payload.raw === 'object' ? payload.raw : {};
@@ -981,6 +949,7 @@ function buildMarketWatchIntelligenceEvent(payload) {
     if (!ca && !symbol) return null;
     const aggregateEvent = removeEmptyFields({
       id: `gmgn-aggregate|${String(raw.group_key || '').trim()}|${formatIsoTimestamp(payload.ts)}|${Number(raw.buy_wallet_count || 0)}|${Number(raw.sell_wallet_count || 0)}`,
+      schemaVersion: 2,
       kind: 'aggregate',
       type,
       chainId: mapMarketWatchChainId(payload.chain),
@@ -999,15 +968,18 @@ function buildMarketWatchIntelligenceEvent(payload) {
     });
     const walletEvents = (Array.isArray(raw.wallets) ? raw.wallets : [])
       .filter((wallet) => wallet && typeof wallet === 'object')
-      .flatMap((wallet, index) => {
+      .map((wallet, index) => {
         const actorName = String(wallet.name || '').trim();
         const actorAddress = String(wallet.address || '').trim();
-        if (!actorName && !actorAddress) return [];
+        if (!actorName && !actorAddress) return null;
         const stableWallet = actorAddress.toLowerCase() || actorName.toLowerCase() || String(index);
         const buyAt = formatIsoTimestamp(wallet.timeMs || payload.ts);
-        const common = {
-          kind: 'trade',
-          type: 'wallet_trade',
+        return removeEmptyFields({
+          id: `gmgn-wallet-snapshot|${String(raw.group_key || '').trim()}|${stableWallet}`,
+          schemaVersion: 2,
+          kind: 'snapshot',
+          type: 'wallet_snapshot',
+          snapshotType: wallet.closed === true ? 'sold' : 'buyer',
           chainId: mapMarketWatchChainId(payload.chain),
           contractAddress: ca,
           tokenName: String(payload.token_name || symbol).trim(),
@@ -1015,36 +987,20 @@ function buildMarketWatchIntelligenceEvent(payload) {
           actorName,
           actorAddress,
           actorImage: String(wallet.avatar || '').trim(),
-          nativeAmount: parseHumanMoneyValue(wallet.amount),
+          snapshotNativeAmount: parseHumanMoneyValue(wallet.amount),
           nativeSymbol: marketWatchNativeSymbol(payload.chain),
           marketCap: parseHumanMoneyValue(payload.mcap),
           image: String(payload.image || raw.token_image || '').trim(),
           url: String(payload.url || '').trim(),
-          source: `${String(payload.source || 'gmgn').trim() || 'gmgn'}-plugin`
-        };
-        const events = [removeEmptyFields({
-          ...common,
-          id: `gmgn-wallet-buy|${String(raw.group_key || '').trim()}|${stableWallet}|${buyAt}`,
-          side: 'buy',
-          text: `${actorName || actorAddress} buy ${symbol}`,
+          source: `${String(payload.source || 'gmgn').trim() || 'gmgn'}-plugin`,
+          text: `${actorName || actorAddress} appeared in ${symbol} aggregate`,
           occurredAt: buyAt
-        })];
-        if (wallet.closed === true && Number(wallet.closedAt || 0) > 0) {
-          const soldAt = formatIsoTimestamp(wallet.closedAt);
-          events.push(removeEmptyFields({
-            ...common,
-            id: `gmgn-wallet-sell|${String(raw.group_key || '').trim()}|${stableWallet}|${soldAt}`,
-            side: 'sell',
-            nativeAmount: undefined,
-            text: `${actorName || actorAddress} sell ${symbol}`,
-            occurredAt: soldAt
-          }));
-        }
-        return events;
-      });
+        });
+      })
+      .filter(Boolean);
     return { items: [aggregateEvent, ...walletEvents] };
   }
-  if (type !== 'wallet_trade' || raw.focus_wallet_hit !== true) return null;
+  if (type !== 'wallet_trade') return null;
   const action = String(payload.action || '').trim().toLowerCase();
   if (!['buy', 'open', 'add', 'sell', 'reduce', 'close', 'clear'].includes(action)) return null;
   const wallet = payload.wallet && typeof payload.wallet === 'object' ? payload.wallet : {};
@@ -1052,8 +1008,11 @@ function buildMarketWatchIntelligenceEvent(payload) {
   const symbol = String(payload.symbol || '').trim();
   if (!ca && !symbol) return null;
   return removeEmptyFields({
-    id: `gmgn-trade|${String(raw.stable_key || '').trim()}|${formatIsoTimestamp(payload.ts)}`,
+    id: `gmgn-trade|${String(payload.tradeId || raw.trade_id || raw.stable_key || '').trim()}`,
+    schemaVersion: 2,
     kind: 'trade',
+    tradeId: String(payload.tradeId || raw.trade_id || raw.stable_key || '').trim(),
+    identityConfidence: String(payload.identityConfidence || raw.identity_confidence || 'heuristic').trim(),
     type,
     side: ['sell', 'reduce', 'close', 'clear'].includes(action) ? 'sell' : 'buy',
     chainId: mapMarketWatchChainId(payload.chain),
@@ -2099,6 +2058,11 @@ async function handleFomoAggregateAlert(payload) {
   const settings = normalizeGmgnTwitterTriggerHookSettings(stored[GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY]);
   const focusBuy = side === 'buy' && isTraderAlert ? {
     id: `fomo|${String(payload.stableKey || '').trim()}`,
+    schemaVersion: 2,
+    kind: 'trade',
+    side: 'buy',
+    tradeId: `fomo|${String(payload.stableKey || '').trim()}`,
+    identityConfidence: 'exact',
     traderName,
     traderAddress: String(payload.traderAddress || '').trim(),
     tokenName: symbol,
@@ -2116,7 +2080,10 @@ async function handleFomoAggregateAlert(payload) {
   } : null;
   const intelligenceEvent = removeEmptyFields({
     id: `fomo-intelligence|${String(payload.stableKey || '').trim()}`,
+    schemaVersion: 2,
     kind: isTraderAlert ? 'trade' : 'aggregate',
+    tradeId: isTraderAlert ? `fomo|${String(payload.stableKey || '').trim()}` : undefined,
+    identityConfidence: isTraderAlert ? 'exact' : undefined,
     type: 'fomo_alert',
     side,
     chainId: mapMarketWatchChainId(chain),

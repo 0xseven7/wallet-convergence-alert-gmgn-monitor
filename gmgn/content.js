@@ -148,6 +148,7 @@
   function stripTradeForStorage(r) {
     return {
       wallet: r.wallet || '',
+      walletAddress: r.walletAddress || '',
       walletAvatar: r.walletAvatar || '',
       action: r.action || '',
       isBuy: !!r.isBuy,
@@ -163,7 +164,9 @@
       tokenLogo: r.tokenLogo || '',
       href: r.href || '',
       platform: r.platform || null,
-      stableKey: r.stableKey || ''
+      stableKey: r.stableKey || '',
+      sourceTradeId: r.sourceTradeId || '',
+      identityConfidence: r.identityConfidence || ''
     };
   }
 
@@ -172,13 +175,37 @@
   }
 
   function buildStableTradeKey(parts) {
+    const sourceTradeId = normalizeTradeKeyPart(parts.sourceTradeId || parts.txHash || parts.signature || '');
+    const walletIdentity = normalizeTradeKeyPart(parts.walletAddress || parts.wallet).toLowerCase();
+    const fallbackFingerprint = normalizeTradeKeyPart(parts.fingerprint || `${parts.action || ''}|${parts.amount || ''}`);
     return [
-      normalizeTradeKeyPart(parts.chain),
-      normalizeTradeKeyPart(parts.mint || parts.token),
-      normalizeTradeKeyPart(parts.wallet),
-      normalizeTradeKeyPart(parts.fingerprint || `${parts.action || ''}|${parts.amount || ''}`),
-      normalizeTradeKeyPart(parts.timeMs)
+      normalizeTradeKeyPart(parts.chain).toLowerCase(),
+      normalizeTradeKeyPart(parts.mint || parts.token).toLowerCase(),
+      walletIdentity,
+      sourceTradeId ? `source:${sourceTradeId}` : `row:${fallbackFingerprint}`
     ].join('|');
+  }
+
+  function extractTradeSourceId(row) {
+    if (!row || !row.querySelectorAll) return '';
+    const nodes = [row, ...row.querySelectorAll('[data-tx-hash],[data-transaction-hash],[data-signature],[data-trade-id],a[href]')];
+    const attributes = ['data-tx-hash', 'data-transaction-hash', 'data-signature', 'data-trade-id'];
+    for (const node of nodes) {
+      for (const attribute of attributes) {
+        const value = normalizeTradeKeyPart(node.getAttribute?.(attribute) || '');
+        if (value.length >= 16) return value;
+      }
+      const href = String(node.getAttribute?.('href') || node.href || '').trim();
+      if (!href) continue;
+      try {
+        const parsed = new URL(href, location.href);
+        const pathMatch = parsed.pathname.match(/\/(?:tx|transaction)\/([^/?#]+)/i);
+        const queryId = parsed.searchParams.get('tx_hash') || parsed.searchParams.get('txHash') || parsed.searchParams.get('signature');
+        const value = normalizeTradeKeyPart(queryId || (pathMatch ? decodeURIComponent(pathMatch[1]) : ''));
+        if (value.length >= 16) return value;
+      } catch (_error) {}
+    }
+    return '';
   }
 
   function buildObservedTradeKey(parts) {
@@ -2057,6 +2084,8 @@
     const raw = {
       from: `${getSignalEventSource()}-extension`,
       stable_key: trade.stableKey || '',
+      trade_id: trade.stableKey || '',
+      identity_confidence: trade.identityConfidence || (trade.sourceTradeId ? 'exact' : 'heuristic'),
       inferred_time: !!trade.inferredTime,
       original_action: String(trade.action || '').trim()
     };
@@ -2068,6 +2097,9 @@
     }
 
     return {
+      schemaVersion: 2,
+      tradeId: trade.stableKey || '',
+      identityConfidence: trade.identityConfidence || (trade.sourceTradeId ? 'exact' : 'heuristic'),
       source: getSignalEventSource(),
       type: 'wallet_trade',
       ts: trade.timeMs || Date.now(),
@@ -2114,6 +2146,7 @@
     const effectiveCount = Number(alert.effectiveCount || alert.walletCount || 0);
     const closedCount = Number(alert.closedCount || 0);
     return {
+      schemaVersion: 2,
       source: getSignalEventSource(),
       type: 'convergence_alert',
       ts: alert.latestTradeTimeMs || alert.updatedAt || Date.now(),
@@ -2135,6 +2168,7 @@
         focus_wallet_hit: focusWallets.length > 0,
         focus_wallets: focusWallets,
         group_key: getAlertGroupKey(alert),
+        record_kind: 'aggregate_snapshot',
         wallets: Array.isArray(alert.wallets)
           ? alert.wallets.map((wallet) => ({
               name: String(wallet?.name || '').trim(),
@@ -2506,7 +2540,8 @@
     const href = baseInfo.href || '';
     const walletAddress = normalizeFocusAddress(baseInfo.walletAddress || '');
     const platform = detectPlatform(mint, chain, '');
-    const stableFingerprint = `${wallet}|${action}|${headPart}`;
+    const stableFingerprint = `${action}|${headPart}`;
+    const sourceTradeId = extractTradeSourceId(row);
     const observedKey = buildObservedTradeKey({
       chain,
       mint,
@@ -2551,6 +2586,8 @@
       tokenLogo,
       href,
       platform,
+      sourceTradeId,
+      identityConfidence: sourceTradeId ? 'exact' : 'heuristic',
       stableKey: buildStableTradeKey({
         chain,
         mint,
@@ -2560,7 +2597,7 @@
         action,
         amount,
         fingerprint: stableFingerprint,
-        timeMs: timeInfo.timeMs
+        sourceTradeId
       })
     };
   }
@@ -2661,7 +2698,8 @@
 
     tokenSymbol = stripInlineSvgPrefixTokenText(tokenSymbol, line2);
     const platform = detectPlatform(mint, chain, '');
-    const stableFingerprint = `${line1StableText}|${headPart}`;
+    const stableFingerprint = `${action}|${line1StableText}|${headPart}`;
+    const sourceTradeId = extractTradeSourceId(row);
     const observedKey = buildObservedTradeKey({
       chain,
       mint,
@@ -2710,6 +2748,8 @@
       tokenLogo,
       href,
       platform,
+      sourceTradeId,
+      identityConfidence: sourceTradeId ? 'exact' : 'heuristic',
       stableKey: buildStableTradeKey({
         chain,
         mint,
@@ -2719,7 +2759,7 @@
         action,
         amount,
         fingerprint: stableFingerprint,
-        timeMs: timeInfo.timeMs
+        sourceTradeId
       })
     };
   }
@@ -2958,7 +2998,8 @@
     const launchpad = tokenInfo.launchpad || tokenInfo.platform || tokenInfo.dex || '';
     const amount = formatDebotAmount(row.base_token_amount);
     const mcap = getDebotTokenMarketCap(row, tokenInfo, domInfo);
-    const stableFingerprint = row.uuid || row.tx || `${row.op || ''}|${row.log_index || ''}|${row.amount || ''}|${row.volume || ''}`;
+    const sourceTradeId = String(row.tx_hash || row.txHash || row.signature || row.uuid || row.tx || '').trim();
+    const stableFingerprint = `${row.op || ''}|${row.log_index || ''}|${row.amount || ''}|${row.volume || ''}`;
 
     if (walletDisplay.address) {
       rememberDebotWallet(walletDisplay.address, {
@@ -2979,6 +3020,7 @@
 
     return {
       wallet: walletDisplay.name,
+      walletAddress: walletDisplay.address,
       walletAvatar: walletDisplay.avatar,
       action,
       isBuy,
@@ -2994,15 +3036,18 @@
       tokenLogo,
       href: buildDebotTokenUrl(chain, mint),
       platform: detectPlatform(mint, chain, launchpad),
+      sourceTradeId,
+      identityConfidence: sourceTradeId ? 'exact' : 'heuristic',
       stableKey: buildStableTradeKey({
         chain,
         mint,
         token: tokenSymbol,
-        wallet: walletDisplay.address || walletDisplay.name,
+        wallet: walletDisplay.name,
+        walletAddress: walletDisplay.address,
         action,
         amount,
         fingerprint: stableFingerprint,
-        timeMs
+        sourceTradeId
       })
     };
   }
@@ -3104,6 +3149,7 @@
       || shortAddress(tokenInfo.mint);
     const action = parsedText.action;
     const isBuy = isBuyAction(action);
+    const sourceTradeId = extractTradeSourceId(anchor);
 
     rememberDebotToken(tokenInfo.mint, {
       symbol: tokenSymbol,
@@ -3118,6 +3164,7 @@
 
     return {
       wallet,
+      walletAddress,
       walletAvatar,
       action,
       isBuy,
@@ -3133,15 +3180,18 @@
       tokenLogo: '',
       href: buildDebotTokenUrl(tokenInfo.chain, tokenInfo.mint),
       platform: detectPlatform(tokenInfo.mint, tokenInfo.chain, text),
+      sourceTradeId,
+      identityConfidence: sourceTradeId ? 'exact' : 'heuristic',
       stableKey: buildStableTradeKey({
         chain: tokenInfo.chain,
         mint: tokenInfo.mint,
         token: tokenSymbol,
-        wallet: walletAddress || wallet,
+        wallet,
+        walletAddress,
         action,
         amount: parsedText.amount,
-        fingerprint: `${walletAddress || wallet}|${action}|${tokenInfo.mint}`,
-        timeMs: timeInfo.timeMs
+        fingerprint: `${action}|${parsedText.amount}|${tokenInfo.mint}`,
+        sourceTradeId
       })
     };
   }

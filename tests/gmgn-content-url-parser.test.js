@@ -110,6 +110,26 @@ assert.equal(normalizeChainName('Robinhood'), 'robinhood');
 assert.equal(normalizeChainName('RH'), 'robinhood');
 assert.equal(normalizeChainName('Robinhood Chain'), 'robinhood');
 
+const tradeIdentitySandbox = { module: { exports: {} } };
+vm.runInNewContext(`
+${extractFunction('normalizeTradeKeyPart')}
+${extractFunction('buildStableTradeKey')}
+  module.exports = { buildStableTradeKey };
+`, tradeIdentitySandbox);
+const { buildStableTradeKey } = tradeIdentitySandbox.module.exports;
+const repeatedTrade = {
+  chain: 'base',
+  mint: bscAddress,
+  wallet: 'alex',
+  walletAddress: '0xb226f97bc5b01978848dc440b40c70faea7c006e',
+  action: 'buy',
+  amount: '0.536',
+  fingerprint: 'buy|0.536TSG'
+};
+assert.equal(buildStableTradeKey({ ...repeatedTrade, timeMs: 1784291100000 }), buildStableTradeKey({ ...repeatedTrade, timeMs: 1784291160000 }), 'relative scan time must not change trade identity');
+assert.notEqual(buildStableTradeKey(repeatedTrade), buildStableTradeKey({ ...repeatedTrade, sourceTradeId: '0xabc1234567890123' }), 'an explicit source transaction id must take precedence');
+assert.notEqual(buildStableTradeKey(repeatedTrade), buildStableTradeKey({ ...repeatedTrade, amount: '0.537', fingerprint: 'buy|0.537TSG' }), 'different trade content must remain distinct');
+
 assert.deepEqual(JSON.parse(JSON.stringify(parseDebotTokenHref(`/token/solana/274997_${solMint}`))), {
   href: `/token/solana/274997_${solMint}`,
   chain: 'sol',
@@ -346,6 +366,9 @@ assert.deepEqual(plain(buildWalletTradeSignalEvent({
   href: `/bsc/token/${bscAddress}`,
   stableKey: 'trade-stable-key'
 })), {
+  schemaVersion: 2,
+  tradeId: 'trade-stable-key',
+  identityConfidence: 'heuristic',
   source: 'gmgn',
   type: 'wallet_trade',
   ts: 1780000000000,
@@ -367,6 +390,8 @@ assert.deepEqual(plain(buildWalletTradeSignalEvent({
   raw: {
     from: 'gmgn-extension',
     stable_key: 'trade-stable-key',
+    trade_id: 'trade-stable-key',
+    identity_confidence: 'heuristic',
     inferred_time: false,
     original_action: '买入'
   }
@@ -386,6 +411,7 @@ assert.deepEqual(plain(buildConvergenceAlertSignalEvent({
   requiredWallets: 2,
   hasPriorityWallet: false
 })), {
+  schemaVersion: 2,
   source: 'gmgn',
   type: 'convergence_alert',
   ts: 1780000000000,
@@ -407,6 +433,7 @@ assert.deepEqual(plain(buildConvergenceAlertSignalEvent({
     focus_wallet_hit: false,
     focus_wallets: [],
     group_key: `bsc|${bscAddress}`,
+    record_kind: 'aggregate_snapshot',
     wallets: [
       { name: '西瓜', address: '', amount: '', timeAgo: '', timeMs: 0, avatar: '', closed: false, closedAt: 0 },
       { name: '土豆', address: '', amount: '', timeAgo: '', timeMs: 0, avatar: '', closed: false, closedAt: 0 },

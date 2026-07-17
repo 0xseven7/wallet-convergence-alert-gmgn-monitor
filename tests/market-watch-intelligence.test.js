@@ -13,7 +13,11 @@ assert.match(background, /side === 'buy' && isTraderAlert/, 'only real FOMO trad
 assert.match(background, /kind: isTraderAlert \? 'trade' : 'aggregate'/, 'FOMO aggregate alerts should not be represented as fake people');
 assert.match(background, /function buildGmgnTwitterIntelligenceEvent\(/, 'GMGN Twitter triggers should be normalized for Market Watch');
 assert.match(background, /source: 'gmgn-twitter-trigger'/, 'Twitter intelligence should retain its source identity');
-assert.match(background, /gmgn-wallet-buy/, 'every GMGN aggregate wallet should become an individual buy event');
+assert.match(background, /gmgn-wallet-snapshot/, 'every GMGN aggregate wallet should become a non-financial snapshot');
+assert.match(background, /kind: 'snapshot'/, 'aggregate wallet snapshots must not masquerade as trades');
+assert.doesNotMatch(background, /type !== 'wallet_trade' \|\| raw\.focus_wallet_hit !== true/, 'all direct GMGN wallet trades should be forwarded, not only Focus wallets');
+assert.match(background, /tradeId: String\(payload\.tradeId \|\| raw\.trade_id \|\| raw\.stable_key/, 'direct trades should carry a stable trade id');
+assert.doesNotMatch(background, /function buildConvergenceAlertFocusBuyPayload/, 'aggregate snapshots must not enter the legacy Focus Buy financial stream');
 assert.match(background, /actorImage: String\(wallet\.avatar/, 'GMGN wallet avatars should be forwarded');
 assert.match(background, /return \{ items: \[aggregateEvent, \.\.\.walletEvents\] \}/, 'aggregate and wallet events should be sent in one batch');
 assert.match(background, /index \+= 200/, 'large wallet lists should be split without dropping wallets');
