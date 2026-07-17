@@ -552,20 +552,33 @@ async function dispatchGmgnTwitterTriggerHook(payload) {
 }
 
 async function dispatchGmgnSignalEvent(payload) {
-  const focusBuyResult = await dispatchMarketWatchDeskFocusBuy(payload);
-  const eventApiResult = await dispatchGmgnEventApi(payload);
+  const [focusBuyResult, intelligenceResult, eventApiResult] = await Promise.all([
+    dispatchMarketWatchDeskFocusBuy(payload),
+    dispatchMarketWatchIntelligenceEvent(payload),
+    dispatchGmgnEventApi(payload)
+  ]);
 
   if (eventApiResult && !eventApiResult.skipped) {
     return {
       ...eventApiResult,
-      focusBuy: focusBuyResult
+      focusBuy: focusBuyResult,
+      intelligence: intelligenceResult
     };
   }
 
   if (focusBuyResult && !focusBuyResult.skipped) {
     return {
       ...focusBuyResult,
-      eventApi: eventApiResult
+      eventApi: eventApiResult,
+      intelligence: intelligenceResult
+    };
+  }
+
+  if (intelligenceResult && !intelligenceResult.skipped) {
+    return {
+      ...intelligenceResult,
+      eventApi: eventApiResult,
+      focusBuy: focusBuyResult
     };
   }
 
@@ -574,8 +587,50 @@ async function dispatchGmgnSignalEvent(payload) {
     skipped: true,
     error: eventApiResult?.error || focusBuyResult?.error || 'No signal integrations enabled.',
     eventApi: eventApiResult,
-    focusBuy: focusBuyResult
+    focusBuy: focusBuyResult,
+    intelligence: intelligenceResult
   };
+}
+
+async function dispatchMarketWatchIntelligenceEvent(payload) {
+  const event = buildMarketWatchIntelligenceEvent(payload);
+  if (!event) {
+    return { ok: false, skipped: true, error: 'Signal event is not a Market Watch intelligence event.' };
+  }
+  const stored = await chrome.storage.local.get(GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY);
+  const settings = normalizeGmgnTwitterTriggerHookSettings(stored[GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY]);
+  if (!settings.focusBuysEnabled) {
+    return { ok: false, skipped: true, error: 'Market Watch forwarding is disabled.' };
+  }
+  const requestUrl = buildMainScreenRelayUrl(settings.mainScreenRelayBaseUrl, '/market-watch/api/intelligence-events');
+  if (!requestUrl) {
+    return { ok: false, skipped: true, error: 'Relay Base URL is invalid.' };
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.min(settings.timeoutMs, 5000));
+  try {
+    const response = await fetch(requestUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-gmgn-hook-source': 'wallet-convergence-alert-gmgn-monitor',
+        'x-gmgn-hook-event': 'intelligence-event'
+      },
+      body: JSON.stringify({ source: 'gmgn-monitor-extension', payload: event }),
+      signal: controller.signal
+    });
+    const responseText = await response.text().catch(() => '');
+    return { ok: response.ok, status: response.status, statusText: response.statusText, body: responseText.slice(0, 500) };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error && error.name === 'AbortError'
+        ? `Intelligence event request timed out after ${Math.min(settings.timeoutMs, 5000)}ms.`
+        : (error && error.message ? error.message : String(error))
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function dispatchGmgnEventApi(payload) {
@@ -836,6 +891,63 @@ function buildConvergenceAlertFocusBuyPayload(payload) {
 
   if (items.length === 0) return null;
   return { items };
+}
+
+function buildMarketWatchIntelligenceEvent(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  if (['trade', 'aggregate', 'twitter'].includes(String(payload.kind || '').trim().toLowerCase())) {
+    return payload;
+  }
+  const raw = payload.raw && typeof payload.raw === 'object' ? payload.raw : {};
+  const type = String(payload.type || '').trim();
+  if (type === 'convergence_alert') {
+    const ca = String(payload.ca || '').trim();
+    const symbol = String(payload.symbol || '').trim();
+    if (!ca && !symbol) return null;
+    return removeEmptyFields({
+      id: `gmgn-aggregate|${String(raw.group_key || '').trim()}|${formatIsoTimestamp(payload.ts)}|${Number(raw.buy_wallet_count || 0)}|${Number(raw.sell_wallet_count || 0)}`,
+      kind: 'aggregate',
+      type,
+      chainId: mapMarketWatchChainId(payload.chain),
+      contractAddress: ca,
+      tokenName: String(payload.token_name || symbol).trim(),
+      symbol,
+      buyCount: Number(raw.buy_wallet_count || raw.wallet_count || 0),
+      sellCount: Number(raw.sell_wallet_count || raw.closed_wallet_count || 0),
+      traderCount: Number(raw.wallet_count || raw.buy_wallet_count || 0),
+      marketCap: parseHumanMoneyValue(payload.mcap),
+      text: String(payload.text || '').trim(),
+      url: String(payload.url || '').trim(),
+      source: `${String(payload.source || 'gmgn').trim() || 'gmgn'}-plugin`,
+      occurredAt: formatIsoTimestamp(payload.ts)
+    });
+  }
+  if (type !== 'wallet_trade' || raw.focus_wallet_hit !== true) return null;
+  const action = String(payload.action || '').trim().toLowerCase();
+  if (!['buy', 'open', 'add', 'sell', 'reduce', 'close', 'clear'].includes(action)) return null;
+  const wallet = payload.wallet && typeof payload.wallet === 'object' ? payload.wallet : {};
+  const ca = String(payload.ca || '').trim();
+  const symbol = String(payload.symbol || '').trim();
+  if (!ca && !symbol) return null;
+  return removeEmptyFields({
+    id: `gmgn-trade|${String(raw.stable_key || '').trim()}|${formatIsoTimestamp(payload.ts)}`,
+    kind: 'trade',
+    type,
+    side: ['sell', 'reduce', 'close', 'clear'].includes(action) ? 'sell' : 'buy',
+    chainId: mapMarketWatchChainId(payload.chain),
+    contractAddress: ca,
+    tokenName: String(payload.token_name || symbol).trim(),
+    symbol,
+    actorName: String(wallet.remark || wallet.name || raw.focus_wallet_alias || '').trim(),
+    actorAddress: String(wallet.address || '').trim(),
+    nativeAmount: parseHumanMoneyValue(payload.amount),
+    nativeSymbol: marketWatchNativeSymbol(payload.chain),
+    marketCap: parseHumanMoneyValue(payload.mcap),
+    text: String(payload.text || '').trim(),
+    url: String(payload.url || '').trim(),
+    source: `${String(payload.source || 'gmgn').trim() || 'gmgn'}-plugin`,
+    occurredAt: formatIsoTimestamp(payload.ts)
+  });
 }
 
 function parseHumanMoneyValue(value) {
@@ -1840,8 +1952,9 @@ async function handleFomoAggregateAlert(payload) {
   const traderCount = Math.max(1, Number(payload.traderCount || 1));
   const isTraderAlert = payload.alertKind === 'trader';
   const traderName = String(payload.traderHandle || payload.traderName || '').trim();
-  if (!chain || !contractAddress || !symbol || String(payload.side || '').toLowerCase() !== 'buy') {
-    return { ok: false, skipped: true, error: 'Invalid FOMO buy alert.' };
+  const side = String(payload.side || '').toLowerCase();
+  if (!chain || !contractAddress || !symbol || !['buy', 'sell'].includes(side)) {
+    return { ok: false, skipped: true, error: 'Invalid FOMO alert.' };
   }
 
   const tabs = await chrome.tabs.query({ url: [
@@ -1862,10 +1975,10 @@ async function handleFomoAggregateAlert(payload) {
 
   const stored = await chrome.storage.local.get(GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY);
   const settings = normalizeGmgnTwitterTriggerHookSettings(stored[GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY]);
-  const focusBuy = {
+  const focusBuy = side === 'buy' && isTraderAlert ? {
     id: `fomo|${String(payload.stableKey || '').trim()}`,
-    traderName: isTraderAlert ? traderName : `FOMO ${traderCount} traders`,
-    traderAddress: isTraderAlert ? String(payload.traderAddress || '').trim() : '',
+    traderName,
+    traderAddress: String(payload.traderAddress || '').trim(),
     tokenName: symbol,
     symbol,
     chainId: mapMarketWatchChainId(chain),
@@ -1874,14 +1987,38 @@ async function handleFomoAggregateAlert(payload) {
     marketCap: Number.isFinite(Number(payload.marketCapUsd)) ? Number(payload.marketCapUsd) : undefined,
     source: 'fomo-alert',
     txUrl: String(payload.url || '').trim(),
-    note: isTraderAlert ? `FOMO @${traderName} Buy ${payload.amountText || ''}`.trim() : `FOMO ${traderCount} traders Buy ${payload.amountText || ''}`.trim(),
+    note: `FOMO @${traderName} Buy ${payload.amountText || ''}`.trim(),
     boughtAt: formatIsoTimestamp(payload.observedAt || Date.now()),
-    aggregateTraderCount: isTraderAlert ? undefined : traderCount,
-    fomoTraderHandle: isTraderAlert ? traderName : undefined,
+    fomoTraderHandle: traderName,
     aggregateAmountUsd: Number.isFinite(Number(payload.amountUsd)) ? Number(payload.amountUsd) : undefined
-  };
-  const marketWatch = await dispatchFocusBuyToRelay(focusBuy, settings);
-  return { ok: monitorDelivered || marketWatch?.ok === true, monitorDelivered, marketWatch };
+  } : null;
+  const intelligenceEvent = removeEmptyFields({
+    id: `fomo-intelligence|${String(payload.stableKey || '').trim()}`,
+    kind: isTraderAlert ? 'trade' : 'aggregate',
+    type: 'fomo_alert',
+    side,
+    chainId: mapMarketWatchChainId(chain),
+    contractAddress,
+    tokenName: symbol,
+    symbol,
+    actorName: isTraderAlert ? traderName : undefined,
+    actorHandle: isTraderAlert ? traderName : undefined,
+    actorAddress: isTraderAlert ? String(payload.traderAddress || '').trim() : undefined,
+    traderCount: isTraderAlert ? 1 : traderCount,
+    buyCount: !isTraderAlert || side === 'buy' ? (side === 'buy' ? traderCount : 0) : undefined,
+    sellCount: !isTraderAlert || side === 'sell' ? (side === 'sell' ? traderCount : 0) : undefined,
+    amountUsd: Number.isFinite(Number(payload.amountUsd)) ? Number(payload.amountUsd) : undefined,
+    marketCap: Number.isFinite(Number(payload.marketCapUsd)) ? Number(payload.marketCapUsd) : undefined,
+    text: isTraderAlert ? `FOMO @${traderName} ${side} ${payload.amountText || ''}`.trim() : `FOMO ${traderCount} traders ${side} ${payload.amountText || ''}`.trim(),
+    url: String(payload.url || '').trim(),
+    source: 'fomo-alert',
+    occurredAt: formatIsoTimestamp(payload.observedAt || Date.now())
+  });
+  const [marketWatch, intelligence] = await Promise.all([
+    focusBuy ? dispatchFocusBuyToRelay(focusBuy, settings) : Promise.resolve({ ok: false, skipped: true }),
+    dispatchMarketWatchIntelligenceEvent(intelligenceEvent)
+  ]);
+  return { ok: monitorDelivered || marketWatch?.ok === true || intelligence?.ok === true, monitorDelivered, marketWatch, intelligence };
 }
 
 async function restoreMonitorState() {
