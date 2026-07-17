@@ -114,12 +114,8 @@
   let isLockedByOtherTab = false;
   let watchedTradesPrimed = false;
   let watchedTradeSpeechQueue = Promise.resolve();
-  let watchedTradeTtsFailureCount = 0;
-  let watchedTradeTtsCooldownUntil = 0;
   const spokenWatchedTradeKeys = new Map();
   const WATCHED_TRADE_TTS_MAX_AGE_MS = 10 * 1000;
-  const WATCHED_TRADE_TTS_BACKOFF_BASE_MS = 60 * 1000;
-  const WATCHED_TRADE_TTS_BACKOFF_MAX_MS = 10 * 60 * 1000;
   const INFERRED_TRADE_TIME_TTL_MS = 2 * 60 * 60 * 1000;
   const inferredTradeTimeByKey = new Map();
   const SUPPORTED_GMGN_CHAINS = new Set(['sol', 'eth', 'bsc', 'bnb', 'base', 'tron', 'blast', 'robinhood']);
@@ -4297,11 +4293,6 @@
       try { audioSyncChannel.postMessage('PLAYING_AUDIO'); } catch (e) {}
     }
 
-    if (Date.now() < watchedTradeTtsCooldownUntil) {
-      await fallbackNativeWatchedTradeTts(text);
-      return;
-    }
-
     try {
       const response = await fetch(ttsSettings.apiUrl, {
         method: 'POST',
@@ -4332,7 +4323,6 @@
           });
           await audio.play();
           await playbackFinished;
-          markWatchedTradeTtsHealthy();
         } finally {
           cleanupBoost();
         }
@@ -4347,28 +4337,8 @@
         });
         return;
       }
-      markWatchedTradeTtsFailure(e);
       await fallbackNativeWatchedTradeTts(text);
     }
-  }
-
-  function markWatchedTradeTtsHealthy() {
-    watchedTradeTtsFailureCount = 0;
-    watchedTradeTtsCooldownUntil = 0;
-  }
-
-  function markWatchedTradeTtsFailure(error) {
-    watchedTradeTtsFailureCount += 1;
-    const cooldownMs = Math.min(
-      WATCHED_TRADE_TTS_BACKOFF_MAX_MS,
-      WATCHED_TRADE_TTS_BACKOFF_BASE_MS * (2 ** Math.max(0, watchedTradeTtsFailureCount - 1))
-    );
-    watchedTradeTtsCooldownUntil = Date.now() + cooldownMs;
-    aggregateDebugLog('watched trade network TTS failed; native fallback is active.', {
-      error: error && error.message ? error.message : String(error),
-      failureCount: watchedTradeTtsFailureCount,
-      cooldownMs
-    });
   }
 
   function fallbackNativeWatchedTradeTts(text) {

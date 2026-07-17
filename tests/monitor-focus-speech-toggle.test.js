@@ -39,18 +39,6 @@ assert.match(
 );
 
 assert.match(
-  contentSource,
-  /Date\.now\(\) < watchedTradeTtsCooldownUntil[\s\S]*fallbackNativeWatchedTradeTts\(text\)/,
-  'watched-wallet speech should bypass a failing network TTS endpoint during cooldown'
-);
-
-assert.match(
-  contentSource,
-  /WATCHED_TRADE_TTS_BACKOFF_BASE_MS \* \(2 \*\* Math\.max\(0, watchedTradeTtsFailureCount - 1\)\)/,
-  'repeated watched-wallet TTS failures should use exponential backoff'
-);
-
-assert.match(
   styleSource,
   /\.gcp-focus-speech-btn/,
   'Focus Wallet TTS button should have compact tray styling'

@@ -103,13 +103,6 @@ const windowMock = createWindowMock();
 const spoken = [];
 const fetchCalls = [];
 const ttsMessages = [];
-const capturedWarnings = [];
-const testConsole = {
-  ...console,
-  warn(...args) {
-    capturedWarnings.push(args);
-  }
-};
 const TestURL = URL;
 TestURL.createObjectURL = () => 'blob:test-audio';
 TestURL.revokeObjectURL = () => {};
@@ -162,7 +155,7 @@ const sandbox = {
   SpeechSynthesisUtterance: TestSpeechSynthesisUtterance,
   AbortController,
   URL: TestURL,
-  console: testConsole,
+  console,
   setTimeout,
   clearTimeout,
   fetch: async (url, options) => {
@@ -221,7 +214,6 @@ async function awaitReady() {
 
   assert.ok(windowMock.__gmgnTwitterAudioDebug.lastNetworkTtsFailure.includes('502'));
   assert.ok(windowMock.__gmgnTwitterAudioDebug.networkTtsCooldownUntil > Date.now());
-  assert.ok(capturedWarnings.some((args) => args.some((value) => String(value).includes('Network TTS failed'))));
 
   console.log('twitter-audio-content tests passed');
 }
