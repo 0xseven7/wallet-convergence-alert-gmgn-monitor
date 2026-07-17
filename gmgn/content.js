@@ -35,11 +35,9 @@
   const GMGN_SPEECH_WATCHLIST_KEY = 'gmgnSpeechWatchlist';
   const GMGN_FOCUS_ADDRESSES_KEY = 'gmgnFocusAddresses';
   const GMGN_BLACKLIST_WALLETS_KEY = 'gmgnBlacklistWallets';
-  const GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY = 'gmgnTwitterTriggerHookSettings';
   const GET_MONITOR_SCREEN_STATUS_MESSAGE = 'get-monitor-screen-status';
+  const GMGN_FOCUS_ADDRESS_RELAY_REQUEST_MESSAGE = 'gmgn-focus-address-relay-request';
   const MONITOR_STATE_STORAGE_KEY = 'monitorState';
-  const DEFAULT_MAIN_SCREEN_RELAY_BASE_URL = 'https://market-watch.macmini.lan';
-  const LEGACY_MAIN_SCREEN_RELAY_BASE_URL = 'http://127.0.0.1:17390';
   const FOCUS_ADDRESS_SYNC_INTERVAL_MS = 30000;
   let speechWatchlist = {};
   let focusAddresses = {};
@@ -1719,25 +1717,23 @@
     return chrome.storage.local.set({ [GMGN_FOCUS_ADDRESSES_KEY]: focusAddresses }).catch(() => {});
   }
 
-  async function relayFocusAddressRequest(pathname, options = {}) {
-    const relayBaseUrl = await getConfiguredRelayBaseUrl();
-    const requestUrl = buildRelayUrl(relayBaseUrl, pathname);
-    if (!requestUrl) throw new Error('Relay URL is invalid.');
-    const response = await fetch(requestUrl, {
-      method: options.method || 'GET',
-      headers: options.body ? { 'Content-Type': 'application/json' } : undefined,
-      body: options.body ? JSON.stringify(options.body) : undefined,
-      cache: 'no-store'
+  async function relayFocusAddressRequest(operation, payload = {}) {
+    const response = await sendRuntimeMessage({
+      type: GMGN_FOCUS_ADDRESS_RELAY_REQUEST_MESSAGE,
+      request: { operation, ...payload }
     });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok || body?.ok === false) throw new Error(body?.error || `${response.status} ${response.statusText}`);
+    if (!response || response.ok === false) {
+      throw new Error(response?.error || `${response?.status || 0} ${response?.statusText || 'Relay request failed'}`);
+    }
+    const body = response.json && typeof response.json === 'object' ? response.json : response;
+    if (body?.ok === false) throw new Error(body.error || 'Relay request failed.');
     return body;
   }
 
   async function upsertFocusAddress(item) {
     const normalized = Object.values(normalizeFocusAddressEntries([item]))[0];
     if (!normalized) throw new Error('Valid Focus chain and address are required.');
-    const result = await relayFocusAddressRequest('/focus-addresses', { method: 'POST', body: normalized });
+    const result = await relayFocusAddressRequest('upsert', { item: normalized });
     focusAddresses[result.item.key] = result.item;
     await persistFocusAddresses();
     renderFocusManager();
@@ -1750,7 +1746,7 @@
   async function deleteFocusAddress(item) {
     const key = buildFocusAddressKey(item?.chain, item?.address);
     if (!key) throw new Error('Valid Focus chain and address are required.');
-    await relayFocusAddressRequest(`/focus-addresses?chain=${encodeURIComponent(item.chain)}&address=${encodeURIComponent(item.address)}`, { method: 'DELETE' });
+    await relayFocusAddressRequest('delete', { item });
     delete focusAddresses[key];
     await persistFocusAddresses();
     renderFocusManager();
@@ -1766,9 +1762,9 @@
       focusAddressMigrationAttempted = true;
       return;
     }
-    await relayFocusAddressRequest('/focus-addresses/sync', {
-      method: 'POST',
-      body: { source: 'gmgn-monitor-extension', items }
+    await relayFocusAddressRequest('sync', {
+      source: 'gmgn-monitor-extension',
+      items
     });
     focusAddressMigrationAttempted = true;
   }
@@ -1815,57 +1811,12 @@
     return match.meta?.focusPushEnabled !== false;
   }
 
-  function normalizeHttpBaseUrl(value, defaultValue = '') {
-    const rawValue = String(value || '').trim();
-    if (!rawValue) return defaultValue;
-    const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(rawValue) ? rawValue : `http://${rawValue}`;
-    try {
-      const url = new URL(withProtocol);
-      if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
-      url.pathname = url.pathname.replace(/\/+$/, '');
-      url.search = '';
-      url.hash = '';
-      return url.toString().replace(/\/$/, '');
-    } catch (_error) {
-      return '';
-    }
-  }
-
-  function buildRelayUrl(baseUrl, pathname) {
-    try {
-      const normalizedBaseUrl = normalizeHttpBaseUrl(baseUrl, DEFAULT_MAIN_SCREEN_RELAY_BASE_URL);
-      if (!normalizedBaseUrl) return '';
-      return new URL(pathname, `${normalizedBaseUrl}/`).toString();
-    } catch (_error) {
-      return '';
-    }
-  }
-
-  async function getConfiguredRelayBaseUrl() {
-    if (!canUseSharedStorage) return DEFAULT_MAIN_SCREEN_RELAY_BASE_URL;
-    try {
-      const stored = await chrome.storage.local.get(GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY);
-      const settings = stored[GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY] || {};
-      const normalized = normalizeHttpBaseUrl(settings.mainScreenRelayBaseUrl, DEFAULT_MAIN_SCREEN_RELAY_BASE_URL);
-      return normalized === LEGACY_MAIN_SCREEN_RELAY_BASE_URL
-        ? DEFAULT_MAIN_SCREEN_RELAY_BASE_URL
-        : normalized;
-    } catch (_error) {
-      return DEFAULT_MAIN_SCREEN_RELAY_BASE_URL;
-    }
-  }
-
   async function syncFocusAddressesFromRelay() {
     if (!canUseSharedStorage || focusAddressSyncInFlight) return;
     focusAddressSyncInFlight = true;
     try {
       await migrateLocalFocusAddressesToRelay().catch(() => {});
-      const relayBaseUrl = await getConfiguredRelayBaseUrl();
-      const requestUrl = buildRelayUrl(relayBaseUrl, '/focus-addresses');
-      if (!requestUrl) return;
-      const response = await fetch(requestUrl, { method: 'GET', cache: 'no-store' });
-      if (!response.ok) return;
-      const body = await response.json().catch(() => null);
+      const body = await relayFocusAddressRequest('list');
       if (!body?.ok || !Array.isArray(body.items)) return;
       focusAddresses = mergeRelayFocusAddressesWithLocal(body.items);
       await persistFocusAddresses();

@@ -9,6 +9,7 @@ const FETCH_TWITTER_TTS_AUDIO_MESSAGE = 'fetch-twitter-tts-audio';
 const GMGN_TOKEN_QUICK_ADD_MESSAGE = 'gmgn-token-quick-add';
 const GMGN_OPEN_TOKEN_COUNTERPART_MESSAGE = 'gmgn-open-token-counterpart';
 const GMGN_FOCUS_ADDRESS_QUICK_ADD_MESSAGE = 'gmgn-focus-address-quick-add';
+const GMGN_FOCUS_ADDRESS_RELAY_REQUEST_MESSAGE = 'gmgn-focus-address-relay-request';
 const DEFAULT_MARKET_WATCH_DESK_BASE_URL = 'http://127.0.0.1:17387';
 const DEFAULT_MAIN_SCREEN_RELAY_BASE_URL = 'https://market-watch.macmini.lan';
 const FOMO_AGGREGATE_ALERT_EVENT = 'fomo-aggregate-alert';
@@ -140,6 +141,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === GMGN_FOCUS_ADDRESS_QUICK_ADD_MESSAGE && message.payload) {
     quickAddGmgnFocusAddress(message.payload, message.action || message.payload.action)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+
+    return true;
+  }
+
+  if (message.type === GMGN_FOCUS_ADDRESS_RELAY_REQUEST_MESSAGE && message.request) {
+    requestFocusAddressesThroughRelay(message.request, sender)
       .then((result) => sendResponse(result))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
 
@@ -1478,6 +1487,87 @@ async function deleteFocusAddressFromRelay(item) {
   const response = await fetch(requestUrl, { method: 'DELETE' });
   const body = await response.json().catch(() => null);
   return { ok: response.ok, status: response.status, json: body };
+}
+
+function isAllowedFocusRelaySender(sender) {
+  try {
+    const senderUrl = new URL(String(sender?.tab?.url || sender?.url || ''));
+    if (senderUrl.protocol !== 'https:') return false;
+    const hostname = senderUrl.hostname.toLowerCase();
+    return hostname === 'gmgn.ai'
+      || hostname.endsWith('.gmgn.ai')
+      || hostname === 'debot.ai'
+      || hostname.endsWith('.debot.ai');
+  } catch (_error) {
+    return false;
+  }
+}
+
+async function requestFocusAddressesThroughRelay(request, sender) {
+  if (!isAllowedFocusRelaySender(sender)) {
+    throw new Error('Focus Relay request sender is not allowed.');
+  }
+
+  const operation = String(request?.operation || '').trim().toLowerCase();
+  const stored = await chrome.storage.local.get(GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY);
+  const settings = normalizeGmgnTwitterTriggerHookSettings(stored[GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY]);
+  const focusUrl = buildMainScreenRelayUrl(settings.mainScreenRelayBaseUrl, '/focus-addresses');
+  if (!focusUrl) throw new Error('Relay Focus URL is invalid.');
+
+  let requestUrl = focusUrl;
+  let method = 'GET';
+  let body;
+  if (operation === 'list') {
+    method = 'GET';
+  } else if (operation === 'upsert') {
+    const item = Object.values(normalizeFocusAddressEntries([request.item]))[0];
+    if (!item) throw new Error('Valid Focus wallet chain and address are required.');
+    method = 'POST';
+    body = item;
+  } else if (operation === 'sync') {
+    const rawItems = Array.isArray(request.items) ? request.items : [];
+    if (rawItems.length > 2000) throw new Error('Too many Focus addresses; maximum is 2000.');
+    method = 'POST';
+    requestUrl = buildMainScreenRelayUrl(settings.mainScreenRelayBaseUrl, '/focus-addresses/sync');
+    body = {
+      source: String(request.source || 'gmgn-monitor-extension').trim().slice(0, 100),
+      items: Object.values(normalizeFocusAddressEntries(rawItems))
+    };
+  } else if (operation === 'delete') {
+    const item = Object.values(normalizeFocusAddressEntries([request.item]))[0];
+    if (!item) throw new Error('Valid Focus wallet chain and address are required.');
+    method = 'DELETE';
+    requestUrl = `${focusUrl}?chain=${encodeURIComponent(item.chain)}&address=${encodeURIComponent(item.address)}`;
+  } else {
+    throw new Error('Unsupported Focus Relay operation.');
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch(requestUrl, {
+      method,
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+      cache: 'no-store',
+      signal: controller.signal
+    });
+    const responseText = await response.text().catch(() => '');
+    const responseJson = responseText ? JSON.parse(responseText) : null;
+    return {
+      ok: response.ok && responseJson?.ok !== false,
+      status: response.status,
+      statusText: response.statusText,
+      json: responseJson,
+      error: response.ok ? '' : (responseJson?.error || response.statusText)
+    };
+  } catch (error) {
+    throw new Error(error?.name === 'AbortError'
+      ? 'Relay Focus request timed out after 5000ms.'
+      : (error?.message || String(error)));
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function normalizeHttpBaseUrl(value, defaultValue = '') {

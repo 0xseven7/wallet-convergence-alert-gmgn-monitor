@@ -6,7 +6,7 @@ const repoRoot = path.resolve(__dirname, '..');
 const content = fs.readFileSync(path.join(repoRoot, 'gmgn', 'content.js'), 'utf8');
 const background = fs.readFileSync(path.join(repoRoot, 'background.js'), 'utf8');
 
-assert.match(content, /relayFocusAddressRequest\('\/focus-addresses\/sync'/, 'local cached addresses must be merged into Relay');
+assert.match(content, /relayFocusAddressRequest\('sync'/, 'local cached addresses must be merged into Relay');
 assert.match(content, /if \(!relayEntries\[entry\.key\]\) relayEntries\[entry\.key\] = entry;/, 'Relay entries must win over stale local copies');
 assert.match(content, /function promoteSpeechFocusToAddress\(/, 'legacy name-only watches must migrate when a wallet address appears');
 assert.match(content, /id = 'gcp-focus-manager'/, 'the plugin must expose a Focus List editor');
