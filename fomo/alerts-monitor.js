@@ -1,6 +1,7 @@
 (() => {
   'use strict';
   const MESSAGE_TYPE = 'fomo-aggregate-alert';
+  const THESIS_MESSAGE_TYPE = 'fomo-thesis-event';
   const HEARTBEAT_MESSAGE_TYPE = 'fomo-monitor-heartbeat';
   const PING_MESSAGE_TYPE = 'fomo-monitor-ping';
   const SEEN_STORAGE_KEY = 'fomoAlertSeenV2';
@@ -46,10 +47,79 @@
   ]) FOLLOWED_TRADERS.set(alias, FOLLOWED_TRADERS.get(source));
 
   function compactText(value) { return String(value || '').replace(/\s+/g, '').trim(); }
+  function cleanText(value) { return String(value || '').replace(/\s+/g, ' ').trim(); }
   function parseAmount(value) {
     const match = String(value || '').replace(/,/g, '').match(/^\$?(\d+(?:\.\d+)?)([KMB])?$/i);
     if (!match) return null;
     return Number(match[1]) * ({ K: 1e3, M: 1e6, B: 1e9 }[String(match[2] || '').toUpperCase()] || 1);
+  }
+  function definedChainName(value) {
+    return {
+      '1': 'ethereum',
+      '56': 'bnb',
+      '8453': 'base',
+      '4663': 'robinhood',
+      '1399811149': 'solana',
+      'ct_501': 'solana'
+    }[String(value || '').trim().toLowerCase()] || '';
+  }
+  function parseDefinedTokenImage(value) {
+    let filename = '';
+    try {
+      filename = decodeURIComponent(new URL(String(value || '')).pathname.split('/').pop() || '');
+    } catch (_error) {
+      return null;
+    }
+    const match = filename.match(/^(ct_501|1399811149|8453|4663|56|1)_([^_]+)_small_/i);
+    const chain = definedChainName(match?.[1]);
+    const tokenAddress = String(match?.[2] || '').trim();
+    return chain && tokenAddress ? { chain, tokenAddress } : null;
+  }
+  function stableTextHash(value) {
+    let hash = 2166136261;
+    for (const char of String(value || '')) {
+      hash ^= char.codePointAt(0);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(36);
+  }
+  function parseThesis(row) {
+    if (!row || typeof row.querySelectorAll !== 'function') return null;
+    const divs = Array.from(row.querySelectorAll('div'));
+    const badge = divs.find((node) => cleanText(node.textContent).toLowerCase() === 'thesis');
+    if (!badge) return null;
+    const header = badge.parentElement?.parentElement || null;
+    const actorName = cleanText(header?.querySelector?.('.text-sm.text-text-primary')?.textContent);
+    const displayTime = cleanText(header?.querySelector?.('.text-xs.text-text-tertiary')?.textContent).replace(/^Closed\s+/i, '');
+    const images = Array.from(row.querySelectorAll('img'));
+    const profileImage = String(images[0]?.src || '').trim();
+    const tokenImage = String(images[1]?.src || '').trim();
+    const token = parseDefinedTokenImage(tokenImage);
+    const tokenContainer = images[1]?.parentElement?.parentElement || null;
+    const symbol = cleanText(tokenContainer?.querySelector?.('[role="link"]')?.textContent);
+    const text = cleanText(divs.find((node) => /(?:^|\s)line-clamp-\d+(?:\s|$)/.test(String(node.className || '')))?.textContent);
+    if (!actorName || !symbol || !text || !token) return null;
+    const followedTrader = FOLLOWED_TRADERS.get(actorName.toLocaleLowerCase()) || null;
+    const actorAddress = followedTrader ? (token.chain === 'solana' ? followedTrader[1] : followedTrader[2]) : '';
+    const stableKey = `thesis|${token.chain}|${token.tokenAddress.toLowerCase()}|${stableTextHash(`${actorName.toLowerCase()}|${text}`)}`;
+    return {
+      alertKind: 'thesis',
+      stableKey,
+      chain: token.chain,
+      tokenAddress: token.tokenAddress,
+      symbol,
+      actorName,
+      actorHandle: followedTrader?.[0] || actorName,
+      actorAddress,
+      followedTrader: Boolean(followedTrader),
+      profileImage,
+      tokenImage,
+      text,
+      displayTime,
+      closed: /\bThesis\s+Closed\b/i.test(cleanText(row.innerText || row.textContent)),
+      url: `https://fomo.family/tokens/${token.chain}/${encodeURIComponent(token.tokenAddress)}`,
+      observedAt: Date.now()
+    };
   }
   function parseAlert(anchor) {
     const href = String(anchor?.getAttribute('href') || '').trim();
@@ -97,13 +167,17 @@
   }
   function scan() {
     scanTimer = null;
-    const alerts = Array.from(document.querySelectorAll('a[href^="/tokens/"]')).map(parseAlert).filter(Boolean);
+    const tradeAlerts = Array.from(document.querySelectorAll('a[href^="/tokens/"]')).map(parseAlert).filter(Boolean);
+    const thesisAlerts = Array.from(document.querySelectorAll('[role="link"][data-slot="hover-card-trigger"]')).map(parseThesis).filter(Boolean);
+    const alerts = [...tradeAlerts, ...thesisAlerts];
     lastScanAt = Date.now();
     latestStableKey = alerts[0]?.stableKey || latestStableKey;
     for (const alert of alerts) {
       if (seen.has(alert.stableKey)) continue;
       seen.add(alert.stableKey);
-      if (primed && ['buy', 'sell'].includes(alert.side)) chrome.runtime.sendMessage({ type: MESSAGE_TYPE, payload: alert }).catch(() => {});
+      if (!primed) continue;
+      const type = alert.alertKind === 'thesis' ? THESIS_MESSAGE_TYPE : MESSAGE_TYPE;
+      if (alert.alertKind === 'thesis' || ['buy', 'sell'].includes(alert.side)) chrome.runtime.sendMessage({ type, payload: alert }).catch(() => {});
     }
     primed = true;
     if (seen.size > 2000) {
@@ -129,7 +203,7 @@
   function sendHeartbeat(alertCount) {
     chrome.runtime.sendMessage({ type: HEARTBEAT_MESSAGE_TYPE, payload: getStatus(alertCount) }).catch(() => {});
   }
-  if (typeof module !== 'undefined' && module.exports) { module.exports = { compactText, parseAmount, parseAlert }; return; }
+  if (typeof module !== 'undefined' && module.exports) { module.exports = { compactText, parseAmount, parseAlert, parseDefinedTokenImage, parseThesis }; return; }
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type !== PING_MESSAGE_TYPE) return false;
     scan();

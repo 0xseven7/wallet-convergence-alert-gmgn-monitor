@@ -13,10 +13,18 @@ const GMGN_FOCUS_ADDRESS_RELAY_REQUEST_MESSAGE = 'gmgn-focus-address-relay-reque
 const DEFAULT_MARKET_WATCH_DESK_BASE_URL = 'http://127.0.0.1:17387';
 const DEFAULT_MAIN_SCREEN_RELAY_BASE_URL = 'https://market-watch.macmini.lan';
 const FOMO_AGGREGATE_ALERT_EVENT = 'fomo-aggregate-alert';
+const FOMO_THESIS_EVENT = 'fomo-thesis-event';
 const FOMO_MONITOR_HEARTBEAT_EVENT = 'fomo-monitor-heartbeat';
 const FOMO_MONITOR_PING_EVENT = 'fomo-monitor-ping';
 const FOMO_MONITOR_ALARM = 'fomo-monitor-health-check';
 const FOMO_MONITOR_HEALTH_STORAGE_KEY = 'fomoMonitorHealthV1';
+const FOMO_MONITOR_URL_STORAGE_KEY = 'fomoMonitorUrlV1';
+const DEFAULT_FOMO_MONITOR_URL = 'https://fomo.family/tokens/robinhood/0x020bfc650a365f8bb26819deaabf3e21291018b4';
+const FOMO_MONITOR_URL_PATTERNS = [
+  'https://fomo.family/tokens/*',
+  'https://www.fomo.family/tokens/*',
+  'https://*.fomo.family/tokens/*'
+];
 const FOMO_MONITOR_CHECK_MINUTES = 1;
 const FOMO_MONITOR_QUIET_RELOAD_MS = 15 * 60 * 1000;
 const FOMO_MONITOR_RELOAD_COOLDOWN_MS = 2 * 60 * 1000;
@@ -85,6 +93,7 @@ let monitorState = {
   suppressNextRedirect: false
 };
 const fomoMonitorHealth = new Map();
+let fomoMonitorCreatePromise = null;
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !message.type) {
@@ -126,6 +135,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === FOMO_AGGREGATE_ALERT_EVENT && message.payload) {
     handleFomoAggregateAlert(message.payload)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message.type === FOMO_THESIS_EVENT && message.payload) {
+    handleFomoThesisEvent(message.payload)
       .then((result) => sendResponse(result))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
@@ -207,8 +223,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  if (isFomoTokenUrl(tab?.url || changeInfo.url)) {
+  const fomoTabUrl = tab?.url || changeInfo.url;
+  if (isFomoTokenUrl(fomoTabUrl)) {
     await restoreFomoMonitorHealth();
+    await rememberFomoMonitorUrl(fomoTabUrl);
     await chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => null);
     if (changeInfo.status === 'complete') {
       updateFomoMonitorHealth(tabId, { loadedAt: Date.now(), lastScanAt: Date.now() });
@@ -407,12 +425,46 @@ async function ensureFomoMonitorAlarm() {
   }
 }
 
+async function rememberFomoMonitorUrl(rawUrl) {
+  const url = String(rawUrl || '').trim();
+  if (!isFomoTokenUrl(url)) return;
+  await chrome.storage.local.set({ [FOMO_MONITOR_URL_STORAGE_KEY]: url }).catch(() => null);
+}
+
+async function preferredFomoMonitorUrl() {
+  const stored = await chrome.storage.local.get(FOMO_MONITOR_URL_STORAGE_KEY).catch(() => ({}));
+  const url = String(stored?.[FOMO_MONITOR_URL_STORAGE_KEY] || '').trim();
+  return isFomoTokenUrl(url) ? url : DEFAULT_FOMO_MONITOR_URL;
+}
+
+async function ensureFomoMonitorTab() {
+  const existingTabs = await chrome.tabs.query({ url: FOMO_MONITOR_URL_PATTERNS }).catch(() => []);
+  const validTabs = existingTabs.filter((tab) => Number.isInteger(tab.id) && isFomoTokenUrl(tab.url));
+  if (validTabs.length) return validTabs;
+
+  if (!fomoMonitorCreatePromise) {
+    fomoMonitorCreatePromise = (async () => {
+      const url = await preferredFomoMonitorUrl();
+      const createdTab = await chrome.tabs.create({
+        url,
+        active: false,
+        pinned: true
+      }).catch(() => null);
+      if (!createdTab || !Number.isInteger(createdTab.id)) return null;
+      await chrome.tabs.update(createdTab.id, { autoDiscardable: false }).catch(() => null);
+      await rememberFomoMonitorUrl(url);
+      return createdTab;
+    })().finally(() => {
+      fomoMonitorCreatePromise = null;
+    });
+  }
+
+  const createdTab = await fomoMonitorCreatePromise;
+  return createdTab ? [createdTab] : [];
+}
+
 async function superviseFomoMonitorTabs() {
-  const tabs = await chrome.tabs.query({ url: [
-    'https://fomo.family/tokens/*',
-    'https://www.fomo.family/tokens/*',
-    'https://*.fomo.family/tokens/*'
-  ] }).catch(() => []);
+  const tabs = await ensureFomoMonitorTab();
   const now = Date.now();
   for (const tab of tabs) {
     if (!Number.isInteger(tab.id) || !isFomoTokenUrl(tab.url)) continue;
@@ -2345,6 +2397,38 @@ async function handleFomoAggregateAlert(payload) {
     dispatchMarketWatchIntelligenceEvent(intelligenceEvent)
   ]);
   return { ok: monitorDelivered || marketWatch?.ok === true || intelligence?.ok === true, monitorDelivered, marketWatch, intelligence };
+}
+
+async function handleFomoThesisEvent(payload) {
+  const chain = normalizeFocusChainName(payload.chain);
+  const contractAddress = String(payload.tokenAddress || '').trim();
+  const symbol = String(payload.symbol || '').trim();
+  const actorName = String(payload.actorHandle || payload.actorName || '').trim();
+  const text = String(payload.text || '').trim();
+  const stableKey = String(payload.stableKey || '').trim();
+  if (!chain || !contractAddress || !symbol || !actorName || !text || !stableKey) {
+    return { ok: false, skipped: true, error: 'Invalid FOMO thesis event.' };
+  }
+  const intelligenceEvent = removeEmptyFields({
+    id: `fomo-thesis|${stableKey}`,
+    schemaVersion: 2,
+    kind: 'twitter',
+    type: 'fomo_thesis',
+    chainId: mapMarketWatchChainId(chain),
+    contractAddress,
+    tokenName: symbol,
+    symbol,
+    actorName,
+    actorHandle: actorName,
+    actorAddress: String(payload.actorAddress || '').trim(),
+    actorImage: String(payload.profileImage || '').trim(),
+    image: String(payload.tokenImage || '').trim(),
+    text,
+    url: String(payload.url || '').trim(),
+    source: 'fomo-thesis',
+    occurredAt: formatIsoTimestamp(payload.observedAt || Date.now())
+  });
+  return dispatchMarketWatchIntelligenceEvent(intelligenceEvent);
 }
 
 async function restoreMonitorState() {

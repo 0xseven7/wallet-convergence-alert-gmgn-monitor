@@ -14,6 +14,12 @@ assert.ok(manifest.permissions.includes('alarms'), 'background supervision requi
 assert.match(background, /chrome\.alarms\.onAlarm/);
 assert.match(background, /autoDiscardable:\s*false/);
 assert.match(background, /chrome\.tabs\.reload\(tab\.id\)/);
+assert.match(background, /const DEFAULT_FOMO_MONITOR_URL = 'https:\/\/fomo\.family\/tokens\//, 'the monitor must have a valid token-page fallback');
+assert.match(background, /async function ensureFomoMonitorTab\(\)/, 'the background must create the carrier tab when none exists');
+assert.match(background, /fomoMonitorCreatePromise/, 'concurrent startup and alarm checks must not create duplicate tabs');
+assert.match(background, /chrome\.tabs\.create\(\{[\s\S]*active:\s*false,[\s\S]*pinned:\s*true/, 'the managed FOMO tab must stay in the background');
+assert.match(background, /const tabs = await ensureFomoMonitorTab\(\)/, 'supervision must always ensure an input tab before health checks');
+assert.match(background, /rememberFomoMonitorUrl\(fomoTabUrl\)/, 'a manually visited FOMO token page must become the next carrier URL');
 assert.match(background, /FOMO_MONITOR_PING_EVENT/);
 assert.match(background, /chrome\.storage\.session/, 'health state should survive MV3 service-worker suspension');
 assert.match(background, /restoreFomoMonitorHealth\(\)[\s\S]*updateFomoMonitorHealth\(sender\.tab\.id/, 'heartbeat wake should merge persisted tab state before writing');

@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { parseAmount, parseAlert } = require('../fomo/alerts-monitor.js');
+const { parseAmount, parseAlert, parseDefinedTokenImage, parseThesis } = require('../fomo/alerts-monitor.js');
 const backgroundSource = fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
 const monitorSource = fs.readFileSync(path.join(__dirname, '..', 'fomo', 'alerts-monitor.js'), 'utf8');
 const convergenceSource = fs.readFileSync(path.join(__dirname, '..', 'gmgn', 'content.js'), 'utf8');
@@ -67,6 +67,51 @@ const sellParsed = parseAlert(sellAnchor);
 assert.equal(sellParsed.side, 'sell');
 assert.equal(sellParsed.traderCount, 23);
 assert.equal(sellParsed.amountUsd, 18200);
+assert.deepEqual(
+  parseDefinedTokenImage('https://token-media.defined.fi/8453_0xb2000000000000000000007bf6d5cbb0e24cb301_small_7ac792e0b733.png'),
+  { chain: 'base', tokenAddress: '0xb2000000000000000000007bf6d5cbb0e24cb301' }
+);
+assert.deepEqual(
+  parseDefinedTokenImage('https://token-media.defined.fi/1399811149_BDdzUjksj1J4bSnMveQ5tV9Up8A9c6YS1tHrxNw3pump_small_b6877e19e31c.png'),
+  { chain: 'solana', tokenAddress: 'BDdzUjksj1J4bSnMveQ5tV9Up8A9c6YS1tHrxNw3pump' }
+);
+assert.deepEqual(
+  parseDefinedTokenImage('https://token-media.defined.fi/CT_501_BDdzUjksj1J4bSnMveQ5tV9Up8A9c6YS1tHrxNw3pump_small_b6877e19e31c.png'),
+  { chain: 'solana', tokenAddress: 'BDdzUjksj1J4bSnMveQ5tV9Up8A9c6YS1tHrxNw3pump' }
+);
+const thesisHeader = {
+  querySelector(selector) {
+    if (selector === '.text-sm.text-text-primary') return { textContent: '_OHT_' };
+    if (selector === '.text-xs.text-text-tertiary') return { textContent: '1m' };
+    return null;
+  }
+};
+const thesisBadge = { textContent: 'Thesis', className: '', parentElement: { parentElement: thesisHeader } };
+const thesisBody = { textContent: 'All it takes is one tweet.', className: 'line-clamp-6' };
+const thesisTokenContainer = { querySelector: () => ({ textContent: 'BRIAN' }) };
+const thesisRow = {
+  innerText: '_OHT_ Thesis 1m BRIAN All it takes is one tweet.',
+  querySelectorAll(selector) {
+    if (selector === 'div') return [thesisBadge, thesisBody];
+    if (selector === 'img') return [
+      { src: 'https://prod-fomo-profile-pics.s3.amazonaws.com/oht_small.jpg' },
+      { src: 'https://token-media.defined.fi/8453_0xb2000000000000000000007bf6d5cbb0e24cb301_small_hash.png', parentElement: { parentElement: thesisTokenContainer } }
+    ];
+    return [];
+  }
+};
+const thesisParsed = parseThesis(thesisRow);
+assert.equal(thesisParsed.alertKind, 'thesis');
+assert.equal(thesisParsed.chain, 'base');
+assert.equal(thesisParsed.tokenAddress, '0xb2000000000000000000007bf6d5cbb0e24cb301');
+assert.equal(thesisParsed.symbol, 'BRIAN');
+assert.equal(thesisParsed.actorHandle, '_OHT_');
+assert.equal(thesisParsed.text, 'All it takes is one tweet.');
+assert.equal(thesisParsed.actorAddress, '0x11d08e4f84a1b65b4892dd15755cdf6f689896de');
+assert.match(thesisParsed.stableKey, /^thesis\|base\|0xb200/);
+assert.match(monitorSource, /THESIS_MESSAGE_TYPE/, 'thesis rows should use a dedicated background message');
+assert.match(backgroundSource, /kind:\s*'twitter'[\s\S]*type:\s*'fomo_thesis'/, 'FOMO thesis must enter Market Watch as token discussion intelligence');
+assert.match(backgroundSource, /source:\s*'fomo-thesis'/, 'Market Watch must retain the thesis source');
 assert.match(backgroundSource, /chrome\.tabs\.sendMessage[\s\S]*FOMO_AGGREGATE_ALERT_EVENT/, 'FOMO alert should be sent to the monitor screen');
 assert.match(backgroundSource, /dispatchFocusBuyToRelay\(focusBuy, settings\)/, 'FOMO alert should also be persisted in Market Watch');
 assert.match(backgroundSource, /source:\s*'fomo-alert'/, 'Market Watch item should retain its FOMO source');
