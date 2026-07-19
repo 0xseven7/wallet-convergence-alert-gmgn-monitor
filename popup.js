@@ -3,6 +3,9 @@ const GMGN_SPEECH_WATCHLIST_KEY = 'gmgnSpeechWatchlist';
 const GMGN_BLACKLIST_WALLETS_KEY = 'gmgnBlacklistWallets';
 const GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY = 'gmgnTwitterTriggerHookSettings';
 const GMGN_TWITTER_TRIGGER_RULES_KEY = 'gmgnTwitterTriggerRules';
+const MONITOR_STATE_STORAGE_KEY = 'monitorState';
+const GET_MONITOR_SCREEN_STATUS_MESSAGE = 'get-monitor-screen-status';
+const SET_MONITOR_SCREEN_FROM_SETTINGS_MESSAGE = 'set-monitor-screen-from-settings';
 const BUILTIN_AUDIO_FILES = ['default.MP3', 'preset1.MP3', 'elonmusk.MP3', 'CZ.MP3', 'heyi.MP3'];
 const DEFAULT_TTS_API = 'http://tts.macmini.lan/tts/v3-task';
 const CLOUDFLARE_TTS_API = 'https://cloudflare-edge-tts.tech-melon.workers.dev/tts';
@@ -108,6 +111,8 @@ const MAX_AUDIO_VOLUME = 2;
 
 const els = {
   toast: document.getElementById('toast'),
+  setMonitorScreenBtn: document.getElementById('setMonitorScreenBtn'),
+  monitorScreenStatus: document.getElementById('monitorScreenStatus'),
   gmgnAudioEnabled: document.getElementById('gmgn-audio-enabled'),
   gmgnAudioTts: document.getElementById('gmgn-audio-tts'),
   gmgnAudioPreset: document.getElementById('gmgn-audio-preset'),
@@ -164,6 +169,7 @@ const els = {
   cancelGmgnTriggerRuleBtn: document.getElementById('cancelGmgnTriggerRuleBtn'),
   gmgnTriggerRulesList: document.getElementById('gmgnTriggerRulesList')
 };
+const hasMonitorScreenControls = Boolean(els.setMonitorScreenBtn && els.monitorScreenStatus);
 const hasGmgnAudioControls = Boolean(
   els.gmgnAudioEnabled
   && els.gmgnAudioTts
@@ -243,6 +249,9 @@ async function initialize() {
   if (hasGmgnAudioControls) {
     tasks.push(loadGmgnAudioSettings());
   }
+  if (hasMonitorScreenControls) {
+    tasks.push(refreshMonitorScreenSettings());
+  }
   await Promise.all(tasks);
   chrome.storage.onChanged.addListener(handleStorageChanges);
 }
@@ -257,6 +266,9 @@ function handleStorageChanges(changes, areaName) {
     gmgnBlacklistWallets = normalizeGmgnBlacklistWallets(changes[GMGN_BLACKLIST_WALLETS_KEY].newValue);
     renderGmgnBlacklistWallets();
   }
+  if (hasMonitorScreenControls && changes[MONITOR_STATE_STORAGE_KEY]) {
+    void refreshMonitorScreenSettings();
+  }
   if (hasGmgnTwitterTriggerHookControls && changes[GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY]) {
     gmgnTwitterTriggerHookSettings = normalizeGmgnTwitterTriggerHookSettings(changes[GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY].newValue);
     renderGmgnTwitterTriggerHookSettings();
@@ -268,6 +280,10 @@ function handleStorageChanges(changes, areaName) {
 }
 
 function bindEvents() {
+  if (hasMonitorScreenControls) {
+    els.setMonitorScreenBtn.addEventListener('click', setMonitorScreenFromSettings);
+  }
+
   if (hasGmgnAudioControls) {
     els.gmgnAudioEnabled.addEventListener('change', persistGmgnAudioSettings);
     els.gmgnAudioTts.addEventListener('change', persistGmgnAudioSettings);
@@ -335,6 +351,48 @@ function bindEvents() {
     els.gmgnMainScreenRelayBaseUrl.addEventListener('change', saveGmgnTwitterTriggerHookSettings);
     els.saveGmgnTriggerRuleBtn.addEventListener('click', saveGmgnTwitterTriggerRule);
     els.cancelGmgnTriggerRuleBtn.addEventListener('click', resetGmgnTwitterTriggerRuleForm);
+  }
+}
+
+async function refreshMonitorScreenSettings() {
+  if (!hasMonitorScreenControls) return;
+  const status = await chrome.runtime.sendMessage({
+    type: GET_MONITOR_SCREEN_STATUS_MESSAGE
+  }).catch(() => null);
+
+  if (!status?.ok) {
+    els.monitorScreenStatus.textContent = '无法读取监控屏状态';
+    return;
+  }
+
+  if (status.isMonitorScreen) {
+    els.monitorScreenStatus.textContent = '当前窗口已设为监控屏';
+    els.setMonitorScreenBtn.textContent = '当前窗口已是监控屏';
+    return;
+  }
+
+  els.monitorScreenStatus.textContent = Number.isInteger(status.monitorWindowId)
+    ? '监控屏已设置在其他 Chrome 窗口'
+    : '尚未设置监控屏';
+  els.setMonitorScreenBtn.textContent = '将当前窗口设为监控屏';
+}
+
+async function setMonitorScreenFromSettings() {
+  if (!hasMonitorScreenControls) return;
+  els.setMonitorScreenBtn.disabled = true;
+  try {
+    const result = await chrome.runtime.sendMessage({
+      type: SET_MONITOR_SCREEN_FROM_SETTINGS_MESSAGE
+    });
+    if (!result?.ok) {
+      throw new Error(result?.error || '设置监控屏失败');
+    }
+    await refreshMonitorScreenSettings();
+    showToast('当前窗口已设为监控屏');
+  } catch (error) {
+    showToast(error.message || '设置监控屏失败', 4200);
+  } finally {
+    els.setMonitorScreenBtn.disabled = false;
   }
 }
 

@@ -10,8 +10,8 @@ const styleSource = fs.readFileSync(path.join(repoRoot, 'gmgn', 'styles.css'), '
 
 assert.match(
   contentSource,
-  /gcp-focus-speech-btn/,
-  'aggregate tray should expose a quick Focus Wallet TTS toggle button'
+  /gcp-focus-speech-btn[^>]*>🗣<\/button>/,
+  'aggregate tray should expose an icon-only Focus Wallet TTS toggle button'
 );
 
 assert.match(
@@ -48,6 +48,30 @@ assert.match(
   styleSource,
   /\.gcp-focus-speech-btn\.is-off/,
   'Focus Wallet TTS button should have an off state'
+);
+
+assert.match(
+  contentSource,
+  /gcp-token-ext-link-fomo[\s\S]*fomo\.family\/favicon\.svg/,
+  'FOMO token action should use the official site icon instead of a text pill'
+);
+
+assert.match(
+  contentSource,
+  /gcp-token-ext-link-debot[\s\S]*debot\.ai\/favicon\.ico/,
+  'DeBot token action should use the official site icon instead of a text pill'
+);
+
+assert.doesNotMatch(
+  contentSource,
+  /gcp-token-ext-link[^>]*>Fomo<|gcp-token-ext-link[^>]*>Debot</,
+  'external token actions should not spend tray width on provider names'
+);
+
+assert.match(
+  contentSource,
+  /gcp-clear-btn[^>]*aria-label="清空提醒"[^>]*>🗑<\/button>/,
+  'clear action should remain accessible while using an icon-only control'
 );
 
 console.log('monitor focus speech toggle tests passed');

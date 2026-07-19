@@ -20,6 +20,7 @@
         <aside class="settings-sidebar" aria-label="设置模块">
           <div class="settings-sidebar-title">模块</div>
           <nav class="settings-nav">
+            <a href="#module-monitor-screen">监控屏</a>
             <a href="#module-twitter-trade">推特交易</a>
             <a href="#module-twitter-audio">推特语音</a>
             <a href="#module-speech-watch">特别关注钱包</a>
@@ -28,6 +29,26 @@
         </aside>
 
         <div class="settings-content">
+          <section id="module-monitor-screen" class="card settings-module">
+            <div class="card-heading">
+              <div>
+                <h2>监控屏</h2>
+                <p class="card-subtitle">把当前 Chrome 窗口中的 GMGN Follow 标签页设为监控屏。独立的 FOMO 小窗口不会被绑定，也不会受到跳转规则影响。</p>
+              </div>
+            </div>
+
+            <div class="setting-list">
+              <div class="setting-row">
+                <span>当前状态</span>
+                <p id="monitorScreenStatus" class="setting-help">正在读取监控屏状态…</p>
+              </div>
+            </div>
+
+            <div class="button-row single-button-row">
+              <button id="setMonitorScreenBtn" class="primary" type="button">将当前窗口设为监控屏</button>
+            </div>
+          </section>
+
           <section id="module-twitter-trade" class="card settings-module">
             <div class="card-heading">
               <div>

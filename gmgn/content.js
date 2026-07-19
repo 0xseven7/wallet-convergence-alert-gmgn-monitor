@@ -516,10 +516,10 @@
     const links = [];
 
     if (fomoUrl) {
-      links.push(`<a class="gcp-token-ext-link gcp-token-ext-link-fomo" href="${escHtml(fomoUrl)}" target="_blank" rel="noopener noreferrer" title="在 fomo.family 打开">Fomo</a>`);
+      links.push(`<a class="gcp-token-ext-link gcp-token-ext-link-fomo" href="${escHtml(fomoUrl)}" target="_blank" rel="noopener noreferrer" title="在 FOMO 打开" aria-label="在 FOMO 打开"><span class="gcp-token-ext-fallback" aria-hidden="true">F</span><img class="gcp-token-ext-icon" src="https://fomo.family/favicon.svg" alt="" loading="lazy" referrerpolicy="no-referrer" /></a>`);
     }
     if (debotUrl) {
-      links.push(`<a class="gcp-token-ext-link gcp-token-ext-link-debot" href="${escHtml(debotUrl)}" target="_blank" rel="noopener noreferrer" title="在 Debot 打开">Debot</a>`);
+      links.push(`<a class="gcp-token-ext-link gcp-token-ext-link-debot" href="${escHtml(debotUrl)}" target="_blank" rel="noopener noreferrer" title="在 DeBot 打开" aria-label="在 DeBot 打开"><span class="gcp-token-ext-fallback" aria-hidden="true">D</span><img class="gcp-token-ext-icon" src="https://debot.ai/favicon.ico" alt="" loading="lazy" referrerpolicy="no-referrer" /></a>`);
     }
 
     return links.length ? `<span class="gcp-token-ext-links">${links.join('')}</span>` : '';
@@ -4483,7 +4483,7 @@
         </div>
         <div class="gcp-header-right">
           <button class="gcp-icon-btn gcp-focus-manager-btn" title="Focus List">★0</button>
-          <button class="gcp-icon-btn gcp-focus-speech-btn" title="Focus Wallet TTS">TTS</button>
+          <button class="gcp-icon-btn gcp-focus-speech-btn" title="Focus Wallet TTS" aria-label="Focus Wallet TTS">🗣</button>
           <button class="gcp-icon-btn gcp-tier-btn" title="${config.tieredAlerts ? '分级提醒：开（点击关闭）' : '分级提醒：关（点击开启）'}">${config.tieredAlerts ? '🔥' : '🌫️'}</button>
           <button class="gcp-icon-btn gcp-sound-btn" title="声音开关">🔔</button>
         </div>
@@ -4511,7 +4511,7 @@
         <span class="gcp-status" title="数据状态：监听中">🔍 等待</span>
       </div>
       <div class="gcp-alerts"><div class="gcp-empty">监听中…等待信号</div></div>
-      <button class="gcp-clear-btn">清空提醒</button>
+      <button class="gcp-clear-btn" title="清空提醒" aria-label="清空提醒">🗑</button>
       <span class="gcp-resize-handle gcp-resize-left" data-dir="left"></span>
       <span class="gcp-resize-handle gcp-resize-right" data-dir="right"></span>
       <span class="gcp-resize-handle gcp-resize-bottom" data-dir="bottom"></span>
@@ -4526,7 +4526,7 @@
     if (!button) return;
     const enabled = audioSettings.ttsEnabled !== false;
     button.classList.toggle('is-off', !enabled);
-    button.textContent = enabled ? 'TTS' : 'TTS-';
+    button.textContent = '🗣';
     button.title = enabled
       ? 'Focus Wallet TTS is ON. Click to turn it off.'
       : 'Focus Wallet TTS is OFF. Click to turn it on.';
@@ -4800,6 +4800,9 @@
 
         window.open(url, '_blank', 'noopener,noreferrer');
       });
+    });
+    container.querySelectorAll('.gcp-token-ext-icon').forEach((image) => {
+      image.addEventListener('error', () => image.classList.add('is-error'), { once: true });
     });
     container.querySelectorAll('.gcp-mint-tag').forEach(el => {
       el.addEventListener('click', (e) => {

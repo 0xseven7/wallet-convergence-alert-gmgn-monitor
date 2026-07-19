@@ -24,7 +24,20 @@ assert.match(background, /FOMO_MONITOR_PING_EVENT/);
 assert.match(background, /chrome\.storage\.session/, 'health state should survive MV3 service-worker suspension');
 assert.match(background, /restoreFomoMonitorHealth\(\)[\s\S]*updateFomoMonitorHealth\(sender\.tab\.id/, 'heartbeat wake should merge persisted tab state before writing');
 assert.match(background, /chrome\.alarms\.onAlarm[\s\S]*restoreFomoMonitorHealth\(\)[\s\S]*superviseFomoMonitorTabs\(\)/, 'alarm wake should restore persisted health before supervision');
-assert.match(background, /ownerWindow\?\.focused === true/, 'an active tab in an unfocused window is still background work');
+const superviseBlock = background.match(
+  /async function superviseFomoMonitorTabs\(\)[\s\S]*?\n}\n\nasync function openSettingsPageInWindow/
+);
+assert.ok(superviseBlock, 'FOMO supervisor should be locatable');
+assert.match(
+  superviseBlock[0],
+  /refreshedHealth\.visibilityState === 'visible'/,
+  'a visible always-on-top FOMO window must stay healthy even when its Chrome window is not focused'
+);
+assert.doesNotMatch(
+  superviseBlock[0],
+  /ownerWindow\?\.focused === true/,
+  'FOMO visibility must not be inferred from OS window focus'
+);
 assert.match(monitor, /fomo-monitor-heartbeat/);
 assert.match(monitor, /\['buy', 'sell'\]\.includes\(alert\.side\)/, 'both buy and sell alerts should be forwarded');
 assert.match(screen, /\['buy', 'sell'\]\.includes\(side\)/, 'monitor screen should display both directions');

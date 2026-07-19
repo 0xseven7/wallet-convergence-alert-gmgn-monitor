@@ -2,6 +2,7 @@ const OPEN_LINK_MESSAGE = 'open-in-main-window';
 const RELAY_SITE_SOURCE = 'monitor-relay-site';
 const REGISTER_MONITOR_TAB_MESSAGE = 'register-monitor-tab';
 const GET_MONITOR_SCREEN_STATUS_MESSAGE = 'get-monitor-screen-status';
+const SET_MONITOR_SCREEN_FROM_SETTINGS_MESSAGE = 'set-monitor-screen-from-settings';
 const ALLOW_MONITOR_NAVIGATION_MESSAGE = 'allow-monitor-navigation';
 const DISPATCH_GMGN_TWITTER_HOOK_MESSAGE = 'dispatch-gmgn-twitter-trigger-hook';
 const DISPATCH_GMGN_SIGNAL_EVENT_MESSAGE = 'dispatch-gmgn-signal-event';
@@ -207,6 +208,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === GET_MONITOR_SCREEN_STATUS_MESSAGE) {
     ensureMonitorState()
       .then(() => sendResponse(buildMonitorScreenStatus(sender.tab)))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+
+    return true;
+  }
+
+  if (message.type === SET_MONITOR_SCREEN_FROM_SETTINGS_MESSAGE) {
+    setMonitorScreenFromSettings(sender.tab)
+      .then((result) => sendResponse(result))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
 
     return true;
@@ -478,11 +487,8 @@ async function superviseFomoMonitorTabs() {
 
     const refreshedHealth = fomoMonitorHealth.get(tab.id) || health;
     const lastReloadAt = Number(refreshedHealth.lastReloadAt || 0);
-    const ownerWindow = Number.isInteger(tab.windowId)
-      ? await chrome.windows.get(tab.windowId).catch(() => null)
-      : null;
-    const isForegroundVisible = tab.active && ownerWindow?.focused === true;
-    const quietReloadDue = !isForegroundVisible && now - Number(refreshedHealth.loadedAt || now) >= FOMO_MONITOR_QUIET_RELOAD_MS;
+    const isPageVisible = refreshedHealth.visibilityState === 'visible';
+    const quietReloadDue = !isPageVisible && now - Number(refreshedHealth.loadedAt || now) >= FOMO_MONITOR_QUIET_RELOAD_MS;
     const mustRecover = tab.discarded || !ping?.ok;
     if ((mustRecover || quietReloadDue) && now - lastReloadAt >= FOMO_MONITOR_RELOAD_COOLDOWN_MS) {
       fomoMonitorHealth.set(tab.id, { ...refreshedHealth, lastReloadAt: now, loadedAt: now });
@@ -539,6 +545,26 @@ async function setMonitorScreenFromTab(tab, rawUrl) {
   await refreshActionBadges();
 
   return buildMonitorScreenStatus(tab);
+}
+
+async function setMonitorScreenFromSettings(settingsTab) {
+  const windowId = settingsTab && Number.isInteger(settingsTab.windowId) ? settingsTab.windowId : null;
+  if (!Number.isInteger(windowId)) {
+    return { ok: false, error: '无法确定设置页所在的 Chrome 窗口。' };
+  }
+
+  const tabs = await chrome.tabs.query({ windowId });
+  const followTabs = tabs.filter((tab) => Boolean(getMonitorUrlFromTab(tab)));
+  const followTab = followTabs.find((tab) => tab.id === monitorState.tabId) || followTabs[0] || null;
+  if (!followTab) {
+    return { ok: false, error: '当前窗口没有打开 GMGN Follow 页面。' };
+  }
+
+  const result = await setMonitorScreenFromTab(followTab, followTab.pendingUrl || followTab.url);
+  return {
+    ...result,
+    settingsWindowId: windowId
+  };
 }
 
 async function ensureTwitterAudioDefaults() {

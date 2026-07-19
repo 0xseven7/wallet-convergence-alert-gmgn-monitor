@@ -13,6 +13,8 @@ function read(relativePath) {
 const backgroundSource = read('background.js');
 const redirectorSource = read('gmgn/redirector.js');
 const contentSource = read('gmgn/content.js');
+const settingsSource = read('settings.html');
+const popupSource = read('popup.js');
 
 assert.match(
   backgroundSource,
@@ -24,6 +26,36 @@ assert.match(
   backgroundSource,
   /async function setMonitorScreenFromTab/,
   'background must register the monitor screen only from an explicit tab action'
+);
+
+assert.match(
+  backgroundSource,
+  /SET_MONITOR_SCREEN_FROM_SETTINGS_MESSAGE = 'set-monitor-screen-from-settings'/,
+  'background must expose an explicit settings-page monitor-screen action'
+);
+
+assert.match(
+  backgroundSource,
+  /async function setMonitorScreenFromSettings/,
+  'settings-page action must resolve the GMGN Follow tab from the current window'
+);
+
+assert.match(
+  settingsSource,
+  /id="setMonitorScreenBtn"/,
+  'settings page must expose the monitor-screen button away from the lower-right page corner'
+);
+
+assert.match(
+  settingsSource,
+  /id="monitorScreenStatus"/,
+  'settings page must show whether the current window is the monitor screen'
+);
+
+assert.match(
+  popupSource,
+  /SET_MONITOR_SCREEN_FROM_SETTINGS_MESSAGE/,
+  'settings controller must call the dedicated monitor-screen action'
 );
 
 const actionClickBlock = backgroundSource.match(
