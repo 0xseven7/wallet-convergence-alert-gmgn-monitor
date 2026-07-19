@@ -670,12 +670,71 @@
     }
   }
 
+  const FOMO_RENDER_BATCH_MS = 120;
+  let pendingFomoAggregateAlerts = [];
+  let fomoRenderBatchTimer = null;
+
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type !== 'fomo-aggregate-alert' || !message.payload) return false;
-    const result = ingestFomoAggregateAlert(message.payload);
-    sendResponse(result);
+    // Relay persistence happens per event in the background. Only coalesce monitor-screen work here.
+    pendingFomoAggregateAlerts.push(message.payload);
+    if (!fomoRenderBatchTimer) {
+      fomoRenderBatchTimer = setTimeout(flushFomoAggregateAlertBatch, FOMO_RENDER_BATCH_MS);
+    }
+    sendResponse({ ok: true, queued: true });
     return false;
   });
+
+  function flushFomoAggregateAlertBatch() {
+    const batch = pendingFomoAggregateAlerts.splice(0);
+    fomoRenderBatchTimer = null;
+    if (!batch.length) return;
+
+    const touchedAlerts = new Set();
+    let selectedSoundCue = null;
+    let changed = false;
+    for (const payload of batch) {
+      const result = ingestFomoAggregateAlert(payload, { deferRender: true, deferEffects: true });
+      if (result.ok && !result.duplicate && !result.skipped && result.alert) {
+        changed = true;
+        touchedAlerts.add(result.alert);
+        if (result.soundCue && (!selectedSoundCue || result.soundCue.tier > selectedSoundCue.tier)) {
+          selectedSoundCue = result.soundCue;
+        }
+      }
+    }
+    if (!changed) return;
+
+    renderAlerts();
+    if (config.soundEnabled && selectedSoundCue) {
+      playSound(selectedSoundCue.tier, selectedSoundCue.chain);
+      flashBadge();
+    }
+    scheduleFomoNewStateClear(touchedAlerts);
+  }
+
+  function scheduleFomoNewStateClear(touchedAlerts) {
+    const alertsToClear = [...touchedAlerts];
+    if (!alertsToClear.length) return;
+    const nextClearAt = Math.min(...alertsToClear.map((alert) => Number(alert.fomoNewUntil || 0)));
+    const delay = Math.max(0, nextClearAt - Date.now());
+    setTimeout(() => {
+      const now = Date.now();
+      const waiting = [];
+      let changed = false;
+      for (const alert of alertsToClear) {
+        if (!alert.isNew) continue;
+        if (Number(alert.fomoNewUntil || 0) > now) {
+          waiting.push(alert);
+          continue;
+        }
+        alert.isNew = false;
+        changed = true;
+      }
+      if (changed) renderAlerts();
+      if (waiting.length) scheduleFomoNewStateClear(waiting);
+    }, delay);
+  }
 
   function mapFomoSignalToWallet(signal) {
     const side = signal.side === 'sell' ? 'sell' : 'buy';
@@ -692,7 +751,7 @@
     };
   }
 
-  function ingestFomoAggregateAlert(payload) {
+  function ingestFomoAggregateAlert(payload, { deferRender = false, deferEffects = false } = {}) {
     const chain = normalizeChainName(payload.chain);
     const mint = String(payload.tokenAddress || '').trim();
     const token = String(payload.symbol || '').trim() || shortAddress(mint);
@@ -734,10 +793,12 @@
       existing.latestTradeTimeMs = Math.max(Number(existing.latestTradeTimeMs || 0), observedAt);
       existing.updatedAt = Date.now();
       existing.isNew = true;
-      renderAlerts();
-      if (config.soundEnabled) { playSound(side === 'buy' ? Math.max(existing.tier || 1, calcTier(traderCount)) : 1, chain); flashBadge(); }
-      setTimeout(() => { existing.isNew = false; renderAlerts(); }, 1500);
-      return { ok: true, merged: true };
+      existing.fomoNewUntil = Date.now() + 1500;
+      const soundCue = { tier: side === 'buy' ? Math.max(existing.tier || 1, calcTier(traderCount)) : 1, chain };
+      if (!deferRender) renderAlerts();
+      if (!deferEffects && config.soundEnabled) { playSound(soundCue.tier, chain); flashBadge(); }
+      if (!deferRender) scheduleFomoNewStateClear([existing]);
+      return { ok: true, merged: true, alert: existing, soundCue };
     }
     const alert = {
       token,
@@ -762,6 +823,7 @@
       triggeredAt: Date.now(),
       updatedAt: Date.now(),
       isNew: true,
+      fomoNewUntil: Date.now() + 1500,
       externalSource: 'fomo',
       externalStableKey: stableKey,
       fomoSignals: [fomoSignal],
@@ -769,13 +831,13 @@
     };
     alerts.unshift(alert);
     pruneHiddenAlertsState();
-    renderAlerts();
-    if (config.soundEnabled) {
+    if (!deferRender) renderAlerts();
+    if (!deferEffects && config.soundEnabled) {
       playSound(alert.tier || 1, chain);
       flashBadge();
     }
-    setTimeout(() => { alert.isNew = false; renderAlerts(); }, 1500);
-    return { ok: true };
+    if (!deferRender) scheduleFomoNewStateClear([alert]);
+    return { ok: true, alert, soundCue: { tier: alert.tier || 1, chain } };
   }
 
   function startSharedPoolSync() {

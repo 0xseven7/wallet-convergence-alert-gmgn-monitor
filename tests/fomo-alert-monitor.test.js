@@ -117,6 +117,11 @@ assert.match(backgroundSource, /dispatchFocusBuyToRelay\(focusBuy, settings\)/, 
 assert.match(backgroundSource, /source:\s*'fomo-alert'/, 'Market Watch item should retain its FOMO source');
 assert.match(monitorSource, /fomoAlertSeenV2/, 'seen alerts should persist across hidden-tab reloads');
 assert.match(convergenceSource, /getAlertGroupKey\(\{ token, mint, chain \}\)/, 'FOMO should merge by the same token group key as GMGN');
+assert.match(convergenceSource, /pendingFomoAggregateAlerts\.push\(message\.payload\)/, 'FOMO events should enter the monitor render queue one by one');
+assert.match(convergenceSource, /setTimeout\(flushFomoAggregateAlertBatch, FOMO_RENDER_BATCH_MS\)/, 'FOMO monitor rendering should be coalesced into short batches');
+assert.match(convergenceSource, /ingestFomoAggregateAlert\(payload, \{ deferRender: true, deferEffects: true \}\)/, 'a FOMO batch should merge all events before rendering or playing cues');
+assert.match(convergenceSource, /function flushFomoAggregateAlertBatch\(\)[\s\S]*if \(!changed\) return;[\s\S]*renderAlerts\(\);[\s\S]*scheduleFomoNewStateClear\(touchedAlerts\)/, 'each FOMO batch should render once and clear highlights together');
+assert.match(convergenceSource, /if \(config\.soundEnabled && selectedSoundCue\)[\s\S]*playSound\(selectedSoundCue\.tier, selectedSoundCue\.chain\)/, 'each FOMO batch should play at most one highest-priority cue');
 assert.match(convergenceSource, /existing\.wallets = \[\.\.\.walletDetails, \.\.\.fomoWallets\]/, 'GMGN wallet rows should preserve merged FOMO rows');
 assert.match(convergenceSource, /FOMO \$\{fomoAggregateTraderCount\} buyers/, 'the fused card should expose FOMO aggregate buyer count');
 assert.match(convergenceSource, /FOMO \$\{fomoAggregateSellerCount\} sellers/, 'the fused card should expose FOMO aggregate seller count');
