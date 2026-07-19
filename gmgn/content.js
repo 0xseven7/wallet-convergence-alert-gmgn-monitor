@@ -738,10 +738,13 @@
 
   function mapFomoSignalToWallet(signal) {
     const side = signal.side === 'sell' ? 'sell' : 'buy';
+    const traderLabel = signal.traderName
+      ? `@${signal.traderName}`
+      : (shortAddress(signal.traderAddress) || 'trader');
     return {
       name: signal.alertKind === 'trader'
-        ? `FOMO @${signal.traderName} ${side.toUpperCase()}`
-        : `FOMO ${signal.traderCount} ${side.toUpperCase()}`,
+        ? traderLabel
+        : formatFomoActorCount(signal.traderCount, side),
       amount: signal.amountText,
       timeAgo: signal.displayTime,
       address: signal.traderAddress || '',
@@ -749,6 +752,12 @@
       side,
       stableKey: signal.stableKey
     };
+  }
+
+  function formatFomoActorCount(count, side) {
+    const normalizedCount = Math.max(0, Number(count || 0));
+    const noun = side === 'sell' ? 'seller' : 'buyer';
+    return `${normalizedCount} ${noun}${normalizedCount === 1 ? '' : 's'}`;
   }
 
   function ingestFomoAggregateAlert(payload, { deferRender = false, deferEffects = false } = {}) {
@@ -805,18 +814,10 @@
       mint,
       chain,
       tokenLogo: '',
-      platform: { tag: 'FOMO', label: 'FOMO Alert', cls: 'gcp-plat-fomo' },
       walletCount: 0,
       effectiveCount: 0,
       closedCount: 0,
-      wallets: [{
-        name: isTraderAlert ? `FOMO @${traderName} ${side.toUpperCase()}` : `FOMO ${traderCount} ${side.toUpperCase()}`,
-        amount: String(payload.amountText || ''),
-        timeAgo: String(payload.displayTime || ''),
-        address: String(payload.traderAddress || ''),
-        external: true,
-        side
-      }],
+      wallets: [mapFomoSignalToWallet(fomoSignal)],
       mcap: String(payload.marketCapText || ''),
       latestTradeTimeMs: observedAt,
       tier: side === 'buy' ? calcTier(traderCount) : 1,
@@ -4796,10 +4797,10 @@
           && fomoAggregateSellerCount === 0;
         const countLabel = [
           effective > 0 ? `${effective} wallets` : '',
-          fomoRealBuyerCount > 0 ? `FOMO ${fomoRealBuyerCount} buyers` : '',
-          fomoAggregateTraderCount > 0 ? `FOMO ${fomoAggregateTraderCount} buyers` : '',
-          fomoRealSellerCount > 0 ? `FOMO ${fomoRealSellerCount} sellers` : '',
-          fomoAggregateSellerCount > 0 ? `FOMO ${fomoAggregateSellerCount} sellers` : ''
+          fomoRealBuyerCount > 0 ? formatFomoActorCount(fomoRealBuyerCount, 'buy') : '',
+          fomoAggregateTraderCount > 0 ? formatFomoActorCount(fomoAggregateTraderCount, 'buy') : '',
+          fomoRealSellerCount > 0 ? formatFomoActorCount(fomoRealSellerCount, 'sell') : '',
+          fomoAggregateSellerCount > 0 ? formatFomoActorCount(fomoAggregateSellerCount, 'sell') : ''
         ].filter(Boolean).join(' · ');
         return `
         <div class="gcp-alert-item gcp-tier-${tier} ${a.isNew ? 'is-new' : ''} ${isFaded ? 'is-faded' : ''}" data-token="${escHtml(a.token)}">

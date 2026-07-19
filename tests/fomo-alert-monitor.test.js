@@ -123,8 +123,10 @@ assert.match(convergenceSource, /ingestFomoAggregateAlert\(payload, \{ deferRend
 assert.match(convergenceSource, /function flushFomoAggregateAlertBatch\(\)[\s\S]*if \(!changed\) return;[\s\S]*renderAlerts\(\);[\s\S]*scheduleFomoNewStateClear\(touchedAlerts\)/, 'each FOMO batch should render once and clear highlights together');
 assert.match(convergenceSource, /if \(config\.soundEnabled && selectedSoundCue\)[\s\S]*playSound\(selectedSoundCue\.tier, selectedSoundCue\.chain\)/, 'each FOMO batch should play at most one highest-priority cue');
 assert.match(convergenceSource, /existing\.wallets = \[\.\.\.walletDetails, \.\.\.fomoWallets\]/, 'GMGN wallet rows should preserve merged FOMO rows');
-assert.match(convergenceSource, /FOMO \$\{fomoAggregateTraderCount\} buyers/, 'the fused card should expose FOMO aggregate buyer count');
-assert.match(convergenceSource, /FOMO \$\{fomoAggregateSellerCount\} sellers/, 'the fused card should expose FOMO aggregate seller count');
+assert.match(convergenceSource, /fomoAggregateTraderCount > 0 \? formatFomoActorCount\(fomoAggregateTraderCount, 'buy'\)/, 'the fused card should expose aggregate buyer count without repeating the source name');
+assert.match(convergenceSource, /fomoAggregateSellerCount > 0 \? formatFomoActorCount\(fomoAggregateSellerCount, 'sell'\)/, 'the fused card should expose aggregate seller count without repeating the source name');
+assert.match(convergenceSource, /name: signal\.alertKind === 'trader'[\s\S]*\? traderLabel[\s\S]*: formatFomoActorCount\(signal\.traderCount, side\)/, 'FOMO wallet rows should use the same compact name-first copy as GMGN rows');
+assert.doesNotMatch(convergenceSource, /platform: \{ tag: 'FOMO'/, 'the clickable FOMO icon should replace the repeated text platform badge');
 assert.match(convergenceSource, /tier:\s*side === 'buy' \? calcTier\(traderCount\) : 1/, 'sell alerts should not inflate bullish alert tier');
 
 console.log('fomo alert monitor tests passed');
