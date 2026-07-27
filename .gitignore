@@ -6,6 +6,7 @@ dist/
 Thumbs.db
 node_modules/
 gmgn-trade-service/data/
+relay/data/
 .Private_key.txt
 .env
 docs/wallet.json

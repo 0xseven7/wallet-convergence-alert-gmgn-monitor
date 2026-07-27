@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Wallet Convergence Alert",
-  "version": "1.9.6",
+  "version": "1.9.7",
   "description": "Monitor xxyy.io and gmgn.ai wallet tracking panels, alert on wallet convergence, and redirect GMGN monitor links to the main window.",
-  "permissions": ["storage", "tabs", "windows", "unlimitedStorage"],
+  "permissions": ["storage", "tabs", "windows", "alarms", "unlimitedStorage"],
   "host_permissions": [
     "http://*/*",
     "https://*/*",
@@ -50,6 +50,35 @@
       "run_at": "document_start"
     },
     {
+      "matches": [
+        "https://gmgn.ai/follow*",
+        "https://www.gmgn.ai/follow*",
+        "https://gmgn.ai/*/follow*",
+        "https://www.gmgn.ai/*/follow*",
+        "https://gmgn.ai/address/*",
+        "https://www.gmgn.ai/address/*",
+        "https://gmgn.ai/*/address/*",
+        "https://www.gmgn.ai/*/address/*"
+      ],
+      "js": ["gmgn/focus-address-quick-add.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://market-watch.macmini.lan/*"
+      ],
+      "js": ["relay-site-open-bridge.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://market-watch.macmini.lan/*"
+      ],
+      "js": ["relay-site-redirector.js"],
+      "run_at": "document_start"
+    },
+    {
       "matches": ["https://gmgn.ai/*", "https://www.gmgn.ai/*"],
       "js": ["gmgn/twitter-audio-inject.js"],
       "run_at": "document_start",
@@ -64,18 +93,6 @@
       "matches": ["https://gmgn.ai/*", "https://www.gmgn.ai/*"],
       "js": ["gmgn/twitter-trigger-hook.js"],
       "run_at": "document_start"
-    },
-    {
-      "matches": [
-        "https://gmgn.ai/*",
-        "https://www.gmgn.ai/*",
-        "https://*.gmgn.ai/*",
-        "https://fomo.family/*",
-        "https://www.fomo.family/*",
-        "https://*.fomo.family/*"
-      ],
-      "js": ["gmgn/token-quick-add.js"],
-      "run_at": "document_idle"
     },
     {
       "matches": [
@@ -115,6 +132,35 @@
       ],
       "js": ["gmgn/content.js"],
       "css": ["gmgn/styles.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://fomo.family/tokens/*",
+        "https://www.fomo.family/tokens/*",
+        "https://*.fomo.family/tokens/*"
+      ],
+      "js": ["fomo/collector-performance.js", "fomo/ws-bridge.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://fomo.family/tokens/*",
+        "https://www.fomo.family/tokens/*",
+        "https://*.fomo.family/tokens/*"
+      ],
+      "js": ["fomo/collector-mode.js"],
+      "css": ["fomo/collector-mode.css"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://fomo.family/tokens/*",
+        "https://www.fomo.family/tokens/*",
+        "https://*.fomo.family/tokens/*"
+      ],
+      "js": ["fomo/alerts-monitor.js"],
       "run_at": "document_idle"
     }
   ],

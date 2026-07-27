@@ -1,20 +1,42 @@
 const OPEN_LINK_MESSAGE = 'open-in-main-window';
-const SET_MAIN_WINDOW_MESSAGE = 'set-main-window';
-const GET_MAIN_WINDOW_MESSAGE = 'get-main-window';
-const CLEAR_MAIN_WINDOW_MESSAGE = 'clear-main-window';
+const RELAY_SITE_SOURCE = 'monitor-relay-site';
+const MONITOR_SCREEN_LINK_SOURCE = 'gmgn-monitor-screen';
 const REGISTER_MONITOR_TAB_MESSAGE = 'register-monitor-tab';
+const GET_MONITOR_SCREEN_STATUS_MESSAGE = 'get-monitor-screen-status';
+const SET_MONITOR_SCREEN_FROM_SETTINGS_MESSAGE = 'set-monitor-screen-from-settings';
 const ALLOW_MONITOR_NAVIGATION_MESSAGE = 'allow-monitor-navigation';
 const DISPATCH_GMGN_TWITTER_HOOK_MESSAGE = 'dispatch-gmgn-twitter-trigger-hook';
 const DISPATCH_GMGN_SIGNAL_EVENT_MESSAGE = 'dispatch-gmgn-signal-event';
 const FETCH_TWITTER_TTS_AUDIO_MESSAGE = 'fetch-twitter-tts-audio';
 const GMGN_TOKEN_QUICK_ADD_MESSAGE = 'gmgn-token-quick-add';
 const GMGN_OPEN_TOKEN_COUNTERPART_MESSAGE = 'gmgn-open-token-counterpart';
-const GMGN_TOKEN_QUICK_ADD_URL = 'http://127.0.0.1:17387/quick-add';
-const GMGN_TOKEN_QUICK_ADD_STATUS_URL = 'http://127.0.0.1:17387/quick-add/status';
-const GMGN_TOKEN_QUICK_ADD_REMOVE_URL = 'http://127.0.0.1:17387/quick-add/remove';
+const GMGN_FOCUS_ADDRESS_QUICK_ADD_MESSAGE = 'gmgn-focus-address-quick-add';
+const GMGN_FOCUS_ADDRESS_RELAY_REQUEST_MESSAGE = 'gmgn-focus-address-relay-request';
+const DEFAULT_MARKET_WATCH_DESK_BASE_URL = 'http://127.0.0.1:17387';
+const DEFAULT_MAIN_SCREEN_RELAY_BASE_URL = 'https://market-watch.macmini.lan';
+const FOMO_AGGREGATE_ALERT_EVENT = 'fomo-aggregate-alert';
+const FOMO_RECENT_ALERTS_REQUEST_EVENT = 'get-recent-fomo-alerts';
+const FOMO_THESIS_EVENT = 'fomo-thesis-event';
+const FOMO_MONITOR_HEARTBEAT_EVENT = 'fomo-monitor-heartbeat';
+const FOMO_MONITOR_PING_EVENT = 'fomo-monitor-ping';
+const FOMO_MONITOR_ALARM = 'fomo-monitor-health-check';
+const FOMO_MONITOR_HEALTH_STORAGE_KEY = 'fomoMonitorHealthV1';
+const FOMO_MONITOR_URL_STORAGE_KEY = 'fomoMonitorUrlV1';
+const FOMO_RECENT_ALERTS_STORAGE_KEY = 'fomoRecentAlertsV1';
+const FOMO_RECENT_ALERT_RETENTION_MS = 30 * 60 * 1000;
+const FOMO_RECENT_ALERT_MAX_ITEMS = 1000;
+const DEFAULT_FOMO_MONITOR_URL = 'https://fomo.family/tokens/robinhood/0x020bfc650a365f8bb26819deaabf3e21291018b4';
+const FOMO_MONITOR_URL_PATTERNS = [
+  'https://fomo.family/tokens/*',
+  'https://www.fomo.family/tokens/*',
+  'https://*.fomo.family/tokens/*'
+];
+const FOMO_MONITOR_CHECK_MINUTES = 1;
+const FOMO_MONITOR_QUIET_RELOAD_MS = 15 * 60 * 1000;
+const FOMO_MONITOR_RELOAD_COOLDOWN_MS = 2 * 60 * 1000;
+const FOMO_MONITOR_WS_RECOVERY_MS = 60 * 1000;
+const LEGACY_MAIN_SCREEN_RELAY_BASE_URL = 'http://127.0.0.1:17390';
 const DEFAULT_TTS_API = 'http://tts.macmini.lan/tts/v3-task';
-const LEGACY_MAIN_WINDOW_STORAGE_KEY = 'mainWindowId';
-const MAIN_WINDOW_STORAGE_KEY = 'mainWindowState';
 const MONITOR_STATE_STORAGE_KEY = 'monitorState';
 const DEFAULT_MONITOR_URL = 'https://gmgn.ai/follow';
 const SETTINGS_PAGE_PATH = 'settings.html';
@@ -22,7 +44,9 @@ const TWITTER_AUDIO_MAPPING_STORAGE_KEY = 'twitterAudioMappings';
 const GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY = 'gmgnTwitterTriggerHookSettings';
 const GMGN_TWITTER_TRIGGER_RULES_KEY = 'gmgnTwitterTriggerRules';
 const GMGN_TWITTER_TRADE_PROFILES_KEY = 'gmgnTwitterTradeProfiles';
-const GMGN_FOLLOW_CHAIN_SEGMENT = '(?:sol|eth|bsc|base|tron|blast)';
+const GMGN_FOCUS_ADDRESSES_KEY = 'gmgnFocusAddresses';
+const GMGN_FOCUS_ADDRESS_LOCAL_SOURCE = 'gmgn-monitor-address-page';
+const GMGN_FOLLOW_CHAIN_SEGMENT = '(?:sol|eth|bsc|base|tron|blast|robinhood)';
 const TWITTER_AUDIO_DEFAULTS = {
   twitterAudioMappings: {
     elonmusk: { id: 'elonmusk.MP3', name: 'elonmusk.MP3', remark: '' },
@@ -57,6 +81,9 @@ const GMGN_TWITTER_TRIGGER_HOOK_DEFAULTS = {
   eventApiToken: '',
   eventSendWalletTrades: true,
   eventSendConvergenceAlerts: true,
+  focusBuysEnabled: true,
+  marketWatchDeskBaseUrl: DEFAULT_MARKET_WATCH_DESK_BASE_URL,
+  mainScreenRelayBaseUrl: DEFAULT_MAIN_SCREEN_RELAY_BASE_URL,
   directCaEnabled: false,
   directCaChain: 'bsc',
   directCaBuyAmount: '',
@@ -72,6 +99,11 @@ let monitorState = {
   allowedNavigationUrl: null,
   suppressNextRedirect: false
 };
+const fomoMonitorHealth = new Map();
+let fomoMonitorCreatePromise = null;
+let fomoRecentAlertsCache = null;
+let fomoRecentAlertsLoadPromise = null;
+let fomoRecentAlertsPersistTimer = null;
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !message.type) {
@@ -79,9 +111,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === OPEN_LINK_MESSAGE && message.url) {
-    const monitorWindowId = sender.tab ? sender.tab.windowId : undefined;
-
-    openInMainWindow(message.url, monitorWindowId)
+    openLinkMessageInMainWindow(message, sender)
       .then((result) => sendResponse(result))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
 
@@ -104,6 +134,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === FOMO_AGGREGATE_ALERT_EVENT && message.payload) {
+    handleFomoAggregateAlert(message.payload)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message.type === FOMO_RECENT_ALERTS_REQUEST_EVENT) {
+    getRecentFomoAlerts()
+      .then((items) => sendResponse({ ok: true, items }))
+      .catch((error) => sendResponse({ ok: false, items: [], error: error.message }));
+    return true;
+  }
+
+  if (message.type === FOMO_THESIS_EVENT && message.payload) {
+    handleFomoThesisEvent(message.payload)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message.type === FOMO_MONITOR_HEARTBEAT_EVENT && sender.tab?.id) {
+    restoreFomoMonitorHealth()
+      .then(() => updateFomoMonitorHealth(sender.tab.id, message.payload))
+      .then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false }));
+    return true;
+  }
+
   if (message.type === FETCH_TWITTER_TTS_AUDIO_MESSAGE && message.payload) {
     fetchTwitterTtsAudio(message.payload)
       .then((result) => sendResponse(result))
@@ -120,6 +179,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === GMGN_FOCUS_ADDRESS_QUICK_ADD_MESSAGE && message.payload) {
+    quickAddGmgnFocusAddress(message.payload, message.action || message.payload.action)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+
+    return true;
+  }
+
+  if (message.type === GMGN_FOCUS_ADDRESS_RELAY_REQUEST_MESSAGE && message.request) {
+    requestFocusAddressesThroughRelay(message.request, sender)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+
+    return true;
+  }
+
   if (message.type === GMGN_OPEN_TOKEN_COUNTERPART_MESSAGE && message.url) {
     const preferredWindowId = sender.tab ? sender.tab.windowId : null;
     openTokenCounterpartUrl(message.url, preferredWindowId)
@@ -129,45 +204,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message.type === SET_MAIN_WINDOW_MESSAGE && Number.isInteger(message.windowId)) {
-    setMainWindow(message.windowId)
+  if (message.type === REGISTER_MONITOR_TAB_MESSAGE) {
+    setMonitorScreenFromTab(sender.tab, message.url)
       .then((result) => sendResponse(result))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
 
     return true;
   }
 
-  if (message.type === GET_MAIN_WINDOW_MESSAGE) {
-    getMainWindowState()
-      .then((result) => sendResponse({ ok: true, ...result }))
+  if (message.type === GET_MONITOR_SCREEN_STATUS_MESSAGE) {
+    ensureMonitorState()
+      .then(() => sendResponse(buildMonitorScreenStatus(sender.tab)))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
 
     return true;
   }
 
-  if (message.type === CLEAR_MAIN_WINDOW_MESSAGE) {
-    clearMainWindow()
-      .then(() => sendResponse({ ok: true }))
+  if (message.type === SET_MONITOR_SCREEN_FROM_SETTINGS_MESSAGE) {
+    setMonitorScreenFromSettings(sender.tab)
+      .then((result) => sendResponse(result))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
 
     return true;
-  }
-
-  if (message.type === REGISTER_MONITOR_TAB_MESSAGE) {
-    const tabId = sender.tab ? sender.tab.id : null;
-    const windowId = sender.tab ? sender.tab.windowId : null;
-
-    monitorState = {
-      ...monitorState,
-      tabId,
-      windowId,
-      followUrl: normalizeMonitorUrl(message.url) || DEFAULT_MONITOR_URL
-    };
-    persistMonitorState();
-    void refreshActionBadges();
-
-    sendResponse({ ok: true, tabId, windowId, followUrl: monitorState.followUrl });
-    return false;
   }
 
   if (message.type === ALLOW_MONITOR_NAVIGATION_MESSAGE) {
@@ -181,8 +239,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  const fomoTabUrl = tab?.url || changeInfo.url;
+  if (isFomoTokenUrl(fomoTabUrl)) {
+    await restoreFomoMonitorHealth();
+    await rememberFomoMonitorUrl(fomoTabUrl);
+    await chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => null);
+    if (changeInfo.status === 'complete') {
+      updateFomoMonitorHealth(tabId, { loadedAt: Date.now(), lastScanAt: Date.now() });
+    }
+  }
   await ensureMonitorState();
-  await refreshStoredMainWindowSnapshotForTab(tab);
   await refreshActionBadges();
 
   if (!changeInfo.url) {
@@ -196,7 +262,11 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
   if (tab.openerTabId === monitorState.tabId && isExternalToGmgn(nextUrl)) {
     try {
-      await openInMainWindow(nextUrl, monitorState.windowId || tab.windowId);
+      await openInMainWindow(
+        nextUrl,
+        monitorState.windowId || tab.windowId,
+        buildMonitorScreenRelayOptions()
+      );
       await chrome.tabs.remove(tabId);
     } catch (_error) {
       return;
@@ -233,7 +303,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   const monitorWindowId = tab.windowId;
 
   try {
-    await openInMainWindow(nextUrl, monitorWindowId);
+    await openInMainWindow(nextUrl, monitorWindowId, buildMonitorScreenRelayOptions());
   } catch (_error) {
     return;
   }
@@ -253,34 +323,42 @@ chrome.tabs.onActivated.addListener(() => {
   void refreshActionBadges();
 });
 
-chrome.tabs.onCreated.addListener((tab) => {
-  void refreshStoredMainWindowSnapshotForTab(tab);
+chrome.tabs.onCreated.addListener(() => {
   void refreshActionBadges();
 });
 
-chrome.tabs.onAttached.addListener((_tabId, attachInfo) => {
-  void refreshStoredMainWindowSnapshot(attachInfo.newWindowId);
+chrome.tabs.onAttached.addListener(() => {
   void refreshActionBadges();
 });
 
-chrome.tabs.onDetached.addListener((_tabId, detachInfo) => {
-  void refreshStoredMainWindowSnapshot(detachInfo.oldWindowId);
+chrome.tabs.onDetached.addListener(() => {
   void refreshActionBadges();
 });
 
-chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
+chrome.tabs.onRemoved.addListener((tabId, removeInfo = {}) => {
+  void removeFomoMonitorHealth(tabId);
   if (tabId === monitorState.tabId) {
-    monitorState = {
-      tabId: null,
-      windowId: null,
-      followUrl: DEFAULT_MONITOR_URL,
-      allowedNavigationUrl: null,
-      suppressNextRedirect: false
-    };
+    if (removeInfo.isWindowClosing) {
+      monitorState = {
+        tabId: null,
+        windowId: null,
+        followUrl: DEFAULT_MONITOR_URL,
+        allowedNavigationUrl: null,
+        suppressNextRedirect: false
+      };
+    } else {
+      monitorState = {
+        ...monitorState,
+        tabId: null,
+        windowId: Number.isInteger(removeInfo.windowId) ? removeInfo.windowId : monitorState.windowId,
+        followUrl: normalizeMonitorUrl(monitorState.followUrl) || DEFAULT_MONITOR_URL,
+        allowedNavigationUrl: null,
+        suppressNextRedirect: false
+      };
+    }
     persistMonitorState();
   }
 
-  void refreshStoredMainWindowSnapshot(removeInfo.windowId);
   void refreshActionBadges();
 });
 
@@ -296,11 +374,254 @@ chrome.runtime.onInstalled.addListener(() => {
   void initializeExtensionState();
 });
 
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === FOMO_MONITOR_ALARM) {
+    void (async () => {
+      await restoreFomoMonitorHealth();
+      await superviseFomoMonitorTabs();
+    })();
+  }
+});
+
 async function initializeExtensionState() {
   await ensureMonitorState();
   await ensureTwitterAudioDefaults();
   await ensureGmgnTwitterTriggerHookDefaults();
   await refreshActionBadges();
+  await restoreFomoMonitorHealth();
+  await ensureFomoMonitorAlarm();
+  await superviseFomoMonitorTabs();
+}
+
+async function openLinkMessageInMainWindow(message, sender) {
+  await ensureMonitorState();
+  const monitorWindowId = sender.tab ? sender.tab.windowId : undefined;
+  const messageSource = String(message.source || '').trim();
+  const sourceOrigin = String(message.sourceOrigin || '').trim();
+  const trustedMonitorScreen = message.allowAnyHttpUrl === true
+    && messageSource === MONITOR_SCREEN_LINK_SOURCE
+    && sender.tab
+    && sender.tab.windowId === monitorState.windowId
+    && /^https:\/\/([^.]+\.)?gmgn\.ai$/i.test(sourceOrigin);
+  const trustedRelaySite = message.allowAnyHttpUrl === true
+    && messageSource === RELAY_SITE_SOURCE;
+
+  return openInMainWindow(message.url, monitorWindowId, {
+    relayBaseUrl: message.relayBaseUrl,
+    relayOnly: message.relayOnly === true,
+    allowAnyHttpUrl: trustedMonitorScreen || trustedRelaySite,
+    source: messageSource,
+    sourceOrigin
+  });
+}
+
+function buildMonitorScreenRelayOptions() {
+  let sourceOrigin = 'https://gmgn.ai';
+  try {
+    sourceOrigin = new URL(monitorState.followUrl || DEFAULT_MONITOR_URL).origin;
+  } catch (_error) {}
+  return {
+    allowAnyHttpUrl: true,
+    source: MONITOR_SCREEN_LINK_SOURCE,
+    sourceOrigin
+  };
+}
+
+function isFomoTokenUrl(rawUrl) {
+  try {
+    const parsed = new URL(String(rawUrl || ''));
+    return parsed.protocol === 'https:'
+      && (parsed.hostname === 'fomo.family' || parsed.hostname.endsWith('.fomo.family'))
+      && parsed.pathname.startsWith('/tokens/');
+  } catch (_error) {
+    return false;
+  }
+}
+
+function updateFomoMonitorHealth(tabId, payload = {}) {
+  if (!Number.isInteger(tabId)) return;
+  const current = fomoMonitorHealth.get(tabId) || {};
+  fomoMonitorHealth.set(tabId, {
+    ...current,
+    ...payload,
+    heartbeatAt: Date.now()
+  });
+  void persistFomoMonitorHealth();
+}
+
+async function restoreFomoMonitorHealth() {
+  const stored = await chrome.storage.session.get(FOMO_MONITOR_HEALTH_STORAGE_KEY).catch(() => ({}));
+  const entries = stored?.[FOMO_MONITOR_HEALTH_STORAGE_KEY];
+  if (!entries || typeof entries !== 'object') return;
+  for (const [tabId, health] of Object.entries(entries)) {
+    const numericTabId = Number(tabId);
+    if (Number.isInteger(numericTabId) && health && typeof health === 'object') {
+      fomoMonitorHealth.set(numericTabId, health);
+    }
+  }
+}
+
+async function persistFomoMonitorHealth() {
+  const entries = Object.fromEntries(Array.from(fomoMonitorHealth.entries()).map(([tabId, health]) => [String(tabId), health]));
+  await chrome.storage.session.set({ [FOMO_MONITOR_HEALTH_STORAGE_KEY]: entries }).catch(() => null);
+}
+
+async function removeFomoMonitorHealth(tabId) {
+  await restoreFomoMonitorHealth();
+  fomoMonitorHealth.delete(tabId);
+  await persistFomoMonitorHealth();
+}
+
+function fomoRecentAlertTimestamp(payload) {
+  const observedAt = Number(payload?.observedAt);
+  return Number.isFinite(observedAt) && observedAt > 0 ? observedAt : Date.now();
+}
+
+function fomoRecentAlertKey(payload) {
+  const stableKey = String(payload?.stableKey || '').trim();
+  if (stableKey) return stableKey;
+  return [
+    String(payload?.chain || '').trim().toLowerCase(),
+    String(payload?.tokenAddress || '').trim().toLowerCase(),
+    String(payload?.side || '').trim().toLowerCase(),
+    String(payload?.traderHandle || payload?.traderName || '').trim().toLowerCase(),
+    String(payload?.amountText || '').trim(),
+    fomoRecentAlertTimestamp(payload)
+  ].join('|');
+}
+
+function pruneRecentFomoAlerts(items, now = Date.now()) {
+  const cutoff = now - FOMO_RECENT_ALERT_RETENTION_MS;
+  const byKey = new Map();
+  for (const rawItem of Array.isArray(items) ? items : []) {
+    if (!rawItem || typeof rawItem !== 'object') continue;
+    const observedAt = fomoRecentAlertTimestamp(rawItem);
+    if (observedAt < cutoff || observedAt > now + (5 * 60 * 1000)) continue;
+    const item = { ...rawItem, observedAt };
+    byKey.set(fomoRecentAlertKey(item), item);
+  }
+  return Array.from(byKey.values())
+    .sort((left, right) => fomoRecentAlertTimestamp(left) - fomoRecentAlertTimestamp(right))
+    .slice(-FOMO_RECENT_ALERT_MAX_ITEMS);
+}
+
+async function loadRecentFomoAlertCache() {
+  if (Array.isArray(fomoRecentAlertsCache)) return fomoRecentAlertsCache;
+  if (!fomoRecentAlertsLoadPromise) {
+    fomoRecentAlertsLoadPromise = (async () => {
+      const stored = await chrome.storage.session.get(FOMO_RECENT_ALERTS_STORAGE_KEY).catch(() => ({}));
+      const existing = stored?.[FOMO_RECENT_ALERTS_STORAGE_KEY];
+      fomoRecentAlertsCache = pruneRecentFomoAlerts(existing);
+      return fomoRecentAlertsCache;
+    })().finally(() => {
+      fomoRecentAlertsLoadPromise = null;
+    });
+  }
+  return fomoRecentAlertsLoadPromise;
+}
+
+function persistRecentFomoAlertsSoon() {
+  if (fomoRecentAlertsPersistTimer) return;
+  fomoRecentAlertsPersistTimer = setTimeout(() => {
+    fomoRecentAlertsPersistTimer = null;
+    const items = Array.isArray(fomoRecentAlertsCache) ? fomoRecentAlertsCache : [];
+    chrome.storage.session.set({ [FOMO_RECENT_ALERTS_STORAGE_KEY]: items }).catch(() => null);
+  }, 250);
+}
+
+async function cacheRecentFomoAlert(payload) {
+  const existing = await loadRecentFomoAlertCache();
+  fomoRecentAlertsCache = pruneRecentFomoAlerts([...existing, payload]);
+  persistRecentFomoAlertsSoon();
+  return fomoRecentAlertsCache;
+}
+
+async function getRecentFomoAlerts() {
+  const existing = await loadRecentFomoAlertCache();
+  const items = pruneRecentFomoAlerts(existing);
+  if (items.length !== existing.length) {
+    fomoRecentAlertsCache = items;
+    persistRecentFomoAlertsSoon();
+  }
+  return items.map((item) => ({ ...item }));
+}
+
+async function ensureFomoMonitorAlarm() {
+  const existing = await chrome.alarms.get(FOMO_MONITOR_ALARM).catch(() => null);
+  if (!existing) {
+    await chrome.alarms.create(FOMO_MONITOR_ALARM, { periodInMinutes: FOMO_MONITOR_CHECK_MINUTES });
+  }
+}
+
+async function rememberFomoMonitorUrl(rawUrl) {
+  const url = String(rawUrl || '').trim();
+  if (!isFomoTokenUrl(url)) return;
+  await chrome.storage.local.set({ [FOMO_MONITOR_URL_STORAGE_KEY]: url }).catch(() => null);
+}
+
+async function preferredFomoMonitorUrl() {
+  const stored = await chrome.storage.local.get(FOMO_MONITOR_URL_STORAGE_KEY).catch(() => ({}));
+  const url = String(stored?.[FOMO_MONITOR_URL_STORAGE_KEY] || '').trim();
+  return isFomoTokenUrl(url) ? url : DEFAULT_FOMO_MONITOR_URL;
+}
+
+async function ensureFomoMonitorTab() {
+  const existingTabs = await chrome.tabs.query({ url: FOMO_MONITOR_URL_PATTERNS }).catch(() => []);
+  const validTabs = existingTabs.filter((tab) => Number.isInteger(tab.id) && isFomoTokenUrl(tab.url));
+  if (validTabs.length) return validTabs;
+
+  if (!fomoMonitorCreatePromise) {
+    fomoMonitorCreatePromise = (async () => {
+      const url = await preferredFomoMonitorUrl();
+      const createdTab = await chrome.tabs.create({
+        url,
+        active: false,
+        pinned: true
+      }).catch(() => null);
+      if (!createdTab || !Number.isInteger(createdTab.id)) return null;
+      await chrome.tabs.update(createdTab.id, { autoDiscardable: false }).catch(() => null);
+      await rememberFomoMonitorUrl(url);
+      return createdTab;
+    })().finally(() => {
+      fomoMonitorCreatePromise = null;
+    });
+  }
+
+  const createdTab = await fomoMonitorCreatePromise;
+  return createdTab ? [createdTab] : [];
+}
+
+async function superviseFomoMonitorTabs() {
+  const tabs = await ensureFomoMonitorTab();
+  const now = Date.now();
+  for (const tab of tabs) {
+    if (!Number.isInteger(tab.id) || !isFomoTokenUrl(tab.url)) continue;
+    await chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => null);
+    const health = fomoMonitorHealth.get(tab.id) || {};
+    const ping = tab.discarded ? null : await chrome.tabs.sendMessage(tab.id, {
+      type: FOMO_MONITOR_PING_EVENT,
+      requestedAt: now
+    }).catch(() => null);
+    if (ping?.ok) updateFomoMonitorHealth(tab.id, { loadedAt: health.loadedAt || ping.status?.pageStartedAt || now, ...(ping.status || {}) });
+
+    const refreshedHealth = fomoMonitorHealth.get(tab.id) || health;
+    const lastReloadAt = Number(refreshedHealth.lastReloadAt || 0);
+    const isPageVisible = refreshedHealth.visibilityState === 'visible';
+    const quietReloadDue = !isPageVisible && now - Number(refreshedHealth.loadedAt || now) >= FOMO_MONITOR_QUIET_RELOAD_MS;
+    const wsWasReady = Number(refreshedHealth.wsReadyAt || 0) > 0;
+    const wsStatus = String(refreshedHealth.wsStatus || '');
+    const wsUnhealthySince = Number(refreshedHealth.wsUnhealthySince || 0);
+    const wsUnhealthyTooLong = wsWasReady
+      && wsStatus !== 'ready'
+      && wsUnhealthySince > 0
+      && now - wsUnhealthySince >= FOMO_MONITOR_WS_RECOVERY_MS;
+    const mustRecover = tab.discarded || !ping?.ok || wsUnhealthyTooLong;
+    if ((mustRecover || quietReloadDue) && now - lastReloadAt >= FOMO_MONITOR_RELOAD_COOLDOWN_MS) {
+      fomoMonitorHealth.set(tab.id, { ...refreshedHealth, lastReloadAt: now, loadedAt: now });
+      await persistFomoMonitorHealth();
+      await chrome.tabs.reload(tab.id).catch(() => null);
+    }
+  }
 }
 
 async function openSettingsPageInWindow(preferredWindowId) {
@@ -327,6 +648,49 @@ async function openSettingsPageInWindow(preferredWindowId) {
   if (Number.isInteger(createdTab.windowId)) {
     await chrome.windows.update(createdTab.windowId, { focused: true });
   }
+}
+
+async function setMonitorScreenFromTab(tab, rawUrl) {
+  const tabId = tab && Number.isInteger(tab.id) ? tab.id : null;
+  const windowId = tab && Number.isInteger(tab.windowId) ? tab.windowId : null;
+  const followUrl = normalizeMonitorUrl(rawUrl) || getMonitorUrlFromTab(tab);
+
+  if (!Number.isInteger(tabId) || !Number.isInteger(windowId) || !followUrl) {
+    return { ok: false, error: 'Current tab is not a GMGN follow page.' };
+  }
+
+  monitorState = {
+    ...monitorState,
+    tabId,
+    windowId,
+    followUrl,
+    allowedNavigationUrl: null,
+    suppressNextRedirect: false
+  };
+  persistMonitorState();
+  await refreshActionBadges();
+
+  return buildMonitorScreenStatus(tab);
+}
+
+async function setMonitorScreenFromSettings(settingsTab) {
+  const windowId = settingsTab && Number.isInteger(settingsTab.windowId) ? settingsTab.windowId : null;
+  if (!Number.isInteger(windowId)) {
+    return { ok: false, error: '无法确定设置页所在的 Chrome 窗口。' };
+  }
+
+  const tabs = await chrome.tabs.query({ windowId });
+  const followTabs = tabs.filter((tab) => Boolean(getMonitorUrlFromTab(tab)));
+  const followTab = followTabs.find((tab) => tab.id === monitorState.tabId) || followTabs[0] || null;
+  if (!followTab) {
+    return { ok: false, error: '当前窗口没有打开 GMGN Follow 页面。' };
+  }
+
+  const result = await setMonitorScreenFromTab(followTab, followTab.pendingUrl || followTab.url);
+  return {
+    ...result,
+    settingsWindowId: windowId
+  };
 }
 
 async function ensureTwitterAudioDefaults() {
@@ -433,6 +797,11 @@ function normalizeGmgnTwitterTriggerHookSettings(raw) {
   settings.eventApiToken = typeof settings.eventApiToken === 'string' ? settings.eventApiToken.trim() : '';
   settings.eventSendWalletTrades = settings.eventSendWalletTrades !== false;
   settings.eventSendConvergenceAlerts = settings.eventSendConvergenceAlerts !== false;
+  settings.focusBuysEnabled = typeof settings.focusBuysEnabled === 'boolean'
+    ? settings.focusBuysEnabled
+    : GMGN_TWITTER_TRIGGER_HOOK_DEFAULTS.focusBuysEnabled;
+  settings.marketWatchDeskBaseUrl = normalizeMarketWatchDeskBaseUrl(settings.marketWatchDeskBaseUrl);
+  settings.mainScreenRelayBaseUrl = normalizeMainScreenRelayBaseUrl(settings.mainScreenRelayBaseUrl);
   settings.directCaEnabled = settings.directCaEnabled === true;
   settings.directCaChain = typeof settings.directCaChain === 'string' ? settings.directCaChain.trim().toLowerCase() : 'bsc';
   settings.directCaBuyAmount = typeof settings.directCaBuyAmount === 'string'
@@ -476,6 +845,7 @@ async function dispatchGmgnTwitterTriggerHook(payload) {
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), settings.timeoutMs);
+  const intelligencePromise = dispatchMarketWatchIntelligenceEvent(buildGmgnTwitterIntelligenceEvent(payload));
   const headers = {
     'Content-Type': 'application/json',
     'x-gmgn-hook-source': 'wallet-convergence-alert-gmgn-monitor',
@@ -498,25 +868,180 @@ async function dispatchGmgnTwitterTriggerHook(payload) {
     });
 
     const responseText = await response.text().catch(() => '');
+    const intelligence = await intelligencePromise;
     return {
       ok: response.ok,
       status: response.status,
       statusText: response.statusText,
-      body: responseText.slice(0, 500)
+      body: responseText.slice(0, 500),
+      intelligence
     };
   } catch (error) {
+    const intelligence = await intelligencePromise;
     return {
       ok: false,
       error: error && error.name === 'AbortError'
         ? `Webhook request timed out after ${settings.timeoutMs}ms.`
-        : (error && error.message ? error.message : String(error))
+        : (error && error.message ? error.message : String(error)),
+      intelligence
     };
   } finally {
     clearTimeout(timer);
   }
 }
 
+function buildGmgnTwitterIntelligenceEvent(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  const rule = payload.rule && typeof payload.rule === 'object' ? payload.rule : {};
+  const trigger = payload.trigger && typeof payload.trigger === 'object' ? payload.trigger : {};
+  const actorHandle = String(trigger.username || trigger.twitterId || '').trim().replace(/^@/, '');
+  const actorName = String(trigger.remark || trigger.name || actorHandle).trim();
+  const contractAddress = String(rule.ca || '').trim();
+  const symbol = String(rule.tokenSymbol || '').trim();
+  if (!actorHandle && !actorName) return null;
+  return removeEmptyFields({
+    id: `gmgn-twitter|${String(payload.signalId || trigger.tweetId || '').trim()}|${actorHandle}`,
+    kind: 'twitter',
+    type: 'gmgn_twitter_trigger',
+    chainId: mapMarketWatchChainId(rule.chain),
+    contractAddress,
+    symbol,
+    tokenName: symbol,
+    actorName,
+    actorHandle,
+    text: String(trigger.text || `${actorName} ${trigger.eventType || 'posted'}`).trim(),
+    url: String(trigger.url || '').trim(),
+    source: 'gmgn-twitter-trigger',
+    occurredAt: formatIsoTimestamp(trigger.ts || payload.triggeredAt || Date.now())
+  });
+}
+
 async function dispatchGmgnSignalEvent(payload) {
+  const [focusBuyResult, intelligenceResult, eventApiResult] = await Promise.all([
+    dispatchMarketWatchDeskFocusBuy(payload),
+    dispatchMarketWatchIntelligenceEvent(payload),
+    dispatchGmgnEventApi(payload)
+  ]);
+
+  if (eventApiResult && !eventApiResult.skipped) {
+    return {
+      ...eventApiResult,
+      focusBuy: focusBuyResult,
+      intelligence: intelligenceResult
+    };
+  }
+
+  if (focusBuyResult && !focusBuyResult.skipped) {
+    return {
+      ...focusBuyResult,
+      eventApi: eventApiResult,
+      intelligence: intelligenceResult
+    };
+  }
+
+  if (intelligenceResult && !intelligenceResult.skipped) {
+    return {
+      ...intelligenceResult,
+      eventApi: eventApiResult,
+      focusBuy: focusBuyResult
+    };
+  }
+
+  return {
+    ok: false,
+    skipped: true,
+    error: eventApiResult?.error || focusBuyResult?.error || 'No signal integrations enabled.',
+    eventApi: eventApiResult,
+    focusBuy: focusBuyResult,
+    intelligence: intelligenceResult
+  };
+}
+
+async function dispatchMarketWatchIntelligenceEvent(payload) {
+  const event = buildMarketWatchIntelligenceEvent(payload);
+  if (!event) {
+    return { ok: false, skipped: true, error: 'Signal event is not a Market Watch intelligence event.' };
+  }
+  const stored = await chrome.storage.local.get(GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY);
+  const settings = normalizeGmgnTwitterTriggerHookSettings(stored[GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY]);
+  if (!settings.focusBuysEnabled) {
+    return { ok: false, skipped: true, error: 'Market Watch forwarding is disabled.' };
+  }
+  const requestUrl = buildMainScreenRelayUrl(settings.mainScreenRelayBaseUrl, '/market-watch/api/intelligence-events');
+  if (!requestUrl) {
+    return { ok: false, skipped: true, error: 'Relay Base URL is invalid.' };
+  }
+  const allItems = Array.isArray(event.items) ? event.items : [event];
+  const batches = [];
+  for (let index = 0; index < allItems.length; index += 200) {
+    batches.push(allItems.slice(index, index + 200));
+  }
+
+  let itemsSent = 0;
+  for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
+    const items = batches[batchIndex];
+    let lastResult = null;
+
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const controller = new AbortController();
+      const timeoutMs = Math.min(settings.timeoutMs, 5000);
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetch(requestUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-gmgn-hook-source': 'wallet-convergence-alert-gmgn-monitor',
+            'x-gmgn-hook-event': 'intelligence-event',
+            ...(settings.eventApiToken ? { Authorization: `Bearer ${settings.eventApiToken}` } : {})
+          },
+          body: JSON.stringify({ source: 'gmgn-monitor-extension', payload: { items } }),
+          signal: controller.signal
+        });
+        const responseText = await response.text().catch(() => '');
+        lastResult = {
+          ok: response.ok,
+          status: response.status,
+          statusText: response.statusText,
+          body: responseText.slice(0, 500),
+          attempt
+        };
+      } catch (error) {
+        lastResult = {
+          ok: false,
+          error: error && error.name === 'AbortError'
+            ? `Intelligence event request timed out after ${timeoutMs}ms.`
+            : (error && error.message ? error.message : String(error)),
+          attempt
+        };
+      } finally {
+        clearTimeout(timer);
+      }
+
+      if (lastResult.ok || (lastResult.status && lastResult.status < 500)) {
+        break;
+      }
+      if (attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 250));
+      }
+    }
+
+    if (!lastResult?.ok) {
+      return {
+        ...lastResult,
+        failedBatch: batchIndex + 1,
+        completedBatches: batchIndex,
+        totalBatches: batches.length,
+        itemsSent
+      };
+    }
+    itemsSent += items.length;
+  }
+
+  return { ok: true, status: 200, batches: batches.length, items: allItems.length };
+}
+
+async function dispatchGmgnEventApi(payload) {
   const stored = await chrome.storage.local.get(GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY);
   const settings = normalizeGmgnTwitterTriggerHookSettings(stored[GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY]);
   const eventType = typeof payload?.type === 'string' ? payload.type.trim() : '';
@@ -588,6 +1113,309 @@ async function dispatchGmgnSignalEvent(payload) {
   }
 }
 
+async function dispatchMarketWatchDeskFocusBuy(payload) {
+  const stored = await chrome.storage.local.get(GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY);
+  const settings = normalizeGmgnTwitterTriggerHookSettings(stored[GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY]);
+
+  if (!settings.focusBuysEnabled) {
+    return { ok: false, skipped: true, error: 'Focus Buys forwarding is disabled.' };
+  }
+
+  const focusBuy = buildFocusBuyPayload(payload);
+  if (!focusBuy) {
+    return { ok: false, skipped: true, error: 'Signal event is not a focus buy.' };
+  }
+
+  const relayResult = await dispatchFocusBuyToRelay(focusBuy, settings);
+  if (relayResult && relayResult.ok) {
+    return relayResult;
+  }
+
+  const requestUrl = buildMarketWatchDeskUrl(settings.marketWatchDeskBaseUrl, '/focus-buys');
+  if (!requestUrl) {
+    return {
+      ok: false,
+      skipped: true,
+      error: relayResult?.error || 'Market Watch Desk Base URL is invalid.',
+      relay: relayResult
+    };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), settings.timeoutMs);
+
+  try {
+    const response = await fetch(requestUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-gmgn-hook-source': 'wallet-convergence-alert-gmgn-monitor',
+        'x-gmgn-hook-event': 'focus-buy'
+      },
+      body: JSON.stringify(focusBuy),
+      signal: controller.signal
+    });
+
+    const responseText = await response.text().catch(() => '');
+    return {
+      ok: response.ok,
+      status: response.status,
+      statusText: response.statusText,
+      body: responseText.slice(0, 500),
+      relay: relayResult
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error && error.name === 'AbortError'
+        ? `Focus Buys request timed out after ${settings.timeoutMs}ms.`
+        : (error && error.message ? error.message : String(error)),
+      relay: relayResult
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function dispatchFocusBuyToRelay(focusBuy, settings) {
+  const requestUrl = buildMainScreenRelayUrl(settings.mainScreenRelayBaseUrl, '/focus-buys');
+  if (!requestUrl) {
+    return { ok: false, skipped: true, error: 'Relay Base URL is invalid.' };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.min(settings.timeoutMs, 3000));
+  try {
+    const response = await fetch(requestUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-gmgn-hook-source': 'wallet-convergence-alert-gmgn-monitor',
+        'x-gmgn-hook-event': 'focus-buy'
+      },
+      body: JSON.stringify({
+        source: 'gmgn-monitor-extension',
+        payload: focusBuy
+      }),
+      signal: controller.signal
+    });
+    const responseText = await response.text().catch(() => '');
+    let responseJson = null;
+    try {
+      responseJson = responseText ? JSON.parse(responseText) : null;
+    } catch (_error) {
+      responseJson = null;
+    }
+    return {
+      ok: response.ok,
+      relayed: true,
+      status: response.status,
+      statusText: response.statusText,
+      relayEventId: responseJson?.event?.id || null,
+      body: responseText.slice(0, 500)
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      skipped: true,
+      relayed: false,
+      error: error && error.name === 'AbortError'
+        ? 'Relay Focus Buys request timed out after 3000ms.'
+        : (error && error.message ? error.message : String(error))
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function buildFocusBuyPayload(payload) {
+  if (!payload) return null;
+  if (payload.type !== 'wallet_trade') return null;
+  const action = String(payload.action || '').trim().toLowerCase();
+  if (action !== 'buy' && action !== 'open' && action !== 'add') return null;
+
+  const raw = payload.raw && typeof payload.raw === 'object' ? payload.raw : {};
+  if (raw.focus_wallet_hit !== true) return null;
+
+  const ca = String(payload.ca || '').trim();
+  const symbol = String(payload.symbol || '').trim();
+  if (!ca && !symbol) return null;
+
+  const wallet = payload.wallet && typeof payload.wallet === 'object' ? payload.wallet : {};
+  const traderName = String(wallet.remark || wallet.name || '').trim();
+  const traderAddress = String(wallet.address || '').trim();
+  const nativeAmount = parseHumanMoneyValue(payload.amount);
+  const marketCap = parseHumanMoneyValue(payload.mcap);
+  const boughtAt = formatIsoTimestamp(payload.ts);
+
+  return removeEmptyFields({
+    schemaVersion: 2,
+    kind: 'trade',
+    side: 'buy',
+    tradeId: String(payload.tradeId || raw.trade_id || raw.stable_key || '').trim(),
+    identityConfidence: String(payload.identityConfidence || raw.identity_confidence || 'heuristic').trim(),
+    traderName,
+    traderAddress,
+    tokenName: String(payload.token_name || symbol || '').trim(),
+    symbol,
+    chainId: mapMarketWatchChainId(payload.chain),
+    contractAddress: ca,
+    nativeAmount,
+    nativeSymbol: marketWatchNativeSymbol(payload.chain),
+    marketCap,
+    source: `${String(payload.source || 'gmgn').trim() || 'gmgn'}-plugin`,
+    txUrl: String(payload.url || '').trim(),
+    note: String(raw.focus_wallet_alias || raw.focus_wallet_key || payload.text || '').trim(),
+    boughtAt
+  });
+}
+
+function buildMarketWatchIntelligenceEvent(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  if (['trade', 'snapshot', 'aggregate', 'twitter'].includes(String(payload.kind || '').trim().toLowerCase())) {
+    return payload;
+  }
+  const raw = payload.raw && typeof payload.raw === 'object' ? payload.raw : {};
+  const type = String(payload.type || '').trim();
+  if (type === 'convergence_alert') {
+    const ca = String(payload.ca || '').trim();
+    const symbol = String(payload.symbol || '').trim();
+    if (!ca && !symbol) return null;
+    const aggregateEvent = removeEmptyFields({
+      id: `gmgn-aggregate|${String(raw.group_key || '').trim()}|${formatIsoTimestamp(payload.ts)}|${Number(raw.buy_wallet_count || 0)}|${Number(raw.sell_wallet_count || 0)}`,
+      schemaVersion: 2,
+      kind: 'aggregate',
+      type,
+      chainId: mapMarketWatchChainId(payload.chain),
+      contractAddress: ca,
+      tokenName: String(payload.token_name || symbol).trim(),
+      symbol,
+      buyCount: Number(raw.buy_wallet_count || raw.wallet_count || 0),
+      sellCount: Number(raw.sell_wallet_count || raw.closed_wallet_count || 0),
+      traderCount: Number(raw.wallet_count || raw.buy_wallet_count || 0),
+      marketCap: parseHumanMoneyValue(payload.mcap),
+      image: String(payload.image || raw.token_image || '').trim(),
+      text: String(payload.text || '').trim(),
+      url: String(payload.url || '').trim(),
+      source: `${String(payload.source || 'gmgn').trim() || 'gmgn'}-plugin`,
+      occurredAt: formatIsoTimestamp(payload.ts)
+    });
+    const walletEvents = (Array.isArray(raw.wallets) ? raw.wallets : [])
+      .filter((wallet) => wallet && typeof wallet === 'object')
+      .map((wallet, index) => {
+        const actorName = String(wallet.name || '').trim();
+        const actorAddress = String(wallet.address || '').trim();
+        if (!actorName && !actorAddress) return null;
+        const stableWallet = actorAddress.toLowerCase() || actorName.toLowerCase() || String(index);
+        const buyAt = formatIsoTimestamp(wallet.timeMs || payload.ts);
+        return removeEmptyFields({
+          id: `gmgn-wallet-snapshot|${String(raw.group_key || '').trim()}|${stableWallet}`,
+          schemaVersion: 2,
+          kind: 'snapshot',
+          type: 'wallet_snapshot',
+          snapshotType: wallet.closed === true ? 'sold' : 'buyer',
+          positionAction: wallet.closed === true ? 'close' : 'buy',
+          chainId: mapMarketWatchChainId(payload.chain),
+          contractAddress: ca,
+          tokenName: String(payload.token_name || symbol).trim(),
+          symbol,
+          actorName,
+          actorAddress,
+          actorImage: String(wallet.avatar || '').trim(),
+          snapshotNativeAmount: parseHumanMoneyValue(wallet.amount),
+          nativeSymbol: marketWatchNativeSymbol(payload.chain),
+          marketCap: parseHumanMoneyValue(payload.mcap),
+          image: String(payload.image || raw.token_image || '').trim(),
+          url: String(payload.url || '').trim(),
+          source: `${String(payload.source || 'gmgn').trim() || 'gmgn'}-plugin`,
+          text: `${actorName || actorAddress} appeared in ${symbol} aggregate`,
+          occurredAt: buyAt
+        });
+      })
+      .filter(Boolean);
+    return { items: [aggregateEvent, ...walletEvents] };
+  }
+  if (type !== 'wallet_trade') return null;
+  const action = String(payload.action || '').trim().toLowerCase();
+  if (!['buy', 'open', 'add', 'sell', 'reduce', 'close', 'clear'].includes(action)) return null;
+  const wallet = payload.wallet && typeof payload.wallet === 'object' ? payload.wallet : {};
+  const ca = String(payload.ca || '').trim();
+  const symbol = String(payload.symbol || '').trim();
+  if (!ca && !symbol) return null;
+  return removeEmptyFields({
+    id: `gmgn-trade|${String(payload.tradeId || raw.trade_id || raw.stable_key || '').trim()}`,
+    schemaVersion: 2,
+    kind: 'trade',
+    tradeId: String(payload.tradeId || raw.trade_id || raw.stable_key || '').trim(),
+    identityConfidence: String(payload.identityConfidence || raw.identity_confidence || 'heuristic').trim(),
+    type,
+    side: ['sell', 'reduce', 'close', 'clear'].includes(action) ? 'sell' : 'buy',
+    positionAction: String(payload.positionAction || action || raw.original_action || '').trim().toLowerCase(),
+    chainId: mapMarketWatchChainId(payload.chain),
+    contractAddress: ca,
+    tokenName: String(payload.token_name || symbol).trim(),
+    symbol,
+    actorName: String(wallet.remark || wallet.name || raw.focus_wallet_alias || '').trim(),
+    actorAddress: String(wallet.address || '').trim(),
+    nativeAmount: parseHumanMoneyValue(payload.amount),
+    nativeSymbol: marketWatchNativeSymbol(payload.chain),
+    marketCap: parseHumanMoneyValue(payload.mcap),
+    text: String(payload.text || '').trim(),
+    url: String(payload.url || '').trim(),
+    source: `${String(payload.source || 'gmgn').trim() || 'gmgn'}-plugin`,
+    occurredAt: formatIsoTimestamp(payload.ts)
+  });
+}
+
+function parseHumanMoneyValue(value) {
+  const text = String(value || '').trim();
+  if (!text) return undefined;
+  const match = text.replace(/,/g, '').match(/^\s*[$￥¥]?\s*([0-9]+(?:\.[0-9]+)?)\s*([KMB])?\s*$/i);
+  if (!match) return undefined;
+  const number = Number(match[1]);
+  if (!Number.isFinite(number)) return undefined;
+  const suffix = String(match[2] || '').toUpperCase();
+  if (suffix === 'K') return number * 1_000;
+  if (suffix === 'M') return number * 1_000_000;
+  if (suffix === 'B') return number * 1_000_000_000;
+  return number;
+}
+
+function mapMarketWatchChainId(chain) {
+  const normalized = String(chain || '').trim().toLowerCase();
+  if (normalized === 'bsc' || normalized === 'bnb' || normalized === '56') return '56';
+  if (normalized === 'sol' || normalized === 'solana' || normalized === 'ct_501') return 'CT_501';
+  if (normalized === 'eth' || normalized === 'ethereum' || normalized === '1') return '1';
+  if (normalized === 'base' || normalized === '8453') return '8453';
+  if (normalized === 'tron' || normalized === '728126428') return '728126428';
+  if (normalized === 'blast' || normalized === '81457') return '81457';
+  return normalized;
+}
+
+function marketWatchNativeSymbol(chain) {
+  const normalized = String(chain || '').trim().toLowerCase();
+  if (normalized === 'bsc' || normalized === 'bnb' || normalized === '56') return 'BNB';
+  if (normalized === 'sol' || normalized === 'solana' || normalized === 'ct_501') return 'SOL';
+  if (normalized === 'tron' || normalized === '728126428') return 'TRX';
+  return 'ETH';
+}
+
+function formatIsoTimestamp(value) {
+  const numeric = Number(value);
+  const date = Number.isFinite(numeric) ? new Date(numeric) : new Date(value || Date.now());
+  if (Number.isNaN(date.getTime())) return new Date().toISOString();
+  return date.toISOString();
+}
+
+function removeEmptyFields(value) {
+  const next = {};
+  for (const [key, item] of Object.entries(value || {})) {
+    if (item === undefined || item === null || item === '') continue;
+    next[key] = item;
+  }
+  return next;
+}
+
 async function fetchTwitterTtsAudio(payload) {
   const text = String(payload.text || '').trim();
   if (!text) {
@@ -631,7 +1459,9 @@ async function fetchTwitterTtsAudio(payload) {
 function buildTwitterTtsRequest(ttsApiUrl, text, options = {}) {
   if (usesMacminiTaskTts(ttsApiUrl)) {
     const url = new URL(ttsApiUrl);
+    url.pathname = url.pathname.replace(/\/+$/, '');
     url.searchParams.set('data', text);
+    appendTtsQueryParams(url, options);
     return {
       url: url.toString(),
       options: {
@@ -657,6 +1487,15 @@ function buildTwitterTtsRequest(ttsApiUrl, text, options = {}) {
   };
 }
 
+function appendTtsQueryParams(url, options = {}) {
+  const voice = String(options.voice || '').trim();
+  const rate = String(options.rate || '').trim();
+  const pitch = String(options.pitch || '').trim();
+  if (voice) url.searchParams.set('voice', voice);
+  if (rate) url.searchParams.set('rate', rate);
+  if (pitch) url.searchParams.set('pitch', pitch);
+}
+
 function normalizeTtsApiUrl(value) {
   const rawUrl = String(value || '').trim();
   if (!rawUrl) return DEFAULT_TTS_API;
@@ -673,7 +1512,7 @@ function normalizeTtsApiUrl(value) {
 function usesMacminiTaskTts(ttsApiUrl) {
   try {
     const url = new URL(ttsApiUrl);
-    return url.hostname === 'tts.macmini.lan' && url.pathname === '/tts/v3-task';
+    return url.hostname === 'tts.macmini.lan' && url.pathname.replace(/\/+$/, '') === '/tts/v3-task';
   } catch (_error) {
     return false;
   }
@@ -704,23 +1543,28 @@ function normalizeQuickAddPayload(payload) {
     throw new Error(`Unsupported chain: ${chain || '(empty)'}`);
   }
 
-  return { ca, chain, note, tags };
+  return { ca, chain, chainId: mapMarketWatchChainId(chain), note, tags };
 }
 
-function getQuickAddRequestConfig(action) {
+async function getQuickAddRequestConfig(action) {
+  const stored = await chrome.storage.local.get(GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY);
+  const settings = normalizeGmgnTwitterTriggerHookSettings(stored[GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY]);
   const normalizedAction = String(action || 'add').trim().toLowerCase();
   if (normalizedAction === 'status' || normalizedAction === 'check') {
-    return { url: GMGN_TOKEN_QUICK_ADD_STATUS_URL, method: 'POST', action: 'status' };
+    return { url: buildMarketWatchDeskUrl(settings.marketWatchDeskBaseUrl, '/quick-add/status'), method: 'POST', action: 'status' };
   }
   if (normalizedAction === 'remove' || normalizedAction === 'delete' || normalizedAction === 'unfavorite') {
-    return { url: GMGN_TOKEN_QUICK_ADD_REMOVE_URL, method: 'POST', action: 'remove' };
+    return { url: buildMarketWatchDeskUrl(settings.marketWatchDeskBaseUrl, '/quick-add/remove'), method: 'POST', action: 'remove' };
   }
-  return { url: GMGN_TOKEN_QUICK_ADD_URL, method: 'POST', action: 'add' };
+  return { url: buildMarketWatchDeskUrl(settings.marketWatchDeskBaseUrl, '/quick-add'), method: 'POST', action: 'add' };
 }
 
 async function quickAddGmgnToken(payload, action = 'add') {
   const body = normalizeQuickAddPayload(payload);
-  const requestConfig = getQuickAddRequestConfig(action);
+  const requestConfig = await getQuickAddRequestConfig(action);
+  if (!requestConfig.url) {
+    return { ok: false, action: requestConfig.action, error: 'Market Watch Desk Base URL is invalid.' };
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 5000);
 
@@ -750,6 +1594,7 @@ async function quickAddGmgnToken(payload, action = 'add') {
     return {
       ok: false,
       action: requestConfig.action,
+      url: requestConfig.url,
       error: error && error.name === 'AbortError'
         ? 'Quick add request timed out after 5000ms.'
         : (error && error.message ? error.message : String(error))
@@ -759,46 +1604,357 @@ async function quickAddGmgnToken(payload, action = 'add') {
   }
 }
 
-async function openInMainWindow(url, monitorWindowId) {
-  const windows = await chrome.windows.getAll({ windowTypes: ['normal'], populate: true });
-  const resolvedMainWindow = await resolveMainWindow(windows, { clearIfMissing: true });
-  const selectedMainWindow = resolvedMainWindow.windowInfo;
+function normalizeFocusChainName(value) {
+  let normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'solana') normalized = 'sol';
+  if (normalized === 'ethereum') normalized = 'eth';
+  if (normalized === 'bnb' || normalized === 'binance' || normalized === 'binance-smart-chain') normalized = 'bsc';
+  const compact = normalized.replace(/[\s_-]+/g, '');
+  if (normalized === 'rh' || normalized === 'robin' || compact === 'robinhood' || compact === 'robinhoodchain') {
+    normalized = 'robinhood';
+  }
+  if (!/^(sol|eth|bsc|base|tron|blast|robinhood)$/.test(normalized)) return '';
+  return normalized;
+}
 
-  if (selectedMainWindow && selectedMainWindow.id !== monitorWindowId) {
-    const existingTab = findTabByUrl(selectedMainWindow, url);
-    if (existingTab && Number.isInteger(existingTab.id)) {
-      await activateExistingTab(existingTab);
-      await refreshStoredMainWindowSnapshot(selectedMainWindow.id);
-      await refreshActionBadges();
+function normalizeFocusAddress(value) {
+  return String(value || '').trim();
+}
 
-      return {
-        ok: true,
-        targetWindowId: selectedMainWindow.id,
-        reusedExistingTab: true,
-        createdWindow: false,
-        usedSelectedWindow: true,
-        restoredSelection: resolvedMainWindow.resolvedFromSnapshot
-      };
-    }
+function normalizeFocusAddressKey(address) {
+  const normalized = normalizeFocusAddress(address);
+  return /^0x[a-f0-9]{40}$/i.test(normalized) ? normalized.toLowerCase() : normalized;
+}
 
-    await chrome.tabs.create({
-      windowId: selectedMainWindow.id,
-      url,
-      active: true
-    });
-    await chrome.windows.update(selectedMainWindow.id, { focused: true });
-    await refreshStoredMainWindowSnapshot(selectedMainWindow.id);
-    await refreshActionBadges();
+function buildFocusAddressKey(chain, address) {
+  const normalizedChain = normalizeFocusChainName(chain);
+  const normalizedAddress = normalizeFocusAddressKey(address);
+  if (!normalizedChain || !normalizedAddress) return '';
+  return `${normalizedChain}:${normalizedAddress}`;
+}
 
-    return {
-      ok: true,
-      targetWindowId: selectedMainWindow.id,
-      createdWindow: false,
-      usedSelectedWindow: true,
-      restoredSelection: resolvedMainWindow.resolvedFromSnapshot
+function isLikelyFocusAddress(address) {
+  const text = normalizeFocusAddress(address);
+  return /^0x[a-fA-F0-9]{40}$/.test(text)
+    || /^[1-9A-HJ-NP-Za-km-z]{32,64}$/.test(text)
+    || /^T[1-9A-HJ-NP-Za-km-z]{25,40}$/.test(text);
+}
+
+function normalizeFocusAddressEntries(raw) {
+  const next = {};
+  const entries = Array.isArray(raw) ? raw : Object.values(raw || {});
+
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object') continue;
+    const chain = normalizeFocusChainName(entry.chain);
+    const address = normalizeFocusAddress(entry.address);
+    const key = buildFocusAddressKey(chain, address);
+    if (!key || !isLikelyFocusAddress(address)) continue;
+    next[key] = {
+      key,
+      chain,
+      address,
+      addressKey: normalizeFocusAddressKey(address),
+      alias: String(entry.alias || '').trim(),
+      name: String(entry.name || '').trim(),
+      personId: String(entry.personId || '').trim(),
+      twitterHandle: String(entry.twitterHandle || '').trim().replace(/^@/, ''),
+      profileImage: String(entry.profileImage || '').trim(),
+      evmAddress: String(entry.evmAddress || '').trim(),
+      solanaAddress: String(entry.solanaAddress || '').trim(),
+      focusPushEnabled: entry.focusPushEnabled !== false,
+      source: String(entry.source || '').trim(),
+      sourceUrl: String(entry.sourceUrl || '').trim(),
+      createdAt: typeof entry.createdAt === 'string' ? entry.createdAt : '',
+      updatedAt: typeof entry.updatedAt === 'string' ? entry.updatedAt : ''
     };
   }
 
+  return next;
+}
+
+function normalizeFocusAddressQuickAddPayload(payload) {
+  const item = payload && typeof payload === 'object' ? payload : {};
+  const address = normalizeFocusAddress(item.address);
+  const requestedChain = normalizeFocusChainName(item.chain);
+  const chain = /^0x[a-fA-F0-9]{40}$/.test(address)
+    ? 'eth'
+    : requestedChain;
+  const key = buildFocusAddressKey(chain, address);
+  if (!key || !isLikelyFocusAddress(address)) {
+    throw new Error('Valid Focus wallet chain and address are required.');
+  }
+
+  const now = new Date().toISOString();
+  return {
+    key,
+    chain,
+    address,
+    addressKey: normalizeFocusAddressKey(address),
+    alias: String(item.alias || '').trim().slice(0, 100),
+    name: String(item.name || '').trim().slice(0, 100),
+    focusPushEnabled: item.focusPushEnabled !== false,
+    source: String(item.source || GMGN_FOCUS_ADDRESS_LOCAL_SOURCE).trim().slice(0, 100) || GMGN_FOCUS_ADDRESS_LOCAL_SOURCE,
+    sourceUrl: String(item.sourceUrl || '').trim().slice(0, 500),
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+async function quickAddGmgnFocusAddress(payload, action = 'add') {
+  const item = normalizeFocusAddressQuickAddPayload(payload);
+  const normalizedAction = String(action || 'add').trim().toLowerCase();
+  const stored = await chrome.storage.local.get(GMGN_FOCUS_ADDRESSES_KEY);
+  const focusAddressEntries = normalizeFocusAddressEntries(stored[GMGN_FOCUS_ADDRESSES_KEY]);
+  const existing = focusAddressEntries[item.key]
+    || Object.values(focusAddressEntries).find((entry) => {
+      return /^0x[a-f0-9]{40}$/.test(item.addressKey)
+        && normalizeFocusAddressKey(entry?.address) === item.addressKey;
+    })
+    || null;
+  const existingKey = existing?.key || item.key;
+
+  if (normalizedAction === 'status' || normalizedAction === 'check') {
+    return {
+      ok: true,
+      action: 'status',
+      focus: Boolean(existing),
+      key: item.key,
+      item: existing
+    };
+  }
+
+  if (normalizedAction === 'remove' || normalizedAction === 'delete') {
+    delete focusAddressEntries[existingKey];
+    await chrome.storage.local.set({ [GMGN_FOCUS_ADDRESSES_KEY]: focusAddressEntries });
+    const relay = await deleteFocusAddressFromRelay(existing || item).catch((error) => ({
+      ok: false,
+      error: error && error.message ? error.message : String(error)
+    }));
+    return {
+      ok: true,
+      action: 'remove',
+      focus: false,
+      key: existingKey,
+      relay
+    };
+  }
+
+  const nextItem = {
+    ...existing,
+    ...item,
+    createdAt: existing?.createdAt || item.createdAt,
+    updatedAt: new Date().toISOString()
+  };
+  if (existingKey !== item.key) delete focusAddressEntries[existingKey];
+  focusAddressEntries[item.key] = nextItem;
+  await chrome.storage.local.set({ [GMGN_FOCUS_ADDRESSES_KEY]: focusAddressEntries });
+
+  const relay = await postFocusAddressToRelay(nextItem).catch((error) => ({
+    ok: false,
+    error: error && error.message ? error.message : String(error)
+  }));
+
+  return {
+    ok: true,
+    action: 'add',
+    focus: true,
+    key: item.key,
+    item: nextItem,
+    relay
+  };
+}
+
+async function postFocusAddressToRelay(item) {
+  if (!/^(sol|eth|bsc|base|tron|blast|robinhood)$/.test(item.chain)) {
+    return { ok: false, skipped: true, reason: 'relay-chain-unsupported' };
+  }
+
+  const stored = await chrome.storage.local.get(GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY);
+  const settings = normalizeGmgnTwitterTriggerHookSettings(stored[GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY]);
+  const requestUrl = buildMainScreenRelayUrl(settings.mainScreenRelayBaseUrl, '/focus-addresses');
+  if (!requestUrl) {
+    return { ok: false, skipped: true, reason: 'relay-url-invalid' };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3000);
+  try {
+    const response = await fetch(requestUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(item),
+      signal: controller.signal
+    });
+    const responseText = await response.text().catch(() => '');
+    let responseJson = null;
+    try {
+      responseJson = responseText ? JSON.parse(responseText) : null;
+    } catch (_error) {
+      responseJson = null;
+    }
+    return {
+      ok: response.ok,
+      status: response.status,
+      statusText: response.statusText,
+      body: responseText.slice(0, 500),
+      json: responseJson
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error && error.name === 'AbortError'
+        ? 'Relay focus address request timed out after 3000ms.'
+        : (error && error.message ? error.message : String(error))
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function deleteFocusAddressFromRelay(item) {
+  if (!/^(sol|eth|bsc|base|tron|blast|robinhood)$/.test(item.chain)) {
+    return { ok: false, skipped: true, reason: 'relay-chain-unsupported' };
+  }
+  const stored = await chrome.storage.local.get(GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY);
+  const settings = normalizeGmgnTwitterTriggerHookSettings(stored[GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY]);
+  const baseUrl = buildMainScreenRelayUrl(settings.mainScreenRelayBaseUrl, '/focus-addresses');
+  if (!baseUrl) return { ok: false, skipped: true, reason: 'relay-url-invalid' };
+  const requestUrl = `${baseUrl}?chain=${encodeURIComponent(item.chain)}&address=${encodeURIComponent(item.address)}`;
+  const response = await fetch(requestUrl, { method: 'DELETE' });
+  const body = await response.json().catch(() => null);
+  return { ok: response.ok, status: response.status, json: body };
+}
+
+function isAllowedFocusRelaySender(sender) {
+  try {
+    const senderUrl = new URL(String(sender?.tab?.url || sender?.url || ''));
+    if (senderUrl.protocol !== 'https:') return false;
+    const hostname = senderUrl.hostname.toLowerCase();
+    return hostname === 'gmgn.ai'
+      || hostname.endsWith('.gmgn.ai')
+      || hostname === 'debot.ai'
+      || hostname.endsWith('.debot.ai');
+  } catch (_error) {
+    return false;
+  }
+}
+
+async function requestFocusAddressesThroughRelay(request, sender) {
+  if (!isAllowedFocusRelaySender(sender)) {
+    throw new Error('Focus Relay request sender is not allowed.');
+  }
+
+  const operation = String(request?.operation || '').trim().toLowerCase();
+  const stored = await chrome.storage.local.get(GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY);
+  const settings = normalizeGmgnTwitterTriggerHookSettings(stored[GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY]);
+  const focusUrl = buildMainScreenRelayUrl(settings.mainScreenRelayBaseUrl, '/focus-addresses');
+  if (!focusUrl) throw new Error('Relay Focus URL is invalid.');
+
+  let requestUrl = focusUrl;
+  let method = 'GET';
+  let body;
+  if (operation === 'list') {
+    method = 'GET';
+  } else if (operation === 'upsert') {
+    const item = Object.values(normalizeFocusAddressEntries([request.item]))[0];
+    if (!item) throw new Error('Valid Focus wallet chain and address are required.');
+    method = 'POST';
+    body = item;
+  } else if (operation === 'sync') {
+    const rawItems = Array.isArray(request.items) ? request.items : [];
+    if (rawItems.length > 2000) throw new Error('Too many Focus addresses; maximum is 2000.');
+    method = 'POST';
+    requestUrl = buildMainScreenRelayUrl(settings.mainScreenRelayBaseUrl, '/focus-addresses/sync');
+    body = {
+      source: String(request.source || 'gmgn-monitor-extension').trim().slice(0, 100),
+      items: Object.values(normalizeFocusAddressEntries(rawItems))
+    };
+  } else if (operation === 'delete') {
+    const item = Object.values(normalizeFocusAddressEntries([request.item]))[0];
+    if (!item) throw new Error('Valid Focus wallet chain and address are required.');
+    method = 'DELETE';
+    requestUrl = `${focusUrl}?chain=${encodeURIComponent(item.chain)}&address=${encodeURIComponent(item.address)}`;
+  } else {
+    throw new Error('Unsupported Focus Relay operation.');
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch(requestUrl, {
+      method,
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+      cache: 'no-store',
+      signal: controller.signal
+    });
+    const responseText = await response.text().catch(() => '');
+    const responseJson = responseText ? JSON.parse(responseText) : null;
+    return {
+      ok: response.ok && responseJson?.ok !== false,
+      status: response.status,
+      statusText: response.statusText,
+      json: responseJson,
+      error: response.ok ? '' : (responseJson?.error || response.statusText)
+    };
+  } catch (error) {
+    throw new Error(error?.name === 'AbortError'
+      ? 'Relay Focus request timed out after 5000ms.'
+      : (error?.message || String(error)));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function normalizeHttpBaseUrl(value, defaultValue = '') {
+  const rawValue = String(value || '').trim();
+  if (!rawValue) return defaultValue;
+  const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(rawValue) ? rawValue : `http://${rawValue}`;
+  try {
+    const url = new URL(withProtocol);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return '';
+    }
+    url.pathname = url.pathname.replace(/\/+$/, '');
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/$/, '');
+  } catch (_error) {
+    return '';
+  }
+}
+
+function normalizeMarketWatchDeskBaseUrl(value) {
+  return normalizeHttpBaseUrl(value, DEFAULT_MARKET_WATCH_DESK_BASE_URL);
+}
+
+function normalizeMainScreenRelayBaseUrl(value) {
+  const normalized = normalizeHttpBaseUrl(value, DEFAULT_MAIN_SCREEN_RELAY_BASE_URL);
+  return normalized === LEGACY_MAIN_SCREEN_RELAY_BASE_URL
+    ? DEFAULT_MAIN_SCREEN_RELAY_BASE_URL
+    : normalized;
+}
+
+function buildMarketWatchDeskUrl(baseUrl, path) {
+  try {
+    const base = normalizeMarketWatchDeskBaseUrl(baseUrl);
+    return new URL(path, `${base}/`).toString();
+  } catch (_error) {
+    return '';
+  }
+}
+
+async function openInMainWindow(url, monitorWindowId, relayOptions = {}) {
+  const relayResult = await dispatchOpenUrlToMainScreenRelay(url, relayOptions);
+  if (relayResult.ok) {
+    return relayResult;
+  }
+  if (relayOptions.relayOnly) {
+    return relayResult;
+  }
+
+  const windows = await chrome.windows.getAll({ windowTypes: ['normal'], populate: true });
   const candidateWindows = windows.filter((windowInfo) => windowInfo.id !== monitorWindowId);
   const existingCandidateTab = findTabByUrlInWindows(candidateWindows, url);
   if (existingCandidateTab && Number.isInteger(existingCandidateTab.id)) {
@@ -831,6 +1987,121 @@ async function openInMainWindow(url, monitorWindowId) {
   await refreshActionBadges();
 
   return { ok: true, targetWindowId: targetWindow.id, createdWindow: false };
+}
+
+async function dispatchOpenUrlToMainScreenRelay(url, options = {}) {
+  const normalizedUrl = normalizeUrl(url);
+  const isAllowedUrl = options.allowAnyHttpUrl
+    ? isHttpNavigationUrl(normalizedUrl)
+    : isMainScreenRelayNavigationUrl(normalizedUrl);
+  if (!normalizedUrl || !isAllowedUrl) {
+    return { ok: false, skipped: true, reason: 'unsupported-url' };
+  }
+
+  const stored = await chrome.storage.local.get(GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY);
+  const settings = normalizeGmgnTwitterTriggerHookSettings(stored[GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY]);
+  const relayBaseUrlOverride = String(options.relayBaseUrl || '').trim()
+    ? normalizeMainScreenRelayBaseUrl(options.relayBaseUrl)
+    : '';
+  const relayBaseUrl = relayBaseUrlOverride
+    || settings.mainScreenRelayBaseUrl
+    || DEFAULT_MAIN_SCREEN_RELAY_BASE_URL;
+  const source = String(options.source || 'gmgn-monitor-extension').trim() || 'gmgn-monitor-extension';
+  const sourceOrigin = String(options.sourceOrigin || '').trim();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 800);
+  try {
+    const healthUrl = buildMainScreenRelayUrl(relayBaseUrl, '/health');
+    if (!healthUrl) {
+      return { ok: false, skipped: true, reason: 'relay-url-invalid' };
+    }
+    const healthResponse = await fetch(healthUrl, {
+      method: 'GET',
+      cache: 'no-store',
+      signal: controller.signal
+    });
+    if (!healthResponse.ok) {
+      return { ok: false, skipped: true, reason: 'relay-health-failed' };
+    }
+    const health = await healthResponse.json().catch(() => null);
+    if (!options.relayOnly && !hasActiveMainScreenClient(health)) {
+      return { ok: false, skipped: true, reason: 'main-client-offline' };
+    }
+  } catch (_error) {
+    return { ok: false, skipped: true, reason: 'relay-offline' };
+  } finally {
+    clearTimeout(timer);
+  }
+
+  try {
+    const openUrl = buildMainScreenRelayUrl(relayBaseUrl, '/open-url');
+    if (!openUrl) {
+      return { ok: false, skipped: true, reason: 'relay-url-invalid' };
+    }
+    const response = await fetch(openUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: normalizedUrl,
+        source,
+        payload: sourceOrigin ? { sourceOrigin } : {}
+      })
+    });
+    if (!response.ok) {
+      return { ok: false, skipped: true, reason: 'relay-post-failed' };
+    }
+    return {
+      ok: true,
+      relayed: true,
+      relayBaseUrl,
+      target: 'main'
+    };
+  } catch (_error) {
+    return { ok: false, skipped: true, reason: 'relay-post-error' };
+  }
+}
+
+function buildMainScreenRelayUrl(baseUrl, pathname) {
+  try {
+    const normalizedBaseUrl = normalizeMainScreenRelayBaseUrl(baseUrl);
+    if (!normalizedBaseUrl) {
+      return '';
+    }
+    return new URL(pathname, `${normalizedBaseUrl}/`).toString();
+  } catch (_error) {
+    return '';
+  }
+}
+
+function hasActiveMainScreenClient(health) {
+  const clients = Array.isArray(health?.clients) ? health.clients : [];
+  const now = Date.now();
+  return clients.some((client) => {
+    if (client?.role !== 'main') {
+      return false;
+    }
+    const lastSeen = Date.parse(client.lastSeenAt || '');
+    return Number.isFinite(lastSeen) && now - lastSeen < 45000;
+  });
+}
+
+function isMainScreenRelayNavigationUrl(rawUrl) {
+  try {
+    const parsedUrl = new URL(String(rawUrl || ''));
+    return parsedUrl.protocol === 'https:'
+      && /(^|\.)((gmgn\.ai)|(fomo\.family)|(debot\.ai)|(x\.com)|(twitter\.com)|(t\.co))$/i.test(parsedUrl.hostname);
+  } catch (_error) {
+    return false;
+  }
+}
+
+function isHttpNavigationUrl(rawUrl) {
+  try {
+    const parsedUrl = new URL(String(rawUrl || ''));
+    return parsedUrl.protocol === 'http:' || parsedUrl.protocol === 'https:';
+  } catch (_error) {
+    return false;
+  }
 }
 
 async function openTokenCounterpartUrl(url, preferredWindowId) {
@@ -917,233 +2188,12 @@ async function activateExistingTab(tab) {
   await chrome.windows.update(tab.windowId, { focused: true });
 }
 
-async function setMainWindow(windowId) {
-  const windowInfo = await chrome.windows.get(windowId, { populate: true });
-  if (windowInfo.type !== 'normal') {
-    throw new Error('Only normal browser windows can be selected.');
-  }
-
-  await persistMainWindowState(windowInfo);
-  await refreshActionBadges();
-
-  return {
-    ok: true,
-    windowId,
-    title: getWindowTitle(windowInfo),
-    resolvedFromSnapshot: false
-  };
-}
-
-async function getMainWindowState() {
-  const windows = await chrome.windows.getAll({ windowTypes: ['normal'], populate: true });
-  const resolved = await resolveMainWindow(windows, { clearIfMissing: true });
-
-  if (!resolved.windowInfo) {
-    return { windowId: null, title: null, resolvedFromSnapshot: false };
-  }
-
-  return {
-    windowId: resolved.windowInfo.id,
-    title: getWindowTitle(resolved.windowInfo),
-    resolvedFromSnapshot: resolved.resolvedFromSnapshot
-  };
-}
-
-async function resolveMainWindow(windows, options = {}) {
-  const { clearIfMissing = false } = options;
-  const storedState = await getStoredMainWindowState();
-  if (!storedState || !Number.isInteger(storedState.windowId)) {
-    return { windowInfo: null, resolvedFromSnapshot: false };
-  }
-
-  const currentWindow = windows.find((windowInfo) => windowInfo.id === storedState.windowId);
-  if (currentWindow) {
-    await persistMainWindowState(currentWindow);
-    return { windowInfo: currentWindow, resolvedFromSnapshot: false };
-  }
-
-  const matchedWindow = findWindowBySnapshot(windows, storedState.snapshot);
-  if (!matchedWindow) {
-    if (clearIfMissing) {
-      await clearMainWindow();
-    }
-    return { windowInfo: null, resolvedFromSnapshot: false };
-  }
-
-  await persistMainWindowState(matchedWindow);
-  return { windowInfo: matchedWindow, resolvedFromSnapshot: true };
-}
-
-function findWindowBySnapshot(windows, snapshot) {
-  if (!snapshot) {
-    return null;
-  }
-
-  let bestMatch = null;
-  let bestScore = 0;
-
-  for (const windowInfo of windows) {
-    const score = scoreWindowMatch(windowInfo, snapshot);
-    if (score > bestScore) {
-      bestScore = score;
-      bestMatch = windowInfo;
-    }
-  }
-
-  return bestScore >= 4 ? bestMatch : null;
-}
-
-function scoreWindowMatch(windowInfo, snapshot) {
-  if (!snapshot) {
-    return 0;
-  }
-
-  const activeTab = getActiveTab(windowInfo);
-  const activeTabUrl = normalizeUrl(activeTab && activeTab.url);
-  const currentTabUrls = getWindowTabUrls(windowInfo);
-  const currentUrls = new Set(currentTabUrls);
-
-  let score = 0;
-
-  if (snapshot.activeTabUrl && activeTabUrl && snapshot.activeTabUrl === activeTabUrl) {
-    score += 6;
-  }
-
-  if (
-    snapshot.activeTabTitle
-    && activeTab
-    && activeTab.title
-    && snapshot.activeTabTitle === activeTab.title
-  ) {
-    score += 2;
-  }
-
-  for (const url of snapshot.tabUrls || []) {
-    if (currentUrls.has(url)) {
-      score += 2;
-    }
-  }
-
-  if ((snapshot.tabCount || 0) > 0 && snapshot.tabCount === (windowInfo.tabs || []).length) {
-    score += 1;
-  }
-
-  return score;
-}
-
-async function getStoredMainWindowState() {
-  const stored = await chrome.storage.local.get([
-    MAIN_WINDOW_STORAGE_KEY,
-    LEGACY_MAIN_WINDOW_STORAGE_KEY
-  ]);
-
-  if (stored[MAIN_WINDOW_STORAGE_KEY] && Number.isInteger(stored[MAIN_WINDOW_STORAGE_KEY].windowId)) {
-    return stored[MAIN_WINDOW_STORAGE_KEY];
-  }
-
-  if (Number.isInteger(stored[LEGACY_MAIN_WINDOW_STORAGE_KEY])) {
-    return {
-      windowId: stored[LEGACY_MAIN_WINDOW_STORAGE_KEY],
-      snapshot: null
-    };
-  }
-
-  return null;
-}
-
-async function persistMainWindowState(windowInfo) {
-  const state = {
-    windowId: windowInfo.id,
-    snapshot: buildWindowSnapshot(windowInfo)
-  };
-
-  await chrome.storage.local.set({
-    [MAIN_WINDOW_STORAGE_KEY]: state,
-    [LEGACY_MAIN_WINDOW_STORAGE_KEY]: windowInfo.id
-  });
-}
-
-async function clearMainWindow() {
-  await chrome.storage.local.remove([
-    MAIN_WINDOW_STORAGE_KEY,
-    LEGACY_MAIN_WINDOW_STORAGE_KEY
-  ]);
-  await refreshActionBadges();
-}
-
-function buildWindowSnapshot(windowInfo) {
-  const activeTab = getActiveTab(windowInfo);
-
-  return {
-    activeTabUrl: normalizeUrl(activeTab && activeTab.url),
-    activeTabTitle: activeTab && activeTab.title ? activeTab.title : null,
-    tabUrls: getWindowTabUrls(windowInfo),
-    tabCount: windowInfo.tabs ? windowInfo.tabs.length : 0,
-    updatedAt: Date.now()
-  };
-}
-
 function getMonitorUrlFromTab(tab) {
   if (!tab) {
     return null;
   }
 
   return normalizeMonitorUrl(tab.pendingUrl || tab.url);
-}
-
-function getWindowTabUrls(windowInfo) {
-  if (!windowInfo.tabs || windowInfo.tabs.length === 0) {
-    return [];
-  }
-
-  const uniqueUrls = new Set();
-
-  for (const tab of windowInfo.tabs) {
-    const normalizedUrl = normalizeUrl(tab.url);
-    if (normalizedUrl) {
-      uniqueUrls.add(normalizedUrl);
-    }
-  }
-
-  return [...uniqueUrls];
-}
-
-function getActiveTab(windowInfo) {
-  if (!windowInfo.tabs || windowInfo.tabs.length === 0) {
-    return null;
-  }
-
-  return windowInfo.tabs.find((tab) => tab.active) || windowInfo.tabs[0];
-}
-
-async function refreshStoredMainWindowSnapshot(windowId) {
-  if (!Number.isInteger(windowId)) {
-    return;
-  }
-
-  const storedState = await getStoredMainWindowState();
-  if (!storedState || storedState.windowId !== windowId) {
-    return;
-  }
-
-  try {
-    const windowInfo = await chrome.windows.get(windowId, { populate: true });
-    if (windowInfo.type !== 'normal') {
-      return;
-    }
-
-    await persistMainWindowState(windowInfo);
-  } catch (_error) {
-    return;
-  }
-}
-
-async function refreshStoredMainWindowSnapshotForTab(tab) {
-  if (!tab || !Number.isInteger(tab.windowId)) {
-    return;
-  }
-
-  await refreshStoredMainWindowSnapshot(tab.windowId);
 }
 
 async function refreshActionBadges() {
@@ -1154,28 +2204,22 @@ async function refreshActionBadges() {
 
   await ensureMonitorState(windows);
 
-  const resolvedMainWindow = await resolveMainWindow(windows, { clearIfMissing: false });
-  const mainWindowId = resolvedMainWindow.windowInfo ? resolvedMainWindow.windowInfo.id : null;
   const monitorWindowId = monitorState.windowId;
 
   await Promise.all(
     tabs
       .filter((tab) => Number.isInteger(tab.id))
-      .map((tab) => updateBadgeForTab(tab, mainWindowId, monitorWindowId))
+      .map((tab) => updateBadgeForTab(tab, monitorWindowId))
   );
 }
 
-async function updateBadgeForTab(tab, mainWindowId, monitorWindowId) {
+async function updateBadgeForTab(tab, monitorWindowId) {
   const tabId = tab.id;
   let text = '';
   let title = 'GMGN Monitor Link Redirector';
   let color = '#4f7cff';
 
-  if (mainWindowId && tab.windowId === mainWindowId) {
-    text = 'MAIN';
-    title = 'This window is the selected main window.';
-    color = '#1f8f4e';
-  } else if (monitorWindowId && tab.windowId === monitorWindowId) {
+  if (Number.isInteger(monitorWindowId) && tab.windowId === monitorWindowId) {
     text = 'MON';
     title = 'This window is the GMGN monitor window.';
     color = '#d97706';
@@ -1214,20 +2258,12 @@ async function ensureMonitorState(windows) {
     return monitorState;
   }
 
-  const resolvedMainWindow = await resolveMainWindow(normalWindows, { clearIfMissing: false });
-  const mainWindowId = resolvedMainWindow.windowInfo ? resolvedMainWindow.windowInfo.id : null;
-  const candidate = findMonitorCandidate(normalWindows, {
-    preferredTabId: monitorState.tabId,
-    preferredWindowId: monitorState.windowId,
-    preferredFollowUrl: normalizeMonitorUrl(monitorState.followUrl),
-    excludedWindowId: mainWindowId
-  });
-
-  if (!candidate) {
-    if (monitorState.tabId !== null || monitorState.windowId !== null) {
+  const existingMonitorWindow = findWindowById(normalWindows, monitorState.windowId);
+  if (existingMonitorWindow) {
+    if (monitorState.tabId !== null) {
       monitorState = {
+        ...monitorState,
         tabId: null,
-        windowId: null,
         followUrl: normalizeMonitorUrl(monitorState.followUrl) || DEFAULT_MONITOR_URL,
         allowedNavigationUrl: null,
         suppressNextRedirect: false
@@ -1238,23 +2274,48 @@ async function ensureMonitorState(windows) {
     return monitorState;
   }
 
-  const monitorChanged = monitorState.tabId !== candidate.tabId || monitorState.windowId !== candidate.windowId;
-  const nextFollowUrl = candidate.followUrl || normalizeMonitorUrl(monitorState.followUrl) || DEFAULT_MONITOR_URL;
-  const followUrlChanged = monitorState.followUrl !== nextFollowUrl;
-
-  if (monitorChanged || followUrlChanged) {
+  if (monitorState.tabId !== null || monitorState.windowId !== null) {
     monitorState = {
-      ...monitorState,
-      tabId: candidate.tabId,
-      windowId: candidate.windowId,
-      followUrl: nextFollowUrl,
-      allowedNavigationUrl: monitorChanged ? null : monitorState.allowedNavigationUrl,
-      suppressNextRedirect: monitorChanged ? false : monitorState.suppressNextRedirect
+      tabId: null,
+      windowId: null,
+      followUrl: normalizeMonitorUrl(monitorState.followUrl) || DEFAULT_MONITOR_URL,
+      allowedNavigationUrl: null,
+      suppressNextRedirect: false
     };
     persistMonitorState();
   }
 
   return monitorState;
+}
+
+function findWindowById(windows, windowId) {
+  if (!Number.isInteger(windowId)) {
+    return null;
+  }
+
+  return windows.find((windowInfo) => windowInfo.id === windowId) || null;
+}
+
+function buildMonitorScreenStatus(tab) {
+  const tabId = tab && Number.isInteger(tab.id) ? tab.id : null;
+  const windowId = tab && Number.isInteger(tab.windowId) ? tab.windowId : null;
+
+  return {
+    ok: true,
+    tabId,
+    windowId,
+    monitorTabId: monitorState.tabId,
+    monitorWindowId: monitorState.windowId,
+    followUrl: monitorState.followUrl,
+    isMonitorTab: Number.isInteger(tabId) && tabId === monitorState.tabId,
+    isMonitorScreen: isMonitorWindowId(windowId)
+  };
+}
+
+function isMonitorWindowId(windowId) {
+  return Number.isInteger(windowId)
+    && Number.isInteger(monitorState.windowId)
+    && windowId === monitorState.windowId;
 }
 
 function findTabById(windows, tabId) {
@@ -1277,8 +2338,7 @@ function findMonitorCandidate(windows, options = {}) {
   const {
     preferredTabId = null,
     preferredWindowId = null,
-    preferredFollowUrl = null,
-    excludedWindowId = null
+    preferredFollowUrl = null
   } = options;
   const candidates = [];
 
@@ -1311,15 +2371,10 @@ function findMonitorCandidate(windows, options = {}) {
     return null;
   }
 
-  const candidatesOutsideMain = Number.isInteger(excludedWindowId)
-    ? candidates.filter((candidate) => candidate.windowId !== excludedWindowId)
-    : candidates;
-  const candidatePool = candidatesOutsideMain.length > 0 ? candidatesOutsideMain : candidates;
-
   let bestCandidate = null;
   let bestScore = Number.NEGATIVE_INFINITY;
 
-  for (const candidate of candidatePool) {
+  for (const candidate of candidates) {
     const score = scoreMonitorCandidate(candidate, {
       preferredTabId,
       preferredWindowId,
@@ -1420,6 +2475,127 @@ function isExternalToGmgn(url) {
   } catch (_error) {
     return false;
   }
+}
+
+async function handleFomoAggregateAlert(payload) {
+  const chain = normalizeFocusChainName(payload.chain);
+  const contractAddress = String(payload.tokenAddress || '').trim();
+  const symbol = String(payload.symbol || '').trim();
+  const traderCount = Math.max(1, Number(payload.traderCount || 1));
+  const isTraderAlert = payload.alertKind === 'trader';
+  const traderName = String(payload.traderHandle || payload.traderName || '').trim();
+  const side = String(payload.side || '').toLowerCase();
+  if (!chain || !contractAddress || !symbol || !['buy', 'sell'].includes(side)) {
+    return { ok: false, skipped: true, error: 'Invalid FOMO alert.' };
+  }
+
+  // Cache first so a simultaneous GMGN monitor refresh cannot lose the event.
+  await cacheRecentFomoAlert(payload).catch(() => null);
+
+  const tabs = await chrome.tabs.query({ url: [
+    'https://gmgn.ai/follow*',
+    'https://www.gmgn.ai/follow*',
+    'https://gmgn.ai/*/follow*',
+    'https://www.gmgn.ai/*/follow*'
+  ] });
+  let monitorDelivered = false;
+  for (const tab of tabs) {
+    if (!tab.id) continue;
+    const result = await chrome.tabs.sendMessage(tab.id, {
+      type: FOMO_AGGREGATE_ALERT_EVENT,
+      payload
+    }).catch(() => null);
+    if (result?.ok) monitorDelivered = true;
+  }
+
+  const stored = await chrome.storage.local.get(GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY);
+  const settings = normalizeGmgnTwitterTriggerHookSettings(stored[GMGN_TWITTER_TRIGGER_HOOK_SETTINGS_KEY]);
+  const focusBuy = side === 'buy' && isTraderAlert ? {
+    id: `fomo|${String(payload.stableKey || '').trim()}`,
+    schemaVersion: 2,
+    kind: 'trade',
+    side: 'buy',
+    tradeId: `fomo|${String(payload.stableKey || '').trim()}`,
+    identityConfidence: 'exact',
+    traderName,
+    traderAddress: String(payload.traderAddress || '').trim(),
+    actorImage: String(payload.traderAvatar || '').trim(),
+    tokenName: symbol,
+    symbol,
+    chainId: mapMarketWatchChainId(chain),
+    contractAddress,
+    amountUsd: Number.isFinite(Number(payload.amountUsd)) ? Number(payload.amountUsd) : undefined,
+    marketCap: Number.isFinite(Number(payload.marketCapUsd)) ? Number(payload.marketCapUsd) : undefined,
+    source: 'fomo-alert',
+    txUrl: String(payload.url || '').trim(),
+    note: `FOMO @${traderName} Buy ${payload.amountText || ''}`.trim(),
+    boughtAt: formatIsoTimestamp(payload.observedAt || Date.now()),
+    fomoTraderHandle: traderName,
+    aggregateAmountUsd: Number.isFinite(Number(payload.amountUsd)) ? Number(payload.amountUsd) : undefined
+  } : null;
+  const intelligenceEvent = removeEmptyFields({
+    id: `fomo-intelligence|${String(payload.stableKey || '').trim()}`,
+    schemaVersion: 2,
+    kind: isTraderAlert ? 'trade' : 'aggregate',
+    tradeId: isTraderAlert ? `fomo|${String(payload.stableKey || '').trim()}` : undefined,
+    identityConfidence: isTraderAlert ? 'exact' : undefined,
+    type: 'fomo_alert',
+    side,
+    chainId: mapMarketWatchChainId(chain),
+    contractAddress,
+    tokenName: symbol,
+    symbol,
+    actorName: isTraderAlert ? traderName : undefined,
+    actorHandle: isTraderAlert ? traderName : undefined,
+    actorAddress: isTraderAlert ? String(payload.traderAddress || '').trim() : undefined,
+    actorImage: isTraderAlert ? String(payload.traderAvatar || '').trim() : undefined,
+    traderCount: isTraderAlert ? 1 : traderCount,
+    buyCount: !isTraderAlert || side === 'buy' ? (side === 'buy' ? traderCount : 0) : undefined,
+    sellCount: !isTraderAlert || side === 'sell' ? (side === 'sell' ? traderCount : 0) : undefined,
+    amountUsd: Number.isFinite(Number(payload.amountUsd)) ? Number(payload.amountUsd) : undefined,
+    marketCap: Number.isFinite(Number(payload.marketCapUsd)) ? Number(payload.marketCapUsd) : undefined,
+    text: isTraderAlert ? `FOMO @${traderName} ${side} ${payload.amountText || ''}`.trim() : `FOMO ${traderCount} traders ${side} ${payload.amountText || ''}`.trim(),
+    url: String(payload.url || '').trim(),
+    source: 'fomo-alert',
+    occurredAt: formatIsoTimestamp(payload.observedAt || Date.now())
+  });
+  const [marketWatch, intelligence] = await Promise.all([
+    focusBuy ? dispatchFocusBuyToRelay(focusBuy, settings) : Promise.resolve({ ok: false, skipped: true }),
+    dispatchMarketWatchIntelligenceEvent(intelligenceEvent)
+  ]);
+  return { ok: monitorDelivered || marketWatch?.ok === true || intelligence?.ok === true, monitorDelivered, marketWatch, intelligence };
+}
+
+async function handleFomoThesisEvent(payload) {
+  const chain = normalizeFocusChainName(payload.chain);
+  const contractAddress = String(payload.tokenAddress || '').trim();
+  const symbol = String(payload.symbol || '').trim();
+  const actorName = String(payload.actorHandle || payload.actorName || '').trim();
+  const text = String(payload.text || '').trim();
+  const stableKey = String(payload.stableKey || '').trim();
+  if (!chain || !contractAddress || !symbol || !actorName || !text || !stableKey) {
+    return { ok: false, skipped: true, error: 'Invalid FOMO thesis event.' };
+  }
+  const intelligenceEvent = removeEmptyFields({
+    id: `fomo-thesis|${stableKey}`,
+    schemaVersion: 2,
+    kind: 'twitter',
+    type: 'fomo_thesis',
+    chainId: mapMarketWatchChainId(chain),
+    contractAddress,
+    tokenName: symbol,
+    symbol,
+    actorName,
+    actorHandle: actorName,
+    actorAddress: String(payload.actorAddress || '').trim(),
+    actorImage: String(payload.profileImage || '').trim(),
+    image: String(payload.tokenImage || '').trim(),
+    text,
+    url: String(payload.url || '').trim(),
+    source: 'fomo-thesis',
+    occurredAt: formatIsoTimestamp(payload.observedAt || Date.now())
+  });
+  return dispatchMarketWatchIntelligenceEvent(intelligenceEvent);
 }
 
 async function restoreMonitorState() {

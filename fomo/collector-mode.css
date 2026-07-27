@@ -1,0 +1,190 @@
+html.gcp-fomo-collector-mode body {
+  overflow: hidden !important;
+  background: #070b0c !important;
+}
+
+html.gcp-fomo-collector-mode body > :not(#gcp-fomo-collector-shell) {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+#gcp-fomo-collector-shell {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 2147483647 !important;
+  display: grid !important;
+  place-items: center !important;
+  visibility: visible !important;
+  pointer-events: auto !important;
+  box-sizing: border-box !important;
+  padding: 24px !important;
+  color: #edf7f2 !important;
+  background:
+    radial-gradient(circle at 50% 25%, rgba(39, 182, 113, 0.12), transparent 38%),
+    #070b0c !important;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
+}
+
+#gcp-fomo-collector-shell *,
+#gcp-fomo-collector-shell *::before,
+#gcp-fomo-collector-shell *::after {
+  box-sizing: border-box !important;
+}
+
+#gcp-fomo-collector-shell .gcp-fomo-collector-card {
+  display: grid !important;
+  grid-template-columns: auto minmax(210px, 1fr) auto !important;
+  gap: 18px 20px !important;
+  align-items: center !important;
+  width: min(620px, 100%) !important;
+  padding: 22px !important;
+  border: 1px solid rgba(100, 231, 164, 0.2) !important;
+  border-radius: 18px !important;
+  background: rgba(17, 25, 25, 0.96) !important;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42) !important;
+}
+
+#gcp-fomo-collector-shell .gcp-fomo-collector-mark {
+  display: grid !important;
+  place-items: center !important;
+  width: 50px !important;
+  height: 50px !important;
+  border-radius: 14px !important;
+  color: #07120c !important;
+  background: #66e7a5 !important;
+  font-size: 23px !important;
+  font-weight: 900 !important;
+}
+
+#gcp-fomo-collector-shell .gcp-fomo-collector-copy {
+  display: grid !important;
+  gap: 5px !important;
+}
+
+#gcp-fomo-collector-shell .gcp-fomo-collector-copy strong {
+  color: #f2fbf6 !important;
+  font-size: 20px !important;
+  line-height: 1.2 !important;
+}
+
+#gcp-fomo-collector-shell .gcp-fomo-collector-copy small {
+  color: #82918b !important;
+  font-size: 12px !important;
+}
+
+#gcp-fomo-collector-shell .gcp-fomo-collector-state {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 7px !important;
+  color: #a9b9b2 !important;
+  font-size: 13px !important;
+}
+
+#gcp-fomo-collector-shell .gcp-fomo-collector-state i {
+  width: 8px !important;
+  height: 8px !important;
+  border-radius: 50% !important;
+  background: #d39f35 !important;
+}
+
+#gcp-fomo-collector-shell .gcp-fomo-collector-state:has(b[data-status="ready"]) i {
+  background: #55db97 !important;
+  box-shadow: 0 0 0 4px rgba(85, 219, 151, 0.1) !important;
+}
+
+#gcp-fomo-collector-shell .gcp-fomo-collector-state:has(b[data-status="error"]) i {
+  background: #ef6b6b !important;
+}
+
+#gcp-fomo-collector-shell .gcp-fomo-collector-state b {
+  color: inherit !important;
+  font-size: inherit !important;
+  font-weight: 650 !important;
+}
+
+#gcp-fomo-collector-shell .gcp-fomo-collector-stats {
+  display: flex !important;
+  gap: 22px !important;
+  margin: 0 !important;
+}
+
+#gcp-fomo-collector-shell .gcp-fomo-collector-stats div {
+  display: grid !important;
+  gap: 3px !important;
+  min-width: 72px !important;
+}
+
+#gcp-fomo-collector-shell .gcp-fomo-collector-stats dt {
+  color: #718079 !important;
+  font-size: 11px !important;
+}
+
+#gcp-fomo-collector-shell .gcp-fomo-collector-stats dd {
+  margin: 0 !important;
+  color: #d8e7df !important;
+  font-size: 15px !important;
+  font-weight: 750 !important;
+}
+
+#gcp-fomo-collector-shell button {
+  grid-column: 2 / -1 !important;
+  justify-self: end !important;
+  min-height: 36px !important;
+  padding: 0 14px !important;
+  border: 1px solid rgba(102, 231, 165, 0.3) !important;
+  border-radius: 10px !important;
+  color: #9ef0c5 !important;
+  background: rgba(102, 231, 165, 0.08) !important;
+  font: 650 13px/1 Inter, ui-sans-serif, system-ui, sans-serif !important;
+  cursor: pointer !important;
+}
+
+#gcp-fomo-collector-shell button:hover {
+  background: rgba(102, 231, 165, 0.14) !important;
+}
+
+#gcp-fomo-collector-shell.is-compact {
+  inset: auto 18px 18px auto !important;
+  display: block !important;
+  width: auto !important;
+  padding: 0 !important;
+  background: transparent !important;
+}
+
+#gcp-fomo-collector-shell.is-compact .gcp-fomo-collector-card {
+  display: block !important;
+  width: auto !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+#gcp-fomo-collector-shell.is-compact .gcp-fomo-collector-mark,
+#gcp-fomo-collector-shell.is-compact .gcp-fomo-collector-copy,
+#gcp-fomo-collector-shell.is-compact .gcp-fomo-collector-stats {
+  display: none !important;
+}
+
+#gcp-fomo-collector-shell.is-compact button {
+  display: block !important;
+  min-height: 34px !important;
+  border-color: rgba(11, 20, 17, 0.25) !important;
+  color: #0b3923 !important;
+  background: rgba(115, 235, 173, 0.92) !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22) !important;
+}
+
+@media (max-width: 680px) {
+  #gcp-fomo-collector-shell .gcp-fomo-collector-card {
+    grid-template-columns: auto 1fr !important;
+  }
+
+  #gcp-fomo-collector-shell .gcp-fomo-collector-stats {
+    grid-column: 1 / -1 !important;
+  }
+
+  #gcp-fomo-collector-shell button {
+    grid-column: 1 / -1 !important;
+  }
+}

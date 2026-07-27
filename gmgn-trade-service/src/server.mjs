@@ -4,6 +4,7 @@ import { createTradePipeline } from 'trade-pipeline-core';
 import { isAuthorized } from './auth.mjs';
 import { loadConfig } from './config.mjs';
 import { toTradeSignal } from './execution/index.mjs';
+import { readJson } from './http-body.mjs';
 import { createLogger } from './logger.mjs';
 import { normalizeSignal } from './normalize-signal.mjs';
 
@@ -79,9 +80,9 @@ async function handleTwitterTriggerWebhook(context) {
       type: 'invalid-json',
       error: logger.serializeError(error)
     });
-    return sendJson(res, 400, {
+    return sendJson(res, error.statusCode === 413 ? 413 : 400, {
       ok: false,
-      error: 'Invalid JSON payload'
+      error: error.statusCode === 413 ? 'Request body is too large' : 'Invalid JSON payload'
     });
   }
 
@@ -163,15 +164,6 @@ function resolveAdapterName(chain) {
   if (chain === 'sol') return 'gmgn-sol';
   if (chain === 'bsc') return 'gmgn-bsc';
   return 'unsupported-chain';
-}
-
-async function readJson(req) {
-  const chunks = [];
-  for await (const chunk of req) {
-    chunks.push(chunk);
-  }
-  const raw = Buffer.concat(chunks).toString('utf8');
-  return raw ? JSON.parse(raw) : {};
 }
 
 function sendJson(res, statusCode, payload) {

@@ -1,0 +1,111 @@
+{
+  "manifest_version": 3,
+  "name": "GMGN Main Screen Helper",
+  "version": "0.1.0",
+  "description": "Lightweight GMGN helper for the main screen profile: relay navigation, quick add, counterpart links, and small UI cleanup.",
+  "permissions": ["storage", "tabs", "windows", "alarms"],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "http://192.168.3.129/*",
+    "http://macmini.lan/*",
+    "https://market-watch.macmini.lan/*",
+    "https://gmgn.ai/*",
+    "https://www.gmgn.ai/*",
+    "https://*.gmgn.ai/*",
+    "https://fomo.family/*",
+    "https://www.fomo.family/*",
+    "https://*.fomo.family/*",
+    "https://debot.ai/*",
+    "https://www.debot.ai/*",
+    "https://app.debot.ai/*",
+    "https://x.com/*",
+    "https://www.x.com/*",
+    "https://twitter.com/*",
+    "https://www.twitter.com/*",
+    "https://mobile.twitter.com/*",
+    "https://t.co/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "GMGN Main Screen Helper"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://gmgn.ai/*",
+        "https://www.gmgn.ai/*",
+        "https://*.gmgn.ai/*",
+        "https://x.com/*",
+        "https://www.x.com/*",
+        "https://twitter.com/*",
+        "https://www.twitter.com/*",
+        "https://mobile.twitter.com/*"
+      ],
+      "js": ["fast-open/main-world.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://gmgn.ai/*",
+        "https://www.gmgn.ai/*",
+        "https://*.gmgn.ai/*",
+        "https://x.com/*",
+        "https://www.x.com/*",
+        "https://twitter.com/*",
+        "https://www.twitter.com/*",
+        "https://mobile.twitter.com/*"
+      ],
+      "js": ["fast-open/bridge.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://gmgn.ai/*",
+        "https://www.gmgn.ai/*",
+        "https://*.gmgn.ai/*"
+      ],
+      "js": ["gmgn/focus-address.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://gmgn.ai/*",
+        "https://www.gmgn.ai/*",
+        "https://*.gmgn.ai/*"
+      ],
+      "exclude_matches": [
+        "https://gmgn.ai/*/address/*",
+        "https://www.gmgn.ai/*/address/*",
+        "https://*.gmgn.ai/*/address/*",
+        "https://gmgn.ai/address/*",
+        "https://www.gmgn.ai/address/*",
+        "https://*.gmgn.ai/address/*"
+      ],
+      "js": ["gmgn/ui-cleanup.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://gmgn.ai/*/token/*",
+        "https://www.gmgn.ai/*/token/*",
+        "https://*.gmgn.ai/*/token/*",
+        "https://gmgn.ai/token/*",
+        "https://www.gmgn.ai/token/*",
+        "https://*.gmgn.ai/token/*",
+        "https://fomo.family/tokens/*",
+        "https://www.fomo.family/tokens/*",
+        "https://*.fomo.family/tokens/*"
+      ],
+      "js": ["gmgn/token-quick-add.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

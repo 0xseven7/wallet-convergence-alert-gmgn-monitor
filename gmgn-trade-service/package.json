@@ -9,7 +9,8 @@
   },
   "scripts": {
     "start": "node server.mjs",
-    "dev": "node server.mjs"
+    "dev": "node server.mjs",
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "@solana/web3.js": "^1.98.4",

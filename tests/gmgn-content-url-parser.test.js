@@ -57,12 +57,23 @@ const sandbox = {
 };
 
 vm.runInNewContext(`
-  const SUPPORTED_GMGN_CHAINS = new Set(['sol', 'eth', 'bsc', 'bnb', 'base', 'tron', 'blast']);
+  const SUPPORTED_GMGN_CHAINS = new Set(['sol', 'eth', 'bsc', 'bnb', 'base', 'tron', 'blast', 'robinhood']);
 ${helperBlock}
   module.exports = { normalizeChainName, parseGmgnTokenHref, parseDebotTokenHref, buildGmgnTokenPath, buildFomoTokenUrl, buildDebotTokenUrl };
 `, sandbox);
 
 const { normalizeChainName, parseGmgnTokenHref, parseDebotTokenHref, buildGmgnTokenPath, buildFomoTokenUrl, buildDebotTokenUrl } = sandbox.module.exports;
+
+const relativeTimeSandbox = { module: { exports: {} } };
+vm.runInNewContext(`
+${extractFunction('formatTradeAgeFromTimeMs')}
+  module.exports = formatTradeAgeFromTimeMs;
+`, relativeTimeSandbox);
+const formatTradeAgeFromTimeMs = relativeTimeSandbox.module.exports;
+assert.equal(formatTradeAgeFromTimeMs(1_000, 7_000), '6s');
+assert.equal(formatTradeAgeFromTimeMs(1_000, 61_000), '1m');
+assert.equal(formatTradeAgeFromTimeMs(1_000, 3_601_000), '1h');
+
 const solMint = 'So11111111111111111111111111111111111111112';
 const bscAddress = '0x1111111111111111111111111111111111111111';
 
@@ -103,8 +114,43 @@ assert.deepEqual(parse(`/bsc/profile/${bscAddress}`), {
 assert.equal(buildGmgnTokenPath('sol', solMint), `/sol/token/${solMint}`);
 assert.equal(buildGmgnTokenPath('bsc', bscAddress), `/bsc/token/${bscAddress}`);
 assert.equal(buildGmgnTokenPath('bnb', bscAddress), `/bsc/token/${bscAddress}`);
+assert.equal(buildGmgnTokenPath('robinhood', bscAddress), `/robinhood/token/${bscAddress}`);
 assert.equal(normalizeChainName('solana'), 'sol');
 assert.equal(normalizeChainName('ethereum'), 'eth');
+assert.equal(normalizeChainName('Robinhood'), 'robinhood');
+assert.equal(normalizeChainName('RH'), 'robinhood');
+assert.equal(normalizeChainName('Robinhood Chain'), 'robinhood');
+
+const tradeIdentitySandbox = { module: { exports: {} } };
+vm.runInNewContext(`
+${extractFunction('normalizeTradeKeyPart')}
+${extractFunction('buildStableTradeKey')}
+${extractFunction('buildHeuristicTradeFingerprint')}
+  module.exports = { buildStableTradeKey, buildHeuristicTradeFingerprint };
+`, tradeIdentitySandbox);
+const { buildStableTradeKey, buildHeuristicTradeFingerprint } = tradeIdentitySandbox.module.exports;
+const repeatedTrade = {
+  chain: 'base',
+  mint: bscAddress,
+  wallet: 'alex',
+  walletAddress: '0xb226f97bc5b01978848dc440b40c70faea7c006e',
+  action: 'buy',
+  amount: '0.536',
+  fingerprint: 'buy|0.536TSG'
+};
+assert.equal(buildStableTradeKey({ ...repeatedTrade, timeMs: 1784291100000 }), buildStableTradeKey({ ...repeatedTrade, timeMs: 1784291160000 }), 'relative scan time must not change trade identity');
+assert.notEqual(buildStableTradeKey(repeatedTrade), buildStableTradeKey({ ...repeatedTrade, sourceTradeId: '0xabc1234567890123' }), 'an explicit source transaction id must take precedence');
+assert.notEqual(buildStableTradeKey(repeatedTrade), buildStableTradeKey({ ...repeatedTrade, amount: '0.537', fingerprint: 'buy|0.537TSG' }), 'different trade content must remain distinct');
+assert.equal(
+  buildHeuristicTradeFingerprint({ action: 'reduce', amount: '0.12', tokenSymbol: 'APEMAN', timeMs: 1784291233000, volatileText: '7s MC:$16K' }),
+  buildHeuristicTradeFingerprint({ action: 'reduce', amount: '0.12', tokenSymbol: 'APEMAN', timeMs: 1784291234000, volatileText: '58s MC:$19K' }),
+  'volatile age, PnL and market-cap text must not change heuristic trade identity'
+);
+assert.notEqual(
+  buildHeuristicTradeFingerprint({ action: 'reduce', amount: '0.12', tokenSymbol: 'APEMAN', timeMs: 1784291233000 }),
+  buildHeuristicTradeFingerprint({ action: 'reduce', amount: '0.12', tokenSymbol: 'APEMAN', timeMs: 1784291240000 }),
+  'a later same-amount trade must remain distinguishable'
+);
 
 assert.deepEqual(JSON.parse(JSON.stringify(parseDebotTokenHref(`/token/solana/274997_${solMint}`))), {
   href: `/token/solana/274997_${solMint}`,
@@ -123,6 +169,7 @@ assert.equal(buildFomoTokenUrl('bsc', bscAddress), `https://fomo.family/tokens/b
 assert.equal(buildFomoTokenUrl('bnb', bscAddress), `https://fomo.family/tokens/bnb/${bscAddress}`);
 assert.equal(buildFomoTokenUrl('base', bscAddress), `https://fomo.family/tokens/base/${bscAddress}`);
 assert.equal(buildFomoTokenUrl('eth', bscAddress), `https://fomo.family/tokens/ethereum/${bscAddress}`);
+assert.equal(buildFomoTokenUrl('robinhood', bscAddress), `https://fomo.family/tokens/robinhood/${bscAddress}`);
 assert.equal(buildFomoTokenUrl('tron', bscAddress), '');
 
 assert.equal(buildDebotTokenUrl('sol', solMint), `https://debot.ai/token/solana/${solMint}`);
@@ -130,6 +177,7 @@ assert.equal(buildDebotTokenUrl('bsc', bscAddress), `https://debot.ai/token/bsc/
 assert.equal(buildDebotTokenUrl('bnb', bscAddress), `https://debot.ai/token/bsc/${bscAddress}`);
 assert.equal(buildDebotTokenUrl('base', bscAddress), `https://debot.ai/token/base/${bscAddress}`);
 assert.equal(buildDebotTokenUrl('eth', bscAddress), `https://debot.ai/token/ethereum/${bscAddress}`);
+assert.equal(buildDebotTokenUrl('robinhood', bscAddress), `https://debot.ai/token/robinhood/${bscAddress}`);
 assert.equal(buildDebotTokenUrl('tron', bscAddress), '');
 
 const debotParserSandbox = {
@@ -298,11 +346,12 @@ const signalEventSandbox = {
 };
 
 vm.runInNewContext(`
-  const SUPPORTED_GMGN_CHAINS = new Set(['sol', 'eth', 'bsc', 'bnb', 'base', 'tron', 'blast']);
+  const SUPPORTED_GMGN_CHAINS = new Set(['sol', 'eth', 'bsc', 'bnb', 'base', 'tron', 'blast', 'robinhood']);
   const config = { minWallets: 2 };
   function getSpeechWatchAlias(name) { return name === '西瓜' ? '西瓜哥' : ''; }
   function isDebotMonitorWindowPage() { return false; }
   function shortAddress(value) { return String(value || '').slice(0, 4); }
+  function getFocusWalletMatch() { return null; }
 ${helperBlock}
 ${extractFunction('normalizeTradeKeyPart')}
 ${extractFunction('buildAlertGroupKey')}
@@ -341,8 +390,12 @@ assert.deepEqual(plain(buildWalletTradeSignalEvent({
   href: `/bsc/token/${bscAddress}`,
   stableKey: 'trade-stable-key'
 })), {
+  schemaVersion: 2,
+  tradeId: 'trade-stable-key',
+  identityConfidence: 'heuristic',
   source: 'gmgn',
   type: 'wallet_trade',
+  positionAction: 'buy',
   ts: 1780000000000,
   chain: 'bsc',
   ca: bscAddress,
@@ -362,6 +415,8 @@ assert.deepEqual(plain(buildWalletTradeSignalEvent({
   raw: {
     from: 'gmgn-extension',
     stable_key: 'trade-stable-key',
+    trade_id: 'trade-stable-key',
+    identity_confidence: 'heuristic',
     inferred_time: false,
     original_action: '买入'
   }
@@ -381,12 +436,14 @@ assert.deepEqual(plain(buildConvergenceAlertSignalEvent({
   requiredWallets: 2,
   hasPriorityWallet: false
 })), {
+  schemaVersion: 2,
   source: 'gmgn',
   type: 'convergence_alert',
   ts: 1780000000000,
   chain: 'bsc',
   ca: bscAddress,
   symbol: 'PEPE',
+  image: '',
   action: 'alert',
   mcap: '120K',
   text: 'PEPE 5 个关注钱包聚合买入',
@@ -398,8 +455,15 @@ assert.deepEqual(plain(buildConvergenceAlertSignalEvent({
     wallet_count: 5,
     threshold: 2,
     priority_wallet_hit: false,
+    focus_wallet_hit: false,
+    focus_wallets: [],
     group_key: `bsc|${bscAddress}`,
-    wallets: ['西瓜', '土豆', '香蕉']
+    record_kind: 'aggregate_snapshot',
+    wallets: [
+      { name: '西瓜', address: '', amount: '', timeAgo: '', timeMs: 0, avatar: '', closed: false, closedAt: 0 },
+      { name: '土豆', address: '', amount: '', timeAgo: '', timeMs: 0, avatar: '', closed: false, closedAt: 0 },
+      { name: '香蕉', address: '', amount: '', timeAgo: '', timeMs: 0, avatar: '', closed: false, closedAt: 0 }
+    ]
   }
 });
 
@@ -408,7 +472,7 @@ const watchedSpeechSandbox = {
 };
 
 vm.runInNewContext(`
-  const SUPPORTED_GMGN_CHAINS = new Set(['sol', 'eth', 'bsc', 'bnb', 'base', 'tron', 'blast']);
+  const SUPPORTED_GMGN_CHAINS = new Set(['sol', 'eth', 'bsc', 'bnb', 'base', 'tron', 'blast', 'robinhood']);
   function getSpeechWatchAlias(name) { return name === '西瓜' ? '西瓜哥' : ''; }
 ${helperBlock}
 ${extractFunction('sanitizeSpeechName')}
