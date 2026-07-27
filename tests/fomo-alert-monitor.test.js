@@ -39,6 +39,11 @@ assert.deepEqual(parsed, {
 
 const traderAnchor = {
   textContent: 'BinkBinkBink Buy 1h VICECOIN $2.2K at $125.9K MC',
+  querySelectorAll(selector) {
+    return selector === 'img'
+      ? [{ src: 'https://prod-fomo-profile-pics.s3.amazonaws.com/binkieee_small.jpg' }]
+      : [];
+  },
   getAttribute(name) {
     return name === 'href'
       ? '/tokens/solana/ExCALBK63oJHxoDTgEPspKG7TFuhBcEgMv6YiyApump?tradeId=53359ee2-75ca-4a63-b67e-1be0b1cef3e5'
@@ -51,8 +56,9 @@ assert.equal(traderParsed.side, 'buy');
 assert.equal(traderParsed.traderName, 'BinkBinkBink');
 assert.equal(traderParsed.traderHandle, 'BinkBinkBink');
 assert.equal(traderParsed.traderAddress, 'F9Tv9FpKcaDwx7Ns6PvCJrc3SCeksw1qQdBVHpUbz6to');
+assert.equal(traderParsed.traderAvatar, 'https://prod-fomo-profile-pics.s3.amazonaws.com/binkieee_small.jpg');
 assert.equal(traderParsed.tradeId, '53359ee2-75ca-4a63-b67e-1be0b1cef3e5');
-assert.equal(traderParsed.stableKey, 'trade|53359ee2-75ca-4a63-b67e-1be0b1cef3e5|buy|$2.2K');
+assert.equal(traderParsed.stableKey, 'trade|53359ee2-75ca-4a63-b67e-1be0b1cef3e5|buy|$2.2K|$125.9K');
 assert.equal(traderParsed.symbol, 'VICECOIN');
 assert.equal(traderParsed.amountUsd, 2200);
 assert.equal(traderParsed.marketCapUsd, 125900);
@@ -117,15 +123,30 @@ assert.match(backgroundSource, /dispatchFocusBuyToRelay\(focusBuy, settings\)/, 
 assert.match(backgroundSource, /source:\s*'fomo-alert'/, 'Market Watch item should retain its FOMO source');
 assert.match(monitorSource, /fomoAlertSeenV2/, 'seen alerts should persist across hidden-tab reloads');
 assert.match(convergenceSource, /getAlertGroupKey\(\{ token, mint, chain \}\)/, 'FOMO should merge by the same token group key as GMGN');
-assert.match(convergenceSource, /pendingFomoAggregateAlerts\.push\(message\.payload\)/, 'FOMO events should enter the monitor render queue one by one');
+assert.match(convergenceSource, /pendingFomoAggregateAlerts\.push\(message\.payload\)/, 'FOMO WSS events should enter the monitor render queue one by one');
 assert.match(convergenceSource, /setTimeout\(flushFomoAggregateAlertBatch, FOMO_RENDER_BATCH_MS\)/, 'FOMO monitor rendering should be coalesced into short batches');
 assert.match(convergenceSource, /ingestFomoAggregateAlert\(payload, \{ deferRender: true, deferEffects: true \}\)/, 'a FOMO batch should merge all events before rendering or playing cues');
 assert.match(convergenceSource, /function flushFomoAggregateAlertBatch\(\)[\s\S]*if \(!changed\) return;[\s\S]*renderAlerts\(\);[\s\S]*scheduleFomoNewStateClear\(touchedAlerts\)/, 'each FOMO batch should render once and clear highlights together');
 assert.match(convergenceSource, /if \(config\.soundEnabled && selectedSoundCue\)[\s\S]*playSound\(selectedSoundCue\.tier, selectedSoundCue\.chain\)/, 'each FOMO batch should play at most one highest-priority cue');
 assert.match(convergenceSource, /existing\.wallets = \[\.\.\.walletDetails, \.\.\.fomoWallets\]/, 'GMGN wallet rows should preserve merged FOMO rows');
-assert.match(convergenceSource, /fomoAggregateTraderCount > 0 \? formatFomoActorCount\(fomoAggregateTraderCount, 'buy'\)/, 'the fused card should expose aggregate buyer count without repeating the source name');
-assert.match(convergenceSource, /fomoAggregateSellerCount > 0 \? formatFomoActorCount\(fomoAggregateSellerCount, 'sell'\)/, 'the fused card should expose aggregate seller count without repeating the source name');
+assert.match(convergenceSource, /const totalBuyWalletCount = effective \+ Math\.max\(fomoRealBuyerCount, fomoAggregateTraderCount\)/, 'the fused card should combine GMGN and FOMO buyers under one wallet count');
+assert.match(convergenceSource, /const totalSellWalletCount = Math\.max\(fomoRealSellerCount, fomoAggregateSellerCount\)/, 'the fused card should keep FOMO sell activity compact without switching terminology');
+assert.match(convergenceSource, /fomoTradeCount > 1 \? `\$\{fomoTradeCount\} 笔`/, 'repeated FOMO fills from one wallet should expose their transaction count');
 assert.match(convergenceSource, /name: signal\.alertKind === 'trader'[\s\S]*\? traderLabel[\s\S]*: formatFomoActorCount\(signal\.traderCount, side\)/, 'FOMO wallet rows should use the same compact name-first copy as GMGN rows');
+assert.match(convergenceSource, /function renderAlertWalletTag\(wallet, chain\)/, 'GMGN and FOMO people must share one wallet-row renderer');
+assert.match(convergenceSource, /timeMs:\s*Number\(signal\.observedAt \|\| 0\)/, 'FOMO rows must retain their absolute event time');
+assert.match(convergenceSource, /gcp-wallet-time[\s\S]*data-time-ms=/, 'rendered wallet times must expose their absolute timestamp');
+assert.match(convergenceSource, /RELATIVE_TIME_REFRESH_MS\s*=\s*15\s*\*\s*1000/, 'relative time refresh should use one low-frequency timer');
+assert.match(convergenceSource, /function refreshRenderedRelativeTimes[\s\S]*document\.hidden[\s\S]*classList\.contains\('collapsed'\)/, 'time refresh must pause when the page or tray is hidden');
+assert.match(convergenceSource, /function startRelativeTimeRefresh[\s\S]*setInterval/, 'relative times should share one timer instead of one timer per row');
+assert.match(convergenceSource, /stopRelativeTimeRefresh\(\)/, 'the shared timer must stop with monitor mode');
+assert.match(convergenceSource, /const canToggleFocus = !wallet\.external \|\| !!wallet\.address/, 'a FOMO person with a real address must expose the shared Focus toggle');
+assert.match(convergenceSource, /function buildFomoWatchedTrade\(signal, alert\)[\s\S]*getFocusWalletMatch\(/, 'FOMO people must use the same Focus identity lookup as GMGN wallet TTS');
+assert.match(convergenceSource, /timeMs:\s*Number\(signal\.receivedAt \|\| 0\)/, 'FOMO speech freshness must use local WSS receipt time instead of the minute-rounded upstream event time');
+assert.match(convergenceSource, /liveDelivery:\s*signal\.liveDelivery === true/, 'FOMO speech must retain the live-delivery guard');
+assert.match(convergenceSource, /if \(trade\.source === 'fomo' && trade\.liveDelivery !== true\) return false/, 'replayed FOMO history must never enter the speech queue');
+assert.match(convergenceSource, /flushWatchedTradeAnnouncements\(watchedTradesToSpeak\)/, 'focused FOMO events must enter the existing watched-wallet speech queue');
+assert.match(backgroundSource, /actorImage:\s*String\(payload\.traderAvatar/, 'FOMO profile images must reach Market Watch intelligence');
 assert.doesNotMatch(convergenceSource, /platform: \{ tag: 'FOMO'/, 'the clickable FOMO icon should replace the repeated text platform badge');
 assert.match(convergenceSource, /tier:\s*side === 'buy' \? calcTier\(traderCount\) : 1/, 'sell alerts should not inflate bullish alert tier');
 

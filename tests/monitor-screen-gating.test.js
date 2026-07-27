@@ -132,6 +132,16 @@ assert.match(
   'redirector handoff must be gated by the explicit monitor-screen state'
 );
 
+const ignoreRedirectBlock = redirectorSource.match(
+  /function shouldIgnoreMonitorRedirect[\s\S]*?\n}\n\nfunction isExternalToGmgn/
+);
+assert.ok(ignoreRedirectBlock, 'monitor redirect click-filter block should be locatable');
+assert.doesNotMatch(
+  ignoreRedirectBlock[0],
+  /const icon = target\.closest\('svg'\)[\s\S]*?return true/,
+  'clicking an SVG inside a real link must still hand that link to the main screen'
+);
+
 assert.match(
   contentSource,
   /return monitorScreenActive && \(FOLLOW_PATH_RE\.test\(location\.pathname\) \|\| isDebotMonitorWindowPage\(\)\)/,

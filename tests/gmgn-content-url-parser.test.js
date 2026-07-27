@@ -63,6 +63,17 @@ ${helperBlock}
 `, sandbox);
 
 const { normalizeChainName, parseGmgnTokenHref, parseDebotTokenHref, buildGmgnTokenPath, buildFomoTokenUrl, buildDebotTokenUrl } = sandbox.module.exports;
+
+const relativeTimeSandbox = { module: { exports: {} } };
+vm.runInNewContext(`
+${extractFunction('formatTradeAgeFromTimeMs')}
+  module.exports = formatTradeAgeFromTimeMs;
+`, relativeTimeSandbox);
+const formatTradeAgeFromTimeMs = relativeTimeSandbox.module.exports;
+assert.equal(formatTradeAgeFromTimeMs(1_000, 7_000), '6s');
+assert.equal(formatTradeAgeFromTimeMs(1_000, 61_000), '1m');
+assert.equal(formatTradeAgeFromTimeMs(1_000, 3_601_000), '1h');
+
 const solMint = 'So11111111111111111111111111111111111111112';
 const bscAddress = '0x1111111111111111111111111111111111111111';
 
@@ -158,6 +169,7 @@ assert.equal(buildFomoTokenUrl('bsc', bscAddress), `https://fomo.family/tokens/b
 assert.equal(buildFomoTokenUrl('bnb', bscAddress), `https://fomo.family/tokens/bnb/${bscAddress}`);
 assert.equal(buildFomoTokenUrl('base', bscAddress), `https://fomo.family/tokens/base/${bscAddress}`);
 assert.equal(buildFomoTokenUrl('eth', bscAddress), `https://fomo.family/tokens/ethereum/${bscAddress}`);
+assert.equal(buildFomoTokenUrl('robinhood', bscAddress), `https://fomo.family/tokens/robinhood/${bscAddress}`);
 assert.equal(buildFomoTokenUrl('tron', bscAddress), '');
 
 assert.equal(buildDebotTokenUrl('sol', solMint), `https://debot.ai/token/solana/${solMint}`);
@@ -165,6 +177,7 @@ assert.equal(buildDebotTokenUrl('bsc', bscAddress), `https://debot.ai/token/bsc/
 assert.equal(buildDebotTokenUrl('bnb', bscAddress), `https://debot.ai/token/bsc/${bscAddress}`);
 assert.equal(buildDebotTokenUrl('base', bscAddress), `https://debot.ai/token/base/${bscAddress}`);
 assert.equal(buildDebotTokenUrl('eth', bscAddress), `https://debot.ai/token/ethereum/${bscAddress}`);
+assert.equal(buildDebotTokenUrl('robinhood', bscAddress), `https://debot.ai/token/robinhood/${bscAddress}`);
 assert.equal(buildDebotTokenUrl('tron', bscAddress), '');
 
 const debotParserSandbox = {

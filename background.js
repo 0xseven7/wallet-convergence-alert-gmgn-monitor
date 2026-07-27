@@ -1,5 +1,6 @@
 const OPEN_LINK_MESSAGE = 'open-in-main-window';
 const RELAY_SITE_SOURCE = 'monitor-relay-site';
+const MONITOR_SCREEN_LINK_SOURCE = 'gmgn-monitor-screen';
 const REGISTER_MONITOR_TAB_MESSAGE = 'register-monitor-tab';
 const GET_MONITOR_SCREEN_STATUS_MESSAGE = 'get-monitor-screen-status';
 const SET_MONITOR_SCREEN_FROM_SETTINGS_MESSAGE = 'set-monitor-screen-from-settings';
@@ -14,12 +15,16 @@ const GMGN_FOCUS_ADDRESS_RELAY_REQUEST_MESSAGE = 'gmgn-focus-address-relay-reque
 const DEFAULT_MARKET_WATCH_DESK_BASE_URL = 'http://127.0.0.1:17387';
 const DEFAULT_MAIN_SCREEN_RELAY_BASE_URL = 'https://market-watch.macmini.lan';
 const FOMO_AGGREGATE_ALERT_EVENT = 'fomo-aggregate-alert';
+const FOMO_RECENT_ALERTS_REQUEST_EVENT = 'get-recent-fomo-alerts';
 const FOMO_THESIS_EVENT = 'fomo-thesis-event';
 const FOMO_MONITOR_HEARTBEAT_EVENT = 'fomo-monitor-heartbeat';
 const FOMO_MONITOR_PING_EVENT = 'fomo-monitor-ping';
 const FOMO_MONITOR_ALARM = 'fomo-monitor-health-check';
 const FOMO_MONITOR_HEALTH_STORAGE_KEY = 'fomoMonitorHealthV1';
 const FOMO_MONITOR_URL_STORAGE_KEY = 'fomoMonitorUrlV1';
+const FOMO_RECENT_ALERTS_STORAGE_KEY = 'fomoRecentAlertsV1';
+const FOMO_RECENT_ALERT_RETENTION_MS = 30 * 60 * 1000;
+const FOMO_RECENT_ALERT_MAX_ITEMS = 1000;
 const DEFAULT_FOMO_MONITOR_URL = 'https://fomo.family/tokens/robinhood/0x020bfc650a365f8bb26819deaabf3e21291018b4';
 const FOMO_MONITOR_URL_PATTERNS = [
   'https://fomo.family/tokens/*',
@@ -29,6 +34,7 @@ const FOMO_MONITOR_URL_PATTERNS = [
 const FOMO_MONITOR_CHECK_MINUTES = 1;
 const FOMO_MONITOR_QUIET_RELOAD_MS = 15 * 60 * 1000;
 const FOMO_MONITOR_RELOAD_COOLDOWN_MS = 2 * 60 * 1000;
+const FOMO_MONITOR_WS_RECOVERY_MS = 60 * 1000;
 const LEGACY_MAIN_SCREEN_RELAY_BASE_URL = 'http://127.0.0.1:17390';
 const DEFAULT_TTS_API = 'http://tts.macmini.lan/tts/v3-task';
 const MONITOR_STATE_STORAGE_KEY = 'monitorState';
@@ -95,6 +101,9 @@ let monitorState = {
 };
 const fomoMonitorHealth = new Map();
 let fomoMonitorCreatePromise = null;
+let fomoRecentAlertsCache = null;
+let fomoRecentAlertsLoadPromise = null;
+let fomoRecentAlertsPersistTimer = null;
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !message.type) {
@@ -102,16 +111,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === OPEN_LINK_MESSAGE && message.url) {
-    const monitorWindowId = sender.tab ? sender.tab.windowId : undefined;
-    const messageSource = String(message.source || '').trim();
-
-    openInMainWindow(message.url, monitorWindowId, {
-      relayBaseUrl: message.relayBaseUrl,
-      relayOnly: message.relayOnly === true,
-      allowAnyHttpUrl: message.allowAnyHttpUrl === true && messageSource === RELAY_SITE_SOURCE,
-      source: messageSource,
-      sourceOrigin: message.sourceOrigin
-    })
+    openLinkMessageInMainWindow(message, sender)
       .then((result) => sendResponse(result))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
 
@@ -138,6 +138,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     handleFomoAggregateAlert(message.payload)
       .then((result) => sendResponse(result))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message.type === FOMO_RECENT_ALERTS_REQUEST_EVENT) {
+    getRecentFomoAlerts()
+      .then((items) => sendResponse({ ok: true, items }))
+      .catch((error) => sendResponse({ ok: false, items: [], error: error.message }));
     return true;
   }
 
@@ -255,7 +262,11 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
   if (tab.openerTabId === monitorState.tabId && isExternalToGmgn(nextUrl)) {
     try {
-      await openInMainWindow(nextUrl, monitorState.windowId || tab.windowId);
+      await openInMainWindow(
+        nextUrl,
+        monitorState.windowId || tab.windowId,
+        buildMonitorScreenRelayOptions()
+      );
       await chrome.tabs.remove(tabId);
     } catch (_error) {
       return;
@@ -292,7 +303,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   const monitorWindowId = tab.windowId;
 
   try {
-    await openInMainWindow(nextUrl, monitorWindowId);
+    await openInMainWindow(nextUrl, monitorWindowId, buildMonitorScreenRelayOptions());
   } catch (_error) {
     return;
   }
@@ -382,6 +393,40 @@ async function initializeExtensionState() {
   await superviseFomoMonitorTabs();
 }
 
+async function openLinkMessageInMainWindow(message, sender) {
+  await ensureMonitorState();
+  const monitorWindowId = sender.tab ? sender.tab.windowId : undefined;
+  const messageSource = String(message.source || '').trim();
+  const sourceOrigin = String(message.sourceOrigin || '').trim();
+  const trustedMonitorScreen = message.allowAnyHttpUrl === true
+    && messageSource === MONITOR_SCREEN_LINK_SOURCE
+    && sender.tab
+    && sender.tab.windowId === monitorState.windowId
+    && /^https:\/\/([^.]+\.)?gmgn\.ai$/i.test(sourceOrigin);
+  const trustedRelaySite = message.allowAnyHttpUrl === true
+    && messageSource === RELAY_SITE_SOURCE;
+
+  return openInMainWindow(message.url, monitorWindowId, {
+    relayBaseUrl: message.relayBaseUrl,
+    relayOnly: message.relayOnly === true,
+    allowAnyHttpUrl: trustedMonitorScreen || trustedRelaySite,
+    source: messageSource,
+    sourceOrigin
+  });
+}
+
+function buildMonitorScreenRelayOptions() {
+  let sourceOrigin = 'https://gmgn.ai';
+  try {
+    sourceOrigin = new URL(monitorState.followUrl || DEFAULT_MONITOR_URL).origin;
+  } catch (_error) {}
+  return {
+    allowAnyHttpUrl: true,
+    source: MONITOR_SCREEN_LINK_SOURCE,
+    sourceOrigin
+  };
+}
+
 function isFomoTokenUrl(rawUrl) {
   try {
     const parsed = new URL(String(rawUrl || ''));
@@ -425,6 +470,80 @@ async function removeFomoMonitorHealth(tabId) {
   await restoreFomoMonitorHealth();
   fomoMonitorHealth.delete(tabId);
   await persistFomoMonitorHealth();
+}
+
+function fomoRecentAlertTimestamp(payload) {
+  const observedAt = Number(payload?.observedAt);
+  return Number.isFinite(observedAt) && observedAt > 0 ? observedAt : Date.now();
+}
+
+function fomoRecentAlertKey(payload) {
+  const stableKey = String(payload?.stableKey || '').trim();
+  if (stableKey) return stableKey;
+  return [
+    String(payload?.chain || '').trim().toLowerCase(),
+    String(payload?.tokenAddress || '').trim().toLowerCase(),
+    String(payload?.side || '').trim().toLowerCase(),
+    String(payload?.traderHandle || payload?.traderName || '').trim().toLowerCase(),
+    String(payload?.amountText || '').trim(),
+    fomoRecentAlertTimestamp(payload)
+  ].join('|');
+}
+
+function pruneRecentFomoAlerts(items, now = Date.now()) {
+  const cutoff = now - FOMO_RECENT_ALERT_RETENTION_MS;
+  const byKey = new Map();
+  for (const rawItem of Array.isArray(items) ? items : []) {
+    if (!rawItem || typeof rawItem !== 'object') continue;
+    const observedAt = fomoRecentAlertTimestamp(rawItem);
+    if (observedAt < cutoff || observedAt > now + (5 * 60 * 1000)) continue;
+    const item = { ...rawItem, observedAt };
+    byKey.set(fomoRecentAlertKey(item), item);
+  }
+  return Array.from(byKey.values())
+    .sort((left, right) => fomoRecentAlertTimestamp(left) - fomoRecentAlertTimestamp(right))
+    .slice(-FOMO_RECENT_ALERT_MAX_ITEMS);
+}
+
+async function loadRecentFomoAlertCache() {
+  if (Array.isArray(fomoRecentAlertsCache)) return fomoRecentAlertsCache;
+  if (!fomoRecentAlertsLoadPromise) {
+    fomoRecentAlertsLoadPromise = (async () => {
+      const stored = await chrome.storage.session.get(FOMO_RECENT_ALERTS_STORAGE_KEY).catch(() => ({}));
+      const existing = stored?.[FOMO_RECENT_ALERTS_STORAGE_KEY];
+      fomoRecentAlertsCache = pruneRecentFomoAlerts(existing);
+      return fomoRecentAlertsCache;
+    })().finally(() => {
+      fomoRecentAlertsLoadPromise = null;
+    });
+  }
+  return fomoRecentAlertsLoadPromise;
+}
+
+function persistRecentFomoAlertsSoon() {
+  if (fomoRecentAlertsPersistTimer) return;
+  fomoRecentAlertsPersistTimer = setTimeout(() => {
+    fomoRecentAlertsPersistTimer = null;
+    const items = Array.isArray(fomoRecentAlertsCache) ? fomoRecentAlertsCache : [];
+    chrome.storage.session.set({ [FOMO_RECENT_ALERTS_STORAGE_KEY]: items }).catch(() => null);
+  }, 250);
+}
+
+async function cacheRecentFomoAlert(payload) {
+  const existing = await loadRecentFomoAlertCache();
+  fomoRecentAlertsCache = pruneRecentFomoAlerts([...existing, payload]);
+  persistRecentFomoAlertsSoon();
+  return fomoRecentAlertsCache;
+}
+
+async function getRecentFomoAlerts() {
+  const existing = await loadRecentFomoAlertCache();
+  const items = pruneRecentFomoAlerts(existing);
+  if (items.length !== existing.length) {
+    fomoRecentAlertsCache = items;
+    persistRecentFomoAlertsSoon();
+  }
+  return items.map((item) => ({ ...item }));
 }
 
 async function ensureFomoMonitorAlarm() {
@@ -489,7 +608,14 @@ async function superviseFomoMonitorTabs() {
     const lastReloadAt = Number(refreshedHealth.lastReloadAt || 0);
     const isPageVisible = refreshedHealth.visibilityState === 'visible';
     const quietReloadDue = !isPageVisible && now - Number(refreshedHealth.loadedAt || now) >= FOMO_MONITOR_QUIET_RELOAD_MS;
-    const mustRecover = tab.discarded || !ping?.ok;
+    const wsWasReady = Number(refreshedHealth.wsReadyAt || 0) > 0;
+    const wsStatus = String(refreshedHealth.wsStatus || '');
+    const wsUnhealthySince = Number(refreshedHealth.wsUnhealthySince || 0);
+    const wsUnhealthyTooLong = wsWasReady
+      && wsStatus !== 'ready'
+      && wsUnhealthySince > 0
+      && now - wsUnhealthySince >= FOMO_MONITOR_WS_RECOVERY_MS;
+    const mustRecover = tab.discarded || !ping?.ok || wsUnhealthyTooLong;
     if ((mustRecover || quietReloadDue) && now - lastReloadAt >= FOMO_MONITOR_RELOAD_COOLDOWN_MS) {
       fomoMonitorHealth.set(tab.id, { ...refreshedHealth, lastReloadAt: now, loadedAt: now });
       await persistFomoMonitorHealth();
@@ -1549,8 +1675,11 @@ function normalizeFocusAddressEntries(raw) {
 
 function normalizeFocusAddressQuickAddPayload(payload) {
   const item = payload && typeof payload === 'object' ? payload : {};
-  const chain = normalizeFocusChainName(item.chain);
   const address = normalizeFocusAddress(item.address);
+  const requestedChain = normalizeFocusChainName(item.chain);
+  const chain = /^0x[a-fA-F0-9]{40}$/.test(address)
+    ? 'eth'
+    : requestedChain;
   const key = buildFocusAddressKey(chain, address);
   if (!key || !isLikelyFocusAddress(address)) {
     throw new Error('Valid Focus wallet chain and address are required.');
@@ -1577,7 +1706,13 @@ async function quickAddGmgnFocusAddress(payload, action = 'add') {
   const normalizedAction = String(action || 'add').trim().toLowerCase();
   const stored = await chrome.storage.local.get(GMGN_FOCUS_ADDRESSES_KEY);
   const focusAddressEntries = normalizeFocusAddressEntries(stored[GMGN_FOCUS_ADDRESSES_KEY]);
-  const existing = focusAddressEntries[item.key] || null;
+  const existing = focusAddressEntries[item.key]
+    || Object.values(focusAddressEntries).find((entry) => {
+      return /^0x[a-f0-9]{40}$/.test(item.addressKey)
+        && normalizeFocusAddressKey(entry?.address) === item.addressKey;
+    })
+    || null;
+  const existingKey = existing?.key || item.key;
 
   if (normalizedAction === 'status' || normalizedAction === 'check') {
     return {
@@ -1590,9 +1725,9 @@ async function quickAddGmgnFocusAddress(payload, action = 'add') {
   }
 
   if (normalizedAction === 'remove' || normalizedAction === 'delete') {
-    delete focusAddressEntries[item.key];
+    delete focusAddressEntries[existingKey];
     await chrome.storage.local.set({ [GMGN_FOCUS_ADDRESSES_KEY]: focusAddressEntries });
-    const relay = await deleteFocusAddressFromRelay(item).catch((error) => ({
+    const relay = await deleteFocusAddressFromRelay(existing || item).catch((error) => ({
       ok: false,
       error: error && error.message ? error.message : String(error)
     }));
@@ -1600,7 +1735,7 @@ async function quickAddGmgnFocusAddress(payload, action = 'add') {
       ok: true,
       action: 'remove',
       focus: false,
-      key: item.key,
+      key: existingKey,
       relay
     };
   }
@@ -1611,6 +1746,7 @@ async function quickAddGmgnFocusAddress(payload, action = 'add') {
     createdAt: existing?.createdAt || item.createdAt,
     updatedAt: new Date().toISOString()
   };
+  if (existingKey !== item.key) delete focusAddressEntries[existingKey];
   focusAddressEntries[item.key] = nextItem;
   await chrome.storage.local.set({ [GMGN_FOCUS_ADDRESSES_KEY]: focusAddressEntries });
 
@@ -2353,6 +2489,9 @@ async function handleFomoAggregateAlert(payload) {
     return { ok: false, skipped: true, error: 'Invalid FOMO alert.' };
   }
 
+  // Cache first so a simultaneous GMGN monitor refresh cannot lose the event.
+  await cacheRecentFomoAlert(payload).catch(() => null);
+
   const tabs = await chrome.tabs.query({ url: [
     'https://gmgn.ai/follow*',
     'https://www.gmgn.ai/follow*',
@@ -2380,6 +2519,7 @@ async function handleFomoAggregateAlert(payload) {
     identityConfidence: 'exact',
     traderName,
     traderAddress: String(payload.traderAddress || '').trim(),
+    actorImage: String(payload.traderAvatar || '').trim(),
     tokenName: symbol,
     symbol,
     chainId: mapMarketWatchChainId(chain),
@@ -2408,6 +2548,7 @@ async function handleFomoAggregateAlert(payload) {
     actorName: isTraderAlert ? traderName : undefined,
     actorHandle: isTraderAlert ? traderName : undefined,
     actorAddress: isTraderAlert ? String(payload.traderAddress || '').trim() : undefined,
+    actorImage: isTraderAlert ? String(payload.traderAvatar || '').trim() : undefined,
     traderCount: isTraderAlert ? 1 : traderCount,
     buyCount: !isTraderAlert || side === 'buy' ? (side === 'buy' ? traderCount : 0) : undefined,
     sellCount: !isTraderAlert || side === 'sell' ? (side === 'sell' ? traderCount : 0) : undefined,

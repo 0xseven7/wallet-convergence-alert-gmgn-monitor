@@ -8,6 +8,7 @@ const root = path.join(__dirname, '..');
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
 const background = fs.readFileSync(path.join(root, 'background.js'), 'utf8');
 const monitor = fs.readFileSync(path.join(root, 'fomo', 'alerts-monitor.js'), 'utf8');
+const wsBridge = fs.readFileSync(path.join(root, 'fomo', 'ws-bridge.js'), 'utf8');
 const screen = fs.readFileSync(path.join(root, 'gmgn', 'content.js'), 'utf8');
 
 assert.ok(manifest.permissions.includes('alarms'), 'background supervision requires alarms permission');
@@ -22,6 +23,9 @@ assert.match(background, /const tabs = await ensureFomoMonitorTab\(\)/, 'supervi
 assert.match(background, /rememberFomoMonitorUrl\(fomoTabUrl\)/, 'a manually visited FOMO token page must become the next carrier URL');
 assert.match(background, /FOMO_MONITOR_PING_EVENT/);
 assert.match(background, /chrome\.storage\.session/, 'health state should survive MV3 service-worker suspension');
+assert.match(background, /FOMO_RECENT_ALERT_RETENTION_MS\s*=\s*30\s*\*\s*60\s*\*\s*1000/, 'FOMO cache must retain thirty minutes');
+assert.match(background, /await cacheRecentFomoAlert\(payload\)[\s\S]*const tabs = await chrome\.tabs\.query/, 'FOMO events must be cached before monitor delivery');
+assert.match(background, /getRecentFomoAlerts\(\)/, 'the monitor screen needs a recent-event replay endpoint');
 assert.match(background, /restoreFomoMonitorHealth\(\)[\s\S]*updateFomoMonitorHealth\(sender\.tab\.id/, 'heartbeat wake should merge persisted tab state before writing');
 assert.match(background, /chrome\.alarms\.onAlarm[\s\S]*restoreFomoMonitorHealth\(\)[\s\S]*superviseFomoMonitorTabs\(\)/, 'alarm wake should restore persisted health before supervision');
 const superviseBlock = background.match(
@@ -39,9 +43,25 @@ assert.doesNotMatch(
   'FOMO visibility must not be inferred from OS window focus'
 );
 assert.match(monitor, /fomo-monitor-heartbeat/);
+assert.match(monitor, /wsStatusAt/, 'the health report must retain when the WSS status changed');
+assert.match(wsBridge, /WSS_CONNECT_TIMEOUT_MS/, 'a stuck FOMO authentication attempt must time out');
+assert.match(wsBridge, /restartDedicatedSocket\('connect_timeout'\)/, 'a timed-out socket must enter the normal reconnect path');
+assert.match(
+  superviseBlock[0],
+  /wsUnhealthyTooLong/,
+  'a responsive page with a persistently unhealthy WSS must still be recovered'
+);
+assert.match(
+  superviseBlock[0],
+  /FOMO_MONITOR_WS_RECOVERY_MS/,
+  'WSS recovery must wait for a bounded grace period before refreshing the page'
+);
 assert.match(monitor, /\['buy', 'sell'\]\.includes\(alert\.side\)/, 'both buy and sell alerts should be forwarded');
 assert.match(screen, /\['buy', 'sell'\]\.includes\(side\)/, 'monitor screen should display both directions');
 assert.match(screen, /is-sell/, 'sell rows should be visually distinct');
 assert.match(screen, /mapFomoSignalToWallet/, 'all GMGN reconciliation paths should preserve FOMO side metadata');
+assert.match(screen, /restoreRecentFomoAlerts\(\)/, 'GMGN monitor refresh must restore cached FOMO events');
+assert.match(screen, /historical:\s*true/, 'restored events must be marked historical');
+assert.match(screen, /deferEffects:\s*true/, 'restored events must not replay sound or speech');
 
 console.log('fomo background resilience tests passed');

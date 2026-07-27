@@ -140,6 +140,26 @@
         "https://www.fomo.family/tokens/*",
         "https://*.fomo.family/tokens/*"
       ],
+      "js": ["fomo/collector-performance.js", "fomo/ws-bridge.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://fomo.family/tokens/*",
+        "https://www.fomo.family/tokens/*",
+        "https://*.fomo.family/tokens/*"
+      ],
+      "js": ["fomo/collector-mode.js"],
+      "css": ["fomo/collector-mode.css"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://fomo.family/tokens/*",
+        "https://www.fomo.family/tokens/*",
+        "https://*.fomo.family/tokens/*"
+      ],
       "js": ["fomo/alerts-monitor.js"],
       "run_at": "document_idle"
     }

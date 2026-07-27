@@ -6,6 +6,7 @@ const path = require('node:path');
 
 const repoRoot = path.resolve(__dirname, '..');
 const source = fs.readFileSync(path.join(repoRoot, 'gmgn', 'focus-address-quick-add.js'), 'utf8');
+const convergenceSource = fs.readFileSync(path.join(repoRoot, 'gmgn', 'content.js'), 'utf8');
 const backgroundSource = fs.readFileSync(path.join(repoRoot, 'background.js'), 'utf8');
 const manifest = JSON.parse(fs.readFileSync(path.join(repoRoot, 'manifest.json'), 'utf8'));
 const midScreenManifest = JSON.parse(fs.readFileSync(path.join(repoRoot, 'mid-screen-extension', 'manifest.json'), 'utf8'));
@@ -97,6 +98,27 @@ assert.match(
   /sol\|eth\|bsc\|base\|tron\|blast\|robinhood/,
   'background Relay sync should accept robinhood Focus wallet addresses'
 );
+assert.match(
+  backgroundSource,
+  /const chain = \/\^0x\[a-fA-F0-9\]\{40\}\$\/\.test\(address\)[\s\S]*\? 'eth'/,
+  'new EVM Focus wallets must use one canonical Relay key across EVM chains'
+);
+
+assert.match(
+  convergenceSource,
+  /function focusAddressMatches\([\s\S]*entry\?\.evmAddress[\s\S]*entry\?\.solanaAddress/,
+  'Focus matching must recognize both EVM and Solana wallets linked to one person'
+);
+assert.match(
+  convergenceSource,
+  /function findFocusAddressNameKey\([\s\S]*entry\?\.alias[\s\S]*entry\?\.name/,
+  'Relay person aliases must provide a safe fallback when a streamed row omits its wallet address'
+);
+assert.match(
+  convergenceSource,
+  /<option value="eth">EVM<\/option><option value="sol">Solana<\/option>/,
+  'Focus wallet editing must expose wallet families instead of individual EVM chains'
+);
 
 const monitorFocusEntry = manifest.content_scripts.find((entry) => (entry.js || []).includes('gmgn/focus-address-quick-add.js'));
 assert.ok(monitorFocusEntry, 'monitor manifest should inject the Focus address quick-add script');
@@ -112,10 +134,9 @@ assert.ok(
 const midScreenAddressScripts = midScreenManifest.content_scripts
   .filter((entry) => (entry.matches || []).some((pattern) => pattern.includes('/address/')))
   .flatMap((entry) => entry.js || []);
-assert.deepEqual(
-  [...new Set(midScreenAddressScripts)].sort(),
-  [],
-  'main-screen extension must not inject an address-page Add Focus button'
+assert.ok(
+  midScreenManifest.content_scripts.some((entry) => (entry.js || []).includes('gmgn/focus-address.js')),
+  'main-screen extension should expose the Relay-backed Focus toggle on wallet profiles'
 );
 
 console.log('monitor focus address quick-add tests passed');

@@ -31,6 +31,7 @@
   let observer = null;
   let scanInterval = null;
   let mountCheckInterval = null;
+  let relativeTimeRefreshInterval = null;
   let injectStarsScheduled = false;
   const GMGN_SPEECH_WATCHLIST_KEY = 'gmgnSpeechWatchlist';
   const GMGN_FOCUS_ADDRESSES_KEY = 'gmgnFocusAddresses';
@@ -71,6 +72,10 @@
   const GMGN_AUDIO_SETTINGS_KEY = 'gmgnAudioSettings';
   const AUDIO_SYNC_CHANNEL_NAME = 'gmgn_convergence_audio_sync_channel';
   const DISPATCH_GMGN_SIGNAL_EVENT_MESSAGE = 'dispatch-gmgn-signal-event';
+  const FOMO_RECENT_ALERTS_REQUEST_EVENT = 'get-recent-fomo-alerts';
+  const FOMO_RECENT_ALERT_RETENTION_MS = 30 * 60 * 1000;
+  const FOMO_RECENT_SIGNAL_MAX_PER_TOKEN = 200;
+  const RELATIVE_TIME_REFRESH_MS = 15 * 1000;
   const TTS_STORAGE_KEYS = ['ttsVoice', 'ttsRate', 'ttsPitch', 'ttsApiUrl'];
   const AUDIO_LOCK_MS = 4500;
   const PRESET_AUDIO_OPTIONS = new Set(['default.MP3', 'preset1.MP3', 'elonmusk.MP3', 'CZ.MP3', 'heyi.MP3']);
@@ -405,6 +410,36 @@
     return `${normalizedChain}:${normalizedAddress}`;
   }
 
+  function getFocusAddressType(address, chain = '') {
+    const normalizedAddress = normalizeFocusAddress(address);
+    if (/^0x[a-fA-F0-9]{40}$/.test(normalizedAddress)) return 'evm';
+    if (normalizeChainName(chain) === 'sol' && /^[1-9A-HJ-NP-Za-km-z]{32,64}$/.test(normalizedAddress)) return 'solana';
+    return '';
+  }
+
+  function focusAddressMatches(entry, walletAddress, chain = '') {
+    const addressType = getFocusAddressType(walletAddress, chain);
+    if (!addressType) return false;
+    const normalizedWalletAddress = normalizeFocusAddressKey(walletAddress);
+    if (addressType === 'evm') {
+      return [entry?.address, entry?.evmAddress].some((candidate) => {
+        const normalizedCandidate = normalizeFocusAddressKey(candidate);
+        return /^0x[a-f0-9]{40}$/.test(normalizedCandidate) && normalizedCandidate === normalizedWalletAddress;
+      });
+    }
+    return [entry?.address, entry?.solanaAddress].some((candidate) => {
+      const normalizedCandidate = normalizeFocusAddressKey(candidate);
+      return normalizedCandidate && normalizedCandidate === normalizedWalletAddress;
+    });
+  }
+
+  function getFocusStorageChain(chain, address) {
+    const addressType = getFocusAddressType(address, chain);
+    if (addressType === 'evm') return 'eth';
+    if (addressType === 'solana') return 'sol';
+    return normalizeChainName(chain);
+  }
+
   function isLikelyFocusAddress(address) {
     const text = normalizeFocusAddress(address);
     return /^0x[a-fA-F0-9]{40}$/.test(text)
@@ -482,6 +517,7 @@
       if (normalizedChain === 'bsc') return 'bnb';
       if (normalizedChain === 'eth') return 'ethereum';
       if (normalizedChain === 'base') return 'base';
+      if (normalizedChain === 'robinhood') return 'robinhood';
       return '';
     }
 
@@ -490,6 +526,7 @@
       if (normalizedChain === 'bsc') return 'bsc';
       if (normalizedChain === 'eth') return 'ethereum';
       if (normalizedChain === 'base') return 'base';
+      if (normalizedChain === 'robinhood') return 'robinhood';
       return '';
     }
 
@@ -673,6 +710,7 @@
   const FOMO_RENDER_BATCH_MS = 120;
   let pendingFomoAggregateAlerts = [];
   let fomoRenderBatchTimer = null;
+  let fomoHistoryRestorePromise = null;
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type !== 'fomo-aggregate-alert' || !message.payload) return false;
@@ -691,6 +729,7 @@
     if (!batch.length) return;
 
     const touchedAlerts = new Set();
+    const watchedTradesToSpeak = [];
     let selectedSoundCue = null;
     let changed = false;
     for (const payload of batch) {
@@ -698,6 +737,7 @@
       if (result.ok && !result.duplicate && !result.skipped && result.alert) {
         changed = true;
         touchedAlerts.add(result.alert);
+        if (result.speechTrade) watchedTradesToSpeak.push(result.speechTrade);
         if (result.soundCue && (!selectedSoundCue || result.soundCue.tier > selectedSoundCue.tier)) {
           selectedSoundCue = result.soundCue;
         }
@@ -706,6 +746,7 @@
     if (!changed) return;
 
     renderAlerts();
+    flushWatchedTradeAnnouncements(watchedTradesToSpeak);
     if (config.soundEnabled && selectedSoundCue) {
       playSound(selectedSoundCue.tier, selectedSoundCue.chain);
       flashBadge();
@@ -739,7 +780,7 @@
   function mapFomoSignalToWallet(signal) {
     const side = signal.side === 'sell' ? 'sell' : 'buy';
     const traderLabel = signal.traderName
-      ? `@${signal.traderName}`
+      ? String(signal.traderName).replace(/^@+/, '')
       : (shortAddress(signal.traderAddress) || 'trader');
     return {
       name: signal.alertKind === 'trader'
@@ -747,20 +788,132 @@
         : formatFomoActorCount(signal.traderCount, side),
       amount: signal.amountText,
       timeAgo: signal.displayTime,
+      timeMs: Number(signal.observedAt || 0),
       address: signal.traderAddress || '',
+      avatar: signal.traderAvatar || '',
       external: true,
       side,
+      profileUrl: signal.alertKind === 'trader' && traderLabel && traderLabel !== 'trader'
+        ? `https://fomo.family/profile/${encodeURIComponent(traderLabel)}`
+        : '',
       stableKey: signal.stableKey
     };
   }
 
   function formatFomoActorCount(count, side) {
     const normalizedCount = Math.max(0, Number(count || 0));
-    const noun = side === 'sell' ? 'seller' : 'buyer';
-    return `${normalizedCount} ${noun}${normalizedCount === 1 ? '' : 's'}`;
+    return `${side === 'sell' ? '卖' : '买'} ${normalizedCount}`;
   }
 
-  function ingestFomoAggregateAlert(payload, { deferRender = false, deferEffects = false } = {}) {
+  function summarizeFomoSignalsToWallets(signals) {
+    const rows = [];
+    const traderGroups = new Map();
+    for (const signal of Array.isArray(signals) ? signals : []) {
+      if (!signal || signal.alertKind !== 'trader') {
+        if (!signal) continue;
+        const side = signal.side === 'sell' ? 'sell' : 'buy';
+        rows.push({
+          name: `${side === 'sell' ? '卖' : '买'} ${Math.max(0, Number(signal.traderCount || 0))}`,
+          amount: signal.amountText || '',
+          timeAgo: signal.displayTime || '',
+          timeMs: Number(signal.observedAt || 0),
+          address: '',
+          avatar: '',
+          external: true,
+          side,
+          stableKey: signal.stableKey || ''
+        });
+        continue;
+      }
+      const cleanName = String(signal.traderName || '').replace(/^@+/, '').trim();
+      const identity = String(
+        signal.traderUserId
+        || signal.traderAddress
+        || cleanName
+        || signal.stableKey
+        || ''
+      ).trim().toLowerCase();
+      if (!identity) continue;
+      if (!traderGroups.has(identity)) traderGroups.set(identity, []);
+      traderGroups.get(identity).push(signal);
+    }
+
+    for (const groupSignals of traderGroups.values()) {
+      const ordered = [...groupSignals].sort(
+        (left, right) => Number(left.observedAt || 0) - Number(right.observedAt || 0)
+      );
+      const latest = ordered[ordered.length - 1];
+      const buys = ordered.filter((signal) => signal.side !== 'sell');
+      const sells = ordered.filter((signal) => signal.side === 'sell');
+      const buyQuantities = buys.map((signal) => Number(signal.tokenAmount)).filter((value) => Number.isFinite(value) && value > 0);
+      const sellQuantities = sells.map((signal) => Number(signal.tokenAmount)).filter((value) => Number.isFinite(value) && value > 0);
+      const hasCompleteQuantities = buys.length > 0
+        && sells.length > 0
+        && buyQuantities.length === buys.length
+        && sellQuantities.length === sells.length;
+      const boughtQuantity = buyQuantities.reduce((total, value) => total + value, 0);
+      const soldQuantity = sellQuantities.reduce((total, value) => total + value, 0);
+      const fullySoldByQuantity = hasCompleteQuantities
+        && boughtQuantity > 0
+        && soldQuantity + Math.max(1e-12, boughtQuantity * 0.001) >= boughtQuantity;
+      const fullySold = latest.side === 'sell'
+        && (latest.positionClosed === true || fullySoldByQuantity);
+      const cleanName = String(latest.traderName || '').replace(/^@+/, '').trim();
+      const summary = [
+        buys.length ? `买 ${buys.length}` : '',
+        sells.length ? `卖 ${sells.length}` : ''
+      ].filter(Boolean).join(' · ');
+      rows.push({
+        name: cleanName || shortAddress(latest.traderAddress) || 'trader',
+        amount: summary,
+        timeAgo: latest.displayTime || '',
+        timeMs: Number(latest.observedAt || 0),
+        address: latest.traderAddress || '',
+        avatar: latest.traderAvatar || '',
+        external: true,
+        side: buys.length && sells.length ? 'mixed' : (sells.length ? 'sell' : 'buy'),
+        closed: fullySold,
+        profileUrl: cleanName ? `https://fomo.family/profile/${encodeURIComponent(cleanName)}` : '',
+        stableKey: latest.stableKey || ''
+      });
+    }
+    return rows.sort((left, right) => Number(right.timeMs || 0) - Number(left.timeMs || 0));
+  }
+
+  function buildFomoWatchedTrade(signal, alert) {
+    if (signal?.alertKind !== 'trader' || !signal.traderAddress) return null;
+    const focusMatch = getFocusWalletMatch(signal.traderName, signal.traderAddress, alert?.chain);
+    if (!focusMatch || focusMatch.meta?.focusPushEnabled === false) return null;
+    return {
+      wallet: signal.traderName || shortAddress(signal.traderAddress),
+      walletAddress: signal.traderAddress,
+      walletAvatar: signal.traderAvatar || '',
+      action: signal.side === 'sell' ? 'sell' : 'buy',
+      amount: signal.amountText || '',
+      token: alert?.token || '',
+      mint: alert?.mint || '',
+      chain: alert?.chain || '',
+      mcap: signal.marketCapText || alert?.mcap || '',
+      timeMs: Number(signal.receivedAt || 0),
+      inferredTime: true,
+      liveDelivery: signal.liveDelivery === true,
+      source: 'fomo'
+    };
+  }
+
+  function mergeRecentFomoSignals(signals) {
+    const cutoff = Date.now() - FOMO_RECENT_ALERT_RETENTION_MS;
+    const byKey = new Map();
+    for (const signal of Array.isArray(signals) ? signals : []) {
+      if (!signal || Number(signal.observedAt || 0) < cutoff) continue;
+      byKey.set(String(signal.stableKey || ''), signal);
+    }
+    return Array.from(byKey.values())
+      .sort((left, right) => Number(left.observedAt || 0) - Number(right.observedAt || 0))
+      .slice(-FOMO_RECENT_SIGNAL_MAX_PER_TOKEN);
+  }
+
+  function ingestFomoAggregateAlert(payload, { deferRender = false, deferEffects = false, historical = false } = {}) {
     const chain = normalizeChainName(payload.chain);
     const mint = String(payload.tokenAddress || '').trim();
     const token = String(payload.symbol || '').trim() || shortAddress(mint);
@@ -782,49 +935,64 @@
       traderCount,
       alertKind: isTraderAlert ? 'trader' : 'aggregate',
       traderName,
+      traderUserId: String(payload.traderUserId || '').trim(),
       traderAddress: String(payload.traderAddress || '').trim(),
+      traderAvatar: String(payload.traderAvatar || '').trim(),
       amountText: String(payload.amountText || ''),
+      amountUsd: Number(payload.amountUsd || 0),
+      tokenAmount: Number.isFinite(Number(payload.tokenAmount)) && Number(payload.tokenAmount) > 0
+        ? Number(payload.tokenAmount)
+        : undefined,
+      positionClosed: payload.positionClosed === true,
       marketCapText: String(payload.marketCapText || ''),
       displayTime: String(payload.displayTime || ''),
       observedAt,
+      receivedAt: Number(payload.receivedAt || 0),
+      liveDelivery: payload.liveDelivery === true,
       url: String(payload.url || '')
     };
     const groupKey = getAlertGroupKey({ token, mint, chain });
     const existing = alerts.find((item) => getAlertGroupKey(item) === groupKey);
     if (existing) {
-      existing.fomoSignals = [...(existing.fomoSignals || []), fomoSignal].slice(-5);
+      existing.fomoSignals = mergeRecentFomoSignals([...(existing.fomoSignals || []), fomoSignal]);
       existing.wallets = [
         ...(existing.wallets || []).filter((wallet) => !wallet.external),
-        ...existing.fomoSignals.map(mapFomoSignalToWallet)
+        ...summarizeFomoSignalsToWallets(existing.fomoSignals)
       ];
       existing.externalStableKey = stableKey;
       existing.externalSource = 'fomo';
       existing.latestTradeTimeMs = Math.max(Number(existing.latestTradeTimeMs || 0), observedAt);
-      existing.updatedAt = Date.now();
-      existing.isNew = true;
-      existing.fomoNewUntil = Date.now() + 1500;
+      existing.updatedAt = historical
+        ? Math.max(Number(existing.updatedAt || 0), observedAt)
+        : Date.now();
+      if (!historical) {
+        existing.isNew = true;
+        existing.fomoNewUntil = Date.now() + 1500;
+      }
       const soundCue = { tier: side === 'buy' ? Math.max(existing.tier || 1, calcTier(traderCount)) : 1, chain };
+      const speechTrade = buildFomoWatchedTrade(fomoSignal, existing);
       if (!deferRender) renderAlerts();
       if (!deferEffects && config.soundEnabled) { playSound(soundCue.tier, chain); flashBadge(); }
+      if (!deferEffects && speechTrade) flushWatchedTradeAnnouncements([speechTrade]);
       if (!deferRender) scheduleFomoNewStateClear([existing]);
-      return { ok: true, merged: true, alert: existing, soundCue };
+      return { ok: true, merged: true, alert: existing, soundCue, speechTrade };
     }
     const alert = {
       token,
       mint,
       chain,
-      tokenLogo: '',
+      tokenLogo: String(payload.tokenImage || ''),
       walletCount: 0,
       effectiveCount: 0,
       closedCount: 0,
-      wallets: [mapFomoSignalToWallet(fomoSignal)],
+      wallets: summarizeFomoSignalsToWallets([fomoSignal]),
       mcap: String(payload.marketCapText || ''),
       latestTradeTimeMs: observedAt,
       tier: side === 'buy' ? calcTier(traderCount) : 1,
-      triggeredAt: Date.now(),
-      updatedAt: Date.now(),
-      isNew: true,
-      fomoNewUntil: Date.now() + 1500,
+      triggeredAt: historical ? observedAt : Date.now(),
+      updatedAt: historical ? observedAt : Date.now(),
+      isNew: !historical,
+      fomoNewUntil: historical ? 0 : Date.now() + 1500,
       externalSource: 'fomo',
       externalStableKey: stableKey,
       fomoSignals: [fomoSignal],
@@ -837,8 +1005,32 @@
       playSound(alert.tier || 1, chain);
       flashBadge();
     }
+    const speechTrade = buildFomoWatchedTrade(fomoSignal, alert);
+    if (!deferEffects && speechTrade) flushWatchedTradeAnnouncements([speechTrade]);
     if (!deferRender) scheduleFomoNewStateClear([alert]);
-    return { ok: true, alert, soundCue: { tier: alert.tier || 1, chain } };
+    return { ok: true, alert, soundCue: { tier: alert.tier || 1, chain }, speechTrade };
+  }
+
+  function restoreRecentFomoAlerts() {
+    if (fomoHistoryRestorePromise) return fomoHistoryRestorePromise;
+    if (typeof chrome === 'undefined' || !chrome.runtime?.sendMessage) return Promise.resolve(false);
+    fomoHistoryRestorePromise = chrome.runtime.sendMessage({
+      type: FOMO_RECENT_ALERTS_REQUEST_EVENT
+    }).then((response) => {
+      const items = Array.isArray(response?.items) ? response.items : [];
+      let changed = false;
+      for (const payload of items) {
+        const result = ingestFomoAggregateAlert(payload, {
+          deferRender: true,
+          deferEffects: true,
+          historical: true
+        });
+        if (result.ok && !result.duplicate && !result.skipped) changed = true;
+      }
+      if (changed) renderAlerts();
+      return changed;
+    }).catch(() => false);
+    return fomoHistoryRestorePromise;
   }
 
   function startSharedPoolSync() {
@@ -1858,10 +2050,33 @@
 
   function findFocusAddressKey(walletAddress, chain) {
     const key = buildFocusAddressKey(chain, walletAddress);
-    return key && focusAddresses[key] ? key : '';
+    if (key && focusAddresses[key]) return key;
+    if (!getFocusAddressType(walletAddress, chain)) return '';
+    const matchingEntry = Object.values(focusAddresses).find((entry) => focusAddressMatches(entry, walletAddress, chain));
+    return matchingEntry?.key || '';
+  }
+
+  function findFocusAddressNameKey(walletName) {
+    const normalizedName = normalizeWalletMatchName(walletName);
+    if (!normalizedName) return '';
+    const matches = Object.values(focusAddresses).filter((entry) => {
+      return [entry?.alias, entry?.name].some((candidate) => normalizeWalletMatchName(candidate) === normalizedName);
+    });
+    if (!matches.length) return '';
+    const identities = new Set(matches.map((entry) => String(entry.personId || entry.key || '').trim()).filter(Boolean));
+    return identities.size <= 1 ? matches[0].key : '';
   }
 
   function getFocusWalletMatch(walletName, walletAddress, chain) {
+    const addressKey = findFocusAddressKey(walletAddress, chain);
+    if (addressKey) {
+      return {
+        key: addressKey,
+        type: 'address',
+        meta: focusAddresses[addressKey] || {}
+      };
+    }
+
     const nameKey = findSpeechWatchWalletKey(walletName);
     if (nameKey) {
       return {
@@ -1871,12 +2086,12 @@
       };
     }
 
-    const addressKey = findFocusAddressKey(walletAddress, chain);
-    if (addressKey) {
+    const relayNameKey = findFocusAddressNameKey(walletName);
+    if (relayNameKey) {
       return {
-        key: addressKey,
-        type: 'address',
-        meta: focusAddresses[addressKey] || {}
+        key: relayNameKey,
+        type: 'relay-name',
+        meta: focusAddresses[relayNameKey] || {}
       };
     }
 
@@ -2012,14 +2227,16 @@
   function toggleStar(walletName, walletAddress = '', chain = '') {
     const normalizedWallet = normalizeSpeechWatchWallet(walletName);
     if (!normalizedWallet) return;
-    const addressKey = buildFocusAddressKey(chain, walletAddress);
+    const existingAddressKey = findFocusAddressKey(walletAddress, chain);
+    const storageChain = getFocusStorageChain(chain, walletAddress);
+    const addressKey = buildFocusAddressKey(storageChain, walletAddress);
     if (addressKey) {
-      const existingAddress = focusAddresses[addressKey];
+      const existingAddress = focusAddresses[existingAddressKey];
       if (existingAddress) {
         void deleteFocusAddress(existingAddress).catch(() => {});
       } else {
         void upsertFocusAddress({
-          chain,
+          chain: storageChain,
           address: walletAddress,
           alias: normalizedWallet,
           name: normalizedWallet,
@@ -2045,9 +2262,11 @@
 
   function promoteSpeechFocusToAddress(walletName, walletAddress, chain) {
     const speechKey = findSpeechWatchWalletKey(walletName);
-    const addressKey = buildFocusAddressKey(chain, walletAddress);
+    const existingAddressKey = findFocusAddressKey(walletAddress, chain);
+    const storageChain = getFocusStorageChain(chain, walletAddress);
+    const addressKey = buildFocusAddressKey(storageChain, walletAddress);
     if (!speechKey || !addressKey || focusAddressPromotionInFlight.has(addressKey)) return;
-    if (focusAddresses[addressKey]) {
+    if (existingAddressKey) {
       delete speechWatchlist[speechKey];
       applySpeechWatchlist(speechWatchlist);
       void persistSpeechWatchlist();
@@ -2057,7 +2276,7 @@
     focusAddressPromotionInFlight.add(addressKey);
     const meta = speechWatchlist[speechKey] || {};
     void upsertFocusAddress({
-      chain,
+      chain: storageChain,
       address: walletAddress,
       alias: meta.alias || speechKey,
       name: speechKey,
@@ -2396,6 +2615,7 @@
 
   function isRecentEnoughForWatchedTradeSpeech(trade, now = Date.now()) {
     if (!trade) return false;
+    if (trade.source === 'fomo' && trade.liveDelivery !== true) return false;
     const secondsMatch = /^(\d+)s$/.exec(String(trade.timeAgo || '').trim());
     if (!trade.timeMs) return false;
     const ageMs = now - trade.timeMs;
@@ -3952,7 +4172,7 @@
         } else {
           existing.dissolvedAt = null;
         }
-        const fomoWallets = (existing.fomoSignals || []).map(mapFomoSignalToWallet);
+        const fomoWallets = summarizeFomoSignalsToWallets(existing.fomoSignals || []);
         existing.wallets = [...walletDetails, ...fomoWallets];
         existing.mcap = group.mcap || existing.mcap;
         existing.token = group.token || existing.token;
@@ -4456,7 +4676,7 @@
         <header><div><strong>★ Focus List</strong><span>Relay synced · ${items.length} addresses</span></div><button type="button" class="gcp-focus-manager-close">×</button></header>
         <form class="gcp-focus-manager-form">
           <input type="hidden" name="editingKey" value="">
-          <select name="chain"><option value="sol">Solana</option><option value="eth">Ethereum</option><option value="bsc">BSC</option><option value="base">Base</option><option value="robinhood">Robinhood</option><option value="tron">Tron</option><option value="blast">Blast</option></select>
+          <select name="chain"><option value="eth">EVM</option><option value="sol">Solana</option></select>
           <input name="alias" placeholder="Name / alias">
           <input name="twitterHandle" placeholder="Twitter @handle">
           <input name="address" placeholder="Wallet address" required>
@@ -4504,7 +4724,7 @@
       row.querySelector('[data-action="edit"]')?.addEventListener('click', () => {
         if (!item) return;
         form.elements.editingKey.value = item.key;
-        form.elements.chain.value = item.chain;
+        form.elements.chain.value = getFocusAddressType(item.address, item.chain) === 'solana' ? 'sol' : 'eth';
         form.elements.chain.disabled = true;
         form.elements.address.value = item.address;
         form.elements.address.disabled = true;
@@ -4609,6 +4829,7 @@
       panelEl.classList.toggle('collapsed');
       config.collapsed = panelEl.classList.contains('collapsed');
       saveConfig();
+      if (!config.collapsed) refreshRenderedRelativeTimes();
     });
 
     const soundBtn = panelEl.querySelector('.gcp-sound-btn');
@@ -4750,6 +4971,69 @@
       : '<div class="gcp-empty">当前链筛选下暂无提醒</div>';
   }
 
+  function renderAlertWalletTag(wallet, chain) {
+    const star = !!findFocusWalletKey(wallet.name, wallet.address, chain);
+    const blacklisted = isWalletBlacklisted(wallet.name);
+    const canToggleFocus = !wallet.external || !!wallet.address;
+    const watchToggle = canToggleFocus
+      ? `<span class="gcp-watch-toggle ${star ? 'on' : ''}" data-wallet="${escHtml(wallet.name)}" data-wallet-address="${escHtml(wallet.address || '')}" data-chain="${escHtml(chain || '')}" title="${star ? '取消特别关注' : '加入特别关注'}">${star ? '★' : '☆'}</span>`
+      : '';
+    const avatar = wallet.avatar
+      ? `<img class="gcp-wallet-avatar" src="${escHtml(wallet.avatar)}" alt="" loading="lazy" referrerpolicy="no-referrer" />`
+      : wallet.external
+        ? '<img class="gcp-wallet-avatar gcp-wallet-source-icon" src="https://fomo.family/favicon.svg" alt="" loading="lazy" referrerpolicy="no-referrer" />'
+        : '';
+    const walletTimeMs = Number(wallet.timeMs || 0);
+    const timeSuffix = wallet.external ? '' : '前';
+    const relativeTime = walletTimeMs
+      ? formatTradeAgeFromTimeMs(walletTimeMs)
+      : String(wallet.timeAgo || '').trim();
+    const timeText = relativeTime
+      ? `<span class="gcp-wallet-time"${walletTimeMs ? ` data-time-ms="${walletTimeMs}" data-time-suffix="${escHtml(timeSuffix)}"` : ''}>${escHtml(relativeTime)}${escHtml(timeSuffix)}</span>`
+      : '';
+    const title = wallet.closed
+      ? '已清仓'
+      : wallet.external
+        ? `FOMO ${wallet.side === 'sell' ? '卖出' : '买入'}`
+        : '';
+    const externalSideClass = wallet.side === 'sell' ? 'is-sell' : wallet.side === 'mixed' ? 'is-mixed' : 'is-buy';
+    const walletName = wallet.profileUrl
+      ? `<a class="gcp-wallet-name gcp-wallet-profile-link" href="${escHtml(wallet.profileUrl)}" target="_blank" rel="noopener noreferrer" title="打开 ${escHtml(wallet.name)} 的 FOMO 主页">${escHtml(wallet.name)}</a>`
+      : `<span class="gcp-wallet-name">${escHtml(wallet.name)}</span>`;
+    return `<span class="gcp-alert-wallet-tag ${wallet.external ? `gcp-alert-wallet-tag-external ${externalSideClass}` : ''} ${star ? 'is-starred' : ''} ${blacklisted ? 'is-blacklisted' : ''} ${wallet.closed ? 'is-closed' : ''}" title="${escHtml(title)}">
+      ${watchToggle}${avatar}${walletName}
+      <span class="gcp-blacklist-toggle ${blacklisted ? 'on' : ''}" data-wallet="${escHtml(wallet.name)}" title="${blacklisted ? '移出黑名单钱包' : '加入黑名单钱包'}">!</span>
+      <span class="gcp-wallet-amount">${escHtml(wallet.amount)}</span>${timeText}
+    </span>`;
+  }
+
+  function refreshRenderedRelativeTimes(now = Date.now()) {
+    if (document.hidden || !panelEl?.isConnected || panelEl.classList.contains('collapsed')) return 0;
+    let changed = 0;
+    panelEl.querySelectorAll('.gcp-wallet-time[data-time-ms]').forEach((element) => {
+      const timeMs = Number(element.dataset.timeMs || 0);
+      if (!Number.isFinite(timeMs) || timeMs <= 0) return;
+      const nextText = `${formatTradeAgeFromTimeMs(timeMs, now)}${element.dataset.timeSuffix || ''}`;
+      if (element.textContent === nextText) return;
+      element.textContent = nextText;
+      changed += 1;
+    });
+    return changed;
+  }
+
+  function startRelativeTimeRefresh() {
+    if (relativeTimeRefreshInterval) return;
+    relativeTimeRefreshInterval = setInterval(() => {
+      refreshRenderedRelativeTimes();
+    }, RELATIVE_TIME_REFRESH_MS);
+  }
+
+  function stopRelativeTimeRefresh() {
+    if (!relativeTimeRefreshInterval) return;
+    clearInterval(relativeTimeRefreshInterval);
+    relativeTimeRefreshInterval = null;
+  }
+
   function renderAlerts() {
     if (!panelEl) return;
     const container = panelEl.querySelector('.gcp-alerts');
@@ -4777,6 +5061,10 @@
         const fomoRealSellerCount = new Set(fomoSellSignals.filter((signal) => signal.alertKind === 'trader').map((signal) => String(signal.traderAddress || signal.traderName || '').toLowerCase()).filter(Boolean)).size;
         const fomoAggregateTraderCount = Math.max(0, ...fomoBuySignals.filter((signal) => signal.alertKind !== 'trader').map((signal) => Number(signal.traderCount || 0)));
         const fomoAggregateSellerCount = Math.max(0, ...fomoSellSignals.filter((signal) => signal.alertKind !== 'trader').map((signal) => Number(signal.traderCount || 0)));
+        const totalBuyWalletCount = effective + Math.max(fomoRealBuyerCount, fomoAggregateTraderCount);
+        const totalSellWalletCount = Math.max(fomoRealSellerCount, fomoAggregateSellerCount);
+        const fomoTradeCount = [...fomoBuySignals, ...fomoSellSignals]
+          .filter((signal) => signal.alertKind === 'trader').length;
         const tier = Math.max(a.tier || calcTier(effective), fomoBuyTraderCount ? calcTier(fomoBuyTraderCount) : 0);
         const tierIcon = tier >= 4 ? ' 🚨' : tier >= 3 ? ' 🔥' : tier >= 2 ? ' ⚡' : '';
         const logoImg = a.tokenLogo
@@ -4796,11 +5084,9 @@
           && fomoRealSellerCount === 0
           && fomoAggregateSellerCount === 0;
         const countLabel = [
-          effective > 0 ? `${effective} wallets` : '',
-          fomoRealBuyerCount > 0 ? formatFomoActorCount(fomoRealBuyerCount, 'buy') : '',
-          fomoAggregateTraderCount > 0 ? formatFomoActorCount(fomoAggregateTraderCount, 'buy') : '',
-          fomoRealSellerCount > 0 ? formatFomoActorCount(fomoRealSellerCount, 'sell') : '',
-          fomoAggregateSellerCount > 0 ? formatFomoActorCount(fomoAggregateSellerCount, 'sell') : ''
+          totalBuyWalletCount > 0 ? `${totalBuyWalletCount} 钱包` : '',
+          totalSellWalletCount > 0 ? `卖 ${totalSellWalletCount}` : '',
+          fomoTradeCount > 1 ? `${fomoTradeCount} 笔` : ''
         ].filter(Boolean).join(' · ');
         return `
         <div class="gcp-alert-item gcp-tier-${tier} ${a.isNew ? 'is-new' : ''} ${isFaded ? 'is-faded' : ''}" data-token="${escHtml(a.token)}">
@@ -4810,28 +5096,7 @@
           </div>
           <div class="gcp-alert-time">${metaLine}</div>
           <div class="gcp-alert-wallets">
-            ${a.wallets.map(w => {
-              if (w.external) {
-                return `<span class="gcp-alert-wallet-tag gcp-alert-wallet-tag-external ${w.side === 'sell' ? 'is-sell' : 'is-buy'}" title="FOMO ${escHtml(w.side || 'buy')} alert">
-                  <span class="gcp-wallet-name">${escHtml(w.name)}</span>
-                  <span class="gcp-wallet-amount">${escHtml(w.amount)}</span>
-                  ${w.timeAgo ? `<span style="color:#666">${escHtml(w.timeAgo)}</span>` : ''}
-                </span>`;
-              }
-                const star = !!findFocusWalletKey(w.name, w.address, a.chain);
-              const blacklisted = isWalletBlacklisted(w.name);
-              const av = w.avatar
-                ? `<img class="gcp-wallet-avatar" src="${escHtml(w.avatar)}" loading="lazy" referrerpolicy="no-referrer" />`
-                : '';
-              return `
-              <span class="gcp-alert-wallet-tag ${star ? 'is-starred' : ''} ${blacklisted ? 'is-blacklisted' : ''} ${w.closed ? 'is-closed' : ''}" title="${w.closed ? '已清仓' : ''}">
-                <span class="gcp-watch-toggle ${star ? 'on' : ''}" data-wallet="${escHtml(w.name)}" data-wallet-address="${escHtml(w.address || '')}" data-chain="${escHtml(a.chain || '')}" title="${star ? '取消特别关注' : '加入特别关注'}">${star ? '★' : '☆'}</span>
-                ${av}<span class="gcp-wallet-name">${escHtml(w.name)}</span>
-                <span class="gcp-blacklist-toggle ${blacklisted ? 'on' : ''}" data-wallet="${escHtml(w.name)}" title="${blacklisted ? '移出黑名单钱包' : '加入黑名单钱包'}">!</span>
-                <span class="gcp-wallet-amount">${escHtml(w.amount)}</span>
-                ${w.timeAgo ? '<span style="color:#666">' + escHtml(w.timeAgo) + '前</span>' : ''}
-              </span>`;
-            }).join('')}
+            ${a.wallets.map((wallet) => renderAlertWalletTag(wallet, a.chain)).join('')}
           </div>
         </div>`;
       }).join('');
@@ -4861,6 +5126,21 @@
           return;
         }
 
+        window.open(url, '_blank', 'noopener,noreferrer');
+      });
+    });
+    container.querySelectorAll('.gcp-wallet-profile-link').forEach(el => {
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        const url = el.href || el.getAttribute('href') || '';
+        if (!url) return;
+        if (isMonitorWindowPage()) {
+          void openPanelLinkInMainWindow(url).then((opened) => {
+            if (!opened) window.open(url, '_blank', 'noopener,noreferrer');
+          });
+          return;
+        }
         window.open(url, '_blank', 'noopener,noreferrer');
       });
     });
@@ -5447,6 +5727,8 @@
     ensureAudioSyncChannel();
     warmupAlertAudio();
     renderAlerts();
+    void restoreRecentFomoAlerts();
+    startRelativeTimeRefresh();
     startSharedPoolSync();
     startObserver();
     scanTrades();
@@ -5457,8 +5739,10 @@
   function deactivateFollowMode() {
     if (!followModeActive && !document.getElementById('gcp-inline-panel')) return;
     followModeActive = false;
+    fomoHistoryRestorePromise = null;
     stopMountWatcher();
     stopObserver();
+    stopRelativeTimeRefresh();
     stopSharedPoolSync();
     if ('speechSynthesis' in window) {
       try { window.speechSynthesis.cancel(); } catch (e) {}

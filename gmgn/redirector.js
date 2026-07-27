@@ -1,4 +1,5 @@
 const OPEN_LINK_MESSAGE = 'open-in-main-window';
+const MONITOR_SCREEN_LINK_SOURCE = 'gmgn-monitor-screen';
 const REGISTER_MONITOR_TAB_MESSAGE = 'register-monitor-tab';
 const GET_MONITOR_SCREEN_STATUS_MESSAGE = 'get-monitor-screen-status';
 const ALLOW_MONITOR_NAVIGATION_MESSAGE = 'allow-monitor-navigation';
@@ -55,11 +56,6 @@ function shouldIgnoreMonitorRedirect(event, anchor) {
 
   const interactive = target.closest('button, input, textarea, select, option, label, [contenteditable="true"], [contenteditable=""], [role="button"], [role="checkbox"], [role="switch"], [role="menuitem"], [aria-haspopup]');
   if (interactive && interactive !== anchor) {
-    return true;
-  }
-
-  const icon = target.closest('svg');
-  if (icon && icon !== anchor && anchor.contains(icon)) {
     return true;
   }
 
@@ -214,10 +210,7 @@ function initializeMonitorRedirect() {
       return;
     }
 
-    chrome.runtime.sendMessage({
-      type: OPEN_LINK_MESSAGE,
-      url: resolvedUrl
-    });
+    void handoffLinkToMainWindow(resolvedUrl);
   });
 
   if (chrome.storage && chrome.storage.onChanged) {
@@ -379,11 +372,26 @@ function updateMonitorScreenButton(status) {
 
 function redirectToMainWindow(event, url) {
   suppressEvent(event);
+  void handoffLinkToMainWindow(url);
+}
 
-  chrome.runtime.sendMessage({
+async function handoffLinkToMainWindow(url) {
+  const response = await sendRuntimeMessage({
     type: OPEN_LINK_MESSAGE,
-    url
+    url,
+    source: MONITOR_SCREEN_LINK_SOURCE,
+    sourceOrigin: window.location.origin,
+    allowAnyHttpUrl: true
   });
+  if (response && response.ok) {
+    return true;
+  }
+
+  // Fail open: the background tab-navigation guard will hand this URL to the
+  // main screen and restore the monitor route. This also recovers stale content
+  // scripts after an extension reload instead of leaving every link inert.
+  window.location.assign(url);
+  return false;
 }
 
 function initializeNavigationCleanup() {

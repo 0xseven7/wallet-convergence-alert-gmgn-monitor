@@ -4,12 +4,21 @@
   const THESIS_MESSAGE_TYPE = 'fomo-thesis-event';
   const HEARTBEAT_MESSAGE_TYPE = 'fomo-monitor-heartbeat';
   const PING_MESSAGE_TYPE = 'fomo-monitor-ping';
+  const FOMO_WSS_EVENT = 'wallet-convergence:fomo-wss-event';
+  const FOMO_WSS_STATE = 'wallet-convergence:fomo-wss-state';
+  const FOMO_WSS_READY = 'wallet-convergence:fomo-wss-ready';
   const SEEN_STORAGE_KEY = 'fomoAlertSeenV2';
   const seen = new Set();
   let primed = false;
-  let scanTimer = null;
+  let persistSeenTimer = null;
   let lastScanAt = 0;
   let lastMutationAt = 0;
+  let lastWsEventAt = 0;
+  let wsEventCount = 0;
+  let wsStatus = 'waiting_for_session';
+  let wsStatusAt = Date.now();
+  let wsReadyAt = 0;
+  let wsUnhealthySince = wsStatusAt;
   let latestStableKey = '';
   const pageStartedAt = Date.now();
   const FOLLOWED_TRADERS = new Map([
@@ -48,6 +57,105 @@
 
   function compactText(value) { return String(value || '').replace(/\s+/g, '').trim(); }
   function cleanText(value) { return String(value || '').replace(/\s+/g, ' ').trim(); }
+  function boundedText(value, maxLength) {
+    const text = String(value || '').trim();
+    return text.length <= maxLength ? text : '';
+  }
+  function finiteNumber(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : undefined;
+  }
+  function isValidChainAddress(chain, address) {
+    const text = String(address || '').trim();
+    if (chain === 'solana') return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(text);
+    return /^0x[0-9a-f]{40}$/i.test(text);
+  }
+  function safeFomoTokenUrl(value) {
+    try {
+      const url = new URL(String(value || ''));
+      if (url.protocol !== 'https:'
+        || (url.hostname !== 'fomo.family' && !url.hostname.endsWith('.fomo.family'))
+        || !url.pathname.startsWith('/tokens/')) return '';
+      return url.href;
+    } catch (_error) {
+      return '';
+    }
+  }
+  function sanitizeWssAlert(raw) {
+    try {
+      if (!raw || typeof raw !== 'object') return null;
+      const alertKind = boundedText(raw.alertKind, 16);
+      const stableKey = boundedText(raw.stableKey, 512);
+      const chain = boundedText(raw.chain, 16).toLowerCase();
+      const tokenAddress = boundedText(raw.tokenAddress, 160);
+      const symbol = boundedText(raw.symbol, 80);
+      if (!['trader', 'aggregate', 'thesis'].includes(alertKind)
+        || !['ethereum', 'bnb', 'base', 'robinhood', 'solana'].includes(chain)
+        || !stableKey
+        || !tokenAddress
+        || !symbol
+        || !isValidChainAddress(chain, tokenAddress)) return null;
+      const common = {
+        alertKind,
+        stableKey,
+        activityId: boundedText(raw.activityId, 256),
+        chain,
+        tokenAddress,
+        symbol,
+        tokenImage: boundedText(raw.tokenImage, 2048),
+        displayTime: boundedText(raw.displayTime, 24),
+        url: safeFomoTokenUrl(boundedText(raw.url, 2048)),
+        observedAt: finiteNumber(raw.observedAt) || Date.now(),
+        receivedAt: finiteNumber(raw.receivedAt) || 0,
+        liveDelivery: raw.liveDelivery === true
+      };
+      if (alertKind === 'thesis') {
+        const text = boundedText(raw.text, 5000);
+        const actorName = boundedText(raw.actorName, 120);
+        if (!text || !actorName) return null;
+        return {
+          ...common,
+          actorName,
+          actorHandle: boundedText(raw.actorHandle, 120) || actorName,
+          actorUserId: boundedText(raw.actorUserId, 128),
+          actorAddress: isValidChainAddress(chain, raw.actorAddress) ? boundedText(raw.actorAddress, 160) : '',
+          profileImage: boundedText(raw.profileImage, 2048),
+          text,
+          closed: Boolean(raw.closed)
+        };
+      }
+      const side = boundedText(raw.side, 8).toLowerCase();
+      if (!['buy', 'sell'].includes(side)) return null;
+      const result = {
+        ...common,
+        side,
+        traderCount: Math.max(1, finiteNumber(raw.traderCount) || 1),
+        amountText: boundedText(raw.amountText, 80),
+        amountUsd: finiteNumber(raw.amountUsd),
+        tokenAmount: finiteNumber(raw.tokenAmount),
+        positionClosed: raw.positionClosed === true,
+        marketCapText: boundedText(raw.marketCapText, 80),
+        marketCapUsd: finiteNumber(raw.marketCapUsd)
+      };
+      if (alertKind === 'trader') {
+        const traderName = boundedText(raw.traderName, 120);
+        if (!traderName) return null;
+        return {
+          ...result,
+          traderName,
+          traderHandle: boundedText(raw.traderHandle, 120) || traderName,
+          traderUserId: boundedText(raw.traderUserId, 128),
+          traderAddress: isValidChainAddress(chain, raw.traderAddress) ? boundedText(raw.traderAddress, 160) : '',
+          traderAvatar: boundedText(raw.traderAvatar, 2048),
+          followedTrader: Boolean(raw.followedTrader),
+          tradeId: boundedText(raw.tradeId, 256)
+        };
+      }
+      return result;
+    } catch (_error) {
+      return null;
+    }
+  }
   function parseAmount(value) {
     const match = String(value || '').replace(/,/g, '').match(/^\$?(\d+(?:\.\d+)?)([KMB])?$/i);
     if (!match) return null;
@@ -141,11 +249,16 @@
       const marketCapText = traderMatch[6];
       const tradeId = new URL(href, location.origin).searchParams.get('tradeId') || '';
       const followedTrader = FOLLOWED_TRADERS.get(traderName.toLocaleLowerCase()) || null;
+      const traderAvatar = Array.from(anchor?.querySelectorAll?.('img') || [])
+        .map((image) => String(image?.currentSrc || image?.src || image?.getAttribute?.('src') || '').trim())
+        .find((src) => /prod-fomo-profile-pics|profile-pics/i.test(src)) || '';
       return {
         alertKind: 'trader',
-        stableKey: tradeId ? `trade|${tradeId}|${side}|${amountText}` : [chain, tokenAddress.toLowerCase(), side, traderName.toLowerCase(), amountText, marketCapText].join('|'),
+        stableKey: tradeId
+          ? `trade|${tradeId}|${side}|${amountText}|${marketCapText}`
+          : [chain, tokenAddress.toLowerCase(), side, traderName.toLowerCase(), amountText, marketCapText].join('|'),
         chain, tokenAddress, symbol, side, traderCount: 1, traderName, traderHandle: followedTrader?.[0] || traderName,
-        traderAddress: followedTrader ? (chain === 'solana' ? followedTrader[1] : followedTrader[2]) : '', followedTrader: Boolean(followedTrader), tradeId, amountText,
+        traderAddress: followedTrader ? (chain === 'solana' ? followedTrader[1] : followedTrader[2]) : '', traderAvatar, followedTrader: Boolean(followedTrader), tradeId, amountText,
         amountUsd: parseAmount(amountText), marketCapText, marketCapUsd: parseAmount(marketCapText),
         displayTime, url: new URL(href, location.origin).href, observedAt: Date.now()
       };
@@ -165,35 +278,61 @@
       displayTime, url: new URL(href, location.origin).href, observedAt: Date.now()
     };
   }
+  function trimSeen() {
+    if (seen.size <= 2000) return;
+    const keep = Array.from(seen).slice(-1000);
+    seen.clear();
+    keep.forEach((key) => seen.add(key));
+  }
+  function persistSeenSoon() {
+    if (persistSeenTimer) return;
+    persistSeenTimer = setTimeout(() => {
+      persistSeenTimer = null;
+      chrome.storage.local.set({
+        [SEEN_STORAGE_KEY]: { initialized: true, keys: Array.from(seen).slice(-1000) }
+      }).catch(() => {});
+    }, 500);
+  }
+  function dispatchAlert(alert, allowBeforePrime = false) {
+    if (!alert?.stableKey || seen.has(alert.stableKey)) return false;
+    seen.add(alert.stableKey);
+    trimSeen();
+    persistSeenSoon();
+    latestStableKey = alert.stableKey;
+    if (!allowBeforePrime && !primed) return false;
+    const type = alert.alertKind === 'thesis' ? THESIS_MESSAGE_TYPE : MESSAGE_TYPE;
+    if (alert.alertKind === 'thesis' || ['buy', 'sell'].includes(alert.side)) {
+      chrome.runtime.sendMessage({ type, payload: alert }).catch(() => {});
+      return true;
+    }
+    return false;
+  }
   function scan() {
-    scanTimer = null;
     const tradeAlerts = Array.from(document.querySelectorAll('a[href^="/tokens/"]')).map(parseAlert).filter(Boolean);
     const thesisAlerts = Array.from(document.querySelectorAll('[role="link"][data-slot="hover-card-trigger"]')).map(parseThesis).filter(Boolean);
     const alerts = [...tradeAlerts, ...thesisAlerts];
     lastScanAt = Date.now();
     latestStableKey = alerts[0]?.stableKey || latestStableKey;
     for (const alert of alerts) {
-      if (seen.has(alert.stableKey)) continue;
-      seen.add(alert.stableKey);
-      if (!primed) continue;
-      const type = alert.alertKind === 'thesis' ? THESIS_MESSAGE_TYPE : MESSAGE_TYPE;
-      if (alert.alertKind === 'thesis' || ['buy', 'sell'].includes(alert.side)) chrome.runtime.sendMessage({ type, payload: alert }).catch(() => {});
+      dispatchAlert(alert);
     }
     primed = true;
-    if (seen.size > 2000) {
-      const keep = Array.from(seen).slice(-1000); seen.clear(); keep.forEach((key) => seen.add(key));
-    }
-    chrome.storage.local.set({
-      [SEEN_STORAGE_KEY]: { initialized: true, keys: Array.from(seen).slice(-1000) }
-    }).catch(() => {});
+    trimSeen();
+    persistSeenSoon();
     sendHeartbeat(alerts.length);
   }
-  function scheduleScan() { if (!scanTimer) scanTimer = setTimeout(scan, 120); }
   function getStatus(alertCount) {
     return {
       pageStartedAt,
       lastScanAt,
       lastMutationAt,
+      lastWsEventAt,
+      wsEventCount,
+      wsStatus,
+      wsStatusAt,
+      wsReadyAt,
+      wsUnhealthySince,
+      captureMode: 'wss',
       latestStableKey,
       alertCount: Number(alertCount || 0),
       visibilityState: document.visibilityState,
@@ -203,32 +342,44 @@
   function sendHeartbeat(alertCount) {
     chrome.runtime.sendMessage({ type: HEARTBEAT_MESSAGE_TYPE, payload: getStatus(alertCount) }).catch(() => {});
   }
-  if (typeof module !== 'undefined' && module.exports) { module.exports = { compactText, parseAmount, parseAlert, parseDefinedTokenImage, parseThesis }; return; }
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { compactText, parseAmount, parseAlert, parseDefinedTokenImage, parseThesis, sanitizeWssAlert };
+    return;
+  }
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type !== PING_MESSAGE_TYPE) return false;
-    scan();
-    sendResponse({ ok: true, status: getStatus(document.querySelectorAll('a[href^="/tokens/"]').length) });
+    sendResponse({ ok: true, status: getStatus(wsEventCount) });
     return false;
   });
-  const observer = new MutationObserver(() => {
-    lastMutationAt = Date.now();
-    scheduleScan();
+  window.addEventListener(FOMO_WSS_EVENT, (event) => {
+    const alert = sanitizeWssAlert(event?.detail);
+    if (!alert) return;
+    lastWsEventAt = Date.now();
+    lastMutationAt = lastWsEventAt;
+    wsEventCount += 1;
+    dispatchAlert(alert, true);
   });
-  function startObserver() {
-    observer.observe(document.documentElement, { childList: true, subtree: true });
-    setInterval(() => sendHeartbeat(document.querySelectorAll('a[href^="/tokens/"]').length), 30000);
-    for (const eventName of ['visibilitychange', 'pageshow', 'online']) {
-      addEventListener(eventName, scheduleScan);
+  window.addEventListener(FOMO_WSS_STATE, (event) => {
+    const nextStatus = String(event?.detail?.status || 'unknown');
+    const changedAt = Number(event?.detail?.at || Date.now());
+    wsStatus = nextStatus;
+    wsStatusAt = changedAt;
+    if (nextStatus === 'ready') {
+      wsReadyAt = changedAt;
+      wsUnhealthySince = 0;
+    } else if (!wsUnhealthySince) {
+      wsUnhealthySince = changedAt;
     }
-  }
+    sendHeartbeat(wsEventCount);
+  });
+  window.dispatchEvent(new CustomEvent(FOMO_WSS_READY));
+  setInterval(() => sendHeartbeat(wsEventCount), 30000);
   chrome.storage.local.get(SEEN_STORAGE_KEY).then((stored) => {
     const state = stored?.[SEEN_STORAGE_KEY];
     if (Array.isArray(state?.keys)) state.keys.forEach((key) => seen.add(String(key)));
     primed = state?.initialized === true;
     scan();
-    startObserver();
   }).catch(() => {
     scan();
-    startObserver();
   });
 })();
